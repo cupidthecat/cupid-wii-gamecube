@@ -388,18 +388,15 @@ void Devices::write_word(u32 address, u32 value) {
       const u32 previous_cs = registers[0] & 0x380;
       registers[0] = ((registers[0] & ~mutable_bits) | (value & mutable_bits)) &
                      ~(value & (channel < 2 ? 0x80au : 0xau));
-      if (channel == 0 && previous_cs != (registers[0] & 0x380) &&
-          (registers[0] & 0x380) == 0x100) {
+      const u32 current_cs = registers[0] & 0x380;
+      const u32 changed_cs = previous_cs ^ current_cs;
+      if (channel == 0 && changed_cs == 0x100 && current_cs != 0) {
         ipl_command_ = 0;
         ipl_command_bytes_ = 0;
         ipl_cursor_ = 0;
       }
-      if (channel < cards_.size() && previous_cs != (registers[0] & 0x380)) {
-        if (previous_cs == 0x80)
-          memory_card_select(channel, false);
-        if ((registers[0] & 0x380) == 0x80)
-          memory_card_select(channel, true);
-      }
+      if (channel < cards_.size() && changed_cs == 0x80)
+        memory_card_select(channel, current_cs != 0);
     } else {
       registers[index] = value;
       if (index == 3 && (value & 1))
@@ -717,7 +714,8 @@ void Devices::rebuild_deadline() {
   countdown(audio_start_interrupt_);
   for (const auto &card : cards_) {
     countdown(card.command_remaining);
-    countdown(card.transfer_remaining);
+    for (u64 transfer : card.transfer_remaining)
+      next_deadline_ = std::min(next_deadline_, transfer);
   }
 }
 
@@ -753,13 +751,14 @@ void Devices::advance_state(u64 amount) {
       } else
         card.command_remaining -= amount;
     }
-    if (card.transfer_remaining != 0) {
-      if (amount >= card.transfer_remaining) {
-        card.transfer_remaining = 0;
+    for (u64 &remaining : card.transfer_remaining) {
+      if (amount >= remaining) {
         exi_[slot][0] |= 8;
+        remaining = 0;
       } else
-        card.transfer_remaining -= amount;
+        remaining -= amount;
     }
+    std::erase(card.transfer_remaining, u64(0));
   }
   const u64 dma_divisor =
       (console_ == Console::Wii ? 2250u : 2248u) * ((ai_[0] & 64) ? 3u : 2u) / 2;
@@ -1076,7 +1075,7 @@ void Devices::exi_transfer(unsigned channel) {
         card.dirty = true;
       }
       const u32 rate = direction == 0 ? 524288 : 98432;
-      card.transfer_remaining = data.size() * (clock_ / rate);
+      card.transfer_remaining.push_back(data.size() * (clock_ / rate));
     } else {
       for (auto &byte : data)
         if (rom_device)

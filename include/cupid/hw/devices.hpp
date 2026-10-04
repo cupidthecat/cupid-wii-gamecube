@@ -160,7 +160,8 @@ private:
     u32 position = 0, address = 0;
     u8 command = 0, status = 0xc1, interrupt_switch = 0;
     bool interrupt = false, dirty = false;
-    u64 command_remaining = 0, transfer_remaining = 0;
+    u64 command_remaining = 0;
+    std::vector<u64> transfer_remaining;
   };
 
   std::array<MemoryCard, 2> cards_;

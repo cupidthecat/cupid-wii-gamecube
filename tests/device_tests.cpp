@@ -788,6 +788,195 @@ void memory_cards() {
   CHECK_THROWS(devices.set_memory_card(0, std::span<const u8>(image).first(100)));
 }
 
+void expansion_select_transactions() {
+  const auto image = Devices::format_memory_card(4, 0);
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    const u32 base = console == Console::GameCube ? exi : 0x0d006800;
+    for (unsigned slot = 0; slot < 2; ++slot) {
+      Devices devices(console);
+      devices.set_memory_card(slot, image);
+      const u32 channel = base + slot * 20;
+      const auto select = [&](u32 mask) { devices.write(channel, (mask << 7) | 5, 4); };
+      const auto send = [&](u32 value, unsigned count) {
+        devices.write(channel + 16, value, 4);
+        devices.write(channel + 12, 5 | ((count - 1) << 4), 4);
+      };
+      const auto receive = [&] {
+        devices.write(channel + 12, 1, 4);
+        return devices.read(channel + 16, 4);
+      };
+      select(1);
+      send(0xf2005000, 4);
+      send(0, 1);
+      send(0xaabbccdd, 4);
+      select(2);
+      CHECK(devices.card_image(slot)[0xa000] == 255);
+      CHECK(!devices.memory_card_dirty(slot));
+
+      select(0);
+      select(1);
+      send(0x83000000, 1);
+      select(2);
+      select(1);
+      CHECK(receive() == 0xc1000000);
+
+      select(0);
+      select(1);
+      send(0x83000000, 1);
+      select(3);
+      select(1);
+      CHECK(receive() == 0xc1000000);
+
+      select(0);
+      devices.set_memory_card(slot, image);
+      select(1);
+      send(0xf2005000, 4);
+      send(0, 1);
+      send(0xaabbccdd, 4);
+      select(3);
+      select(2);
+      CHECK(devices.card_image(slot)[0xa000] == 255);
+      CHECK(!devices.memory_card_dirty(slot));
+      // The single changed card-select line receives the entire positive select mask.
+      select(1);
+      send(0x83000000, 1);
+      CHECK(receive() == 0xc1000000);
+
+      select(0);
+      select(1);
+      send(0xf2005000, 4);
+      send(0, 1);
+      send(0xaabbccdd, 4);
+      select(0);
+      CHECK(devices.memory_card_dirty(slot));
+      CHECK(devices.card_image(slot)[0xa000] == 0xaa);
+      CHECK(devices.card_image(slot)[0xa003] == 0xdd);
+    }
+
+    Devices devices(console);
+    std::vector<u8> rom(0x200000);
+    for (std::size_t index = 0; index < rom.size(); ++index)
+      rom[index] = u8(index & 255);
+    devices.set_ipl(rom);
+    const auto select = [&](u32 mask) { devices.write(base, (mask << 7) | 5, 4); };
+    const auto receive = [&] {
+      devices.write(base + 12, 0x31, 4);
+      return devices.read(base + 16, 4);
+    };
+    select(2);
+    devices.write(base + 16, 0x00004000, 4);
+    devices.write(base + 12, 0x35, 4);
+    CHECK(receive() == 0x00010203);
+    select(1);
+    select(2);
+    CHECK(receive() == 0x04050607);
+    select(3);
+    select(2);
+    CHECK(receive() == 0x08090a0b);
+    select(0);
+    select(2);
+    CHECK(receive() == 0xffffffff);
+  }
+}
+
+void memory_card_dma_completions() {
+  const auto image = Devices::format_memory_card(4, 0);
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    const u32 base = console == Console::GameCube ? exi : 0x0d006800;
+    for (unsigned slot = 0; slot < 2; ++slot) {
+      Devices devices(console);
+      devices.set_memory_card(slot, image);
+      const u32 channel = base + slot * 20;
+      unsigned reads = 0;
+      auto expected = image;
+      devices.dma_write = [&](u32 address, std::span<const u8> data) {
+        CHECK(address == 0x100);
+        CHECK(std::equal(data.begin(), data.end(), expected.begin()));
+        ++reads;
+      };
+      devices.dma_read = [&](u32 address, std::span<u8> data) {
+        CHECK(address == 0x100);
+        for (std::size_t index = 0; index < data.size(); ++index)
+          data[index] = expected[index] = u8(index * 37 + 19);
+      };
+      devices.write(pi + 4, 16, 4);
+      devices.write(channel, 0x85, 4);
+      devices.write(channel + 16, 0x52000000, 4);
+      devices.write(channel + 12, 0x35, 4);
+      devices.write(channel + 16, 0, 4);
+      devices.write(channel + 12, 5, 4);
+      devices.write(channel + 4, 0x100, 4);
+      const auto dma = [&](u32 bytes) {
+        devices.write(channel + 8, bytes, 4);
+        devices.write(channel + 12, 3, 4);
+        CHECK((devices.read(channel + 12, 4) & 1) == 0);
+      };
+      const auto pending = [&] {
+        const bool complete = (devices.read(channel, 4) & 8) != 0;
+        CHECK(devices.external_interrupt_pending() == complete);
+        return complete;
+      };
+      const auto acknowledge = [&] {
+        devices.write(channel, 0x8d, 4);
+        CHECK(!pending());
+      };
+      const u64 ticks = devices.ticks_per_second() / 524288;
+      dma(8);
+      devices.advance(ticks);
+      dma(2);
+      CHECK(reads == 2);
+      devices.advance(2 * ticks - 1);
+      CHECK(!pending());
+      devices.advance(1);
+      CHECK(pending());
+      acknowledge();
+      devices.advance(5 * ticks - 1);
+      CHECK(!pending());
+      devices.advance(1);
+      CHECK(pending());
+      acknowledge();
+
+      // A slower write retains its callback while a later read finishes first.
+      const u64 write_ticks = devices.ticks_per_second() / 98432;
+      devices.write(channel + 8, 4, 4);
+      devices.write(channel + 12, 7, 4);
+      CHECK(devices.memory_card_dirty(slot));
+      CHECK(std::equal(expected.begin(), expected.end(), devices.card_image(slot).begin()));
+      devices.advance(ticks);
+      dma(2);
+      devices.advance(2 * ticks);
+      CHECK(pending());
+      acknowledge();
+      devices.advance(4 * write_ticks - 3 * ticks - 1);
+      CHECK(!pending());
+      devices.advance(1);
+      CHECK(pending());
+      acknowledge();
+
+      // Each zero-byte transfer still queues a completion for the next timing update.
+      dma(0);
+      CHECK(!pending());
+      devices.advance(0);
+      CHECK(pending());
+      acknowledge();
+
+      dma(4);
+      dma(4);
+      devices.advance(4 * ticks);
+      CHECK(pending());
+      acknowledge();
+      devices.advance(ticks);
+      CHECK(!pending());
+
+      // Replacing a card discards that device's outstanding completion callbacks.
+      dma(8);
+      devices.set_memory_card(slot, image);
+      devices.advance(8 * ticks);
+      CHECK(!pending());
+    }
+  }
+}
+
 void timed_interrupt_boundaries() {
   for (Console console : {Console::GameCube, Console::Wii}) {
     Devices devices(console);
@@ -948,5 +1137,7 @@ int main() {
     expansion_interface();
     ipl_font_slots();
     memory_cards();
+    expansion_select_transactions();
+    memory_card_dma_completions();
   });
 }

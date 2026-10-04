@@ -12,6 +12,8 @@ Accepted versions, distinct rejection outcomes and recovery messages appear on s
 
 This is a project-defined host interface. Its parser is `InputReplay::read`, `apply` and `update`; its device consumers are the existing Machine input dispatch, SI pad state and IOS Remote state. Their device behavioral reference mappings remain separate from this file-following interface.
 
+The runtime checks cached deadlines before entering replay processing. Deadlines track the next instruction and field event independently; exhausted streams remain inactive even at the largest 64-bit counter. The initial state and every accepted replacement are still installed before the next guest step. Reset restores both event streams, and simultaneously due events retain source-line order.
+
 The pure follower tests cover complete parsing, unchanged sources, same-size/same-time edits, distinct rejection reporting, restored-source recovery and retained future releases. Authored Machine tests on both console modes observe held buttons, axes, scheduled release and accepted replacements through real guest SI polling instructions. They compare every exposed CPU register, floating-register bit pattern, counter and trace observation at the replacement diagnostic boundary before the next ordinary instruction.
 
 The separate USB/HID guest test executes an authored PowerPC loop to submit and

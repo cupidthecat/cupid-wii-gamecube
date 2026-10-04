@@ -18,6 +18,12 @@ class InputReplay {
 public:
   explicit InputReplay(std::istream &input);
   explicit InputReplay(const std::filesystem::path &path);
+
+  bool needs_update(u64 instructions, u64 fields) const {
+    return !initialized_ || ((pending_ & 1) && instructions >= next_[0]) ||
+           ((pending_ & 2) && fields >= next_[1]);
+  }
+
   bool update(u64 instructions, u64 fields);
   const InputState &state() const;
   void reset();
@@ -35,9 +41,12 @@ private:
   };
 
   void read(std::istream &input);
+  void update_deadlines();
   static void apply(InputState &state, const Action &action);
   std::array<std::vector<Event>, 2> events_;
   std::array<std::size_t, 2> positions_{};
+  std::array<u64, 2> next_{};
+  unsigned pending_ = 0;
   InputState state_;
   bool initialized_ = false;
 };

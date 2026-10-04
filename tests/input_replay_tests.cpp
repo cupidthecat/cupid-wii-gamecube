@@ -4,6 +4,7 @@
 #include "test_support.hpp"
 #include <array>
 #include <fstream>
+#include <limits>
 #include <random>
 #include <sstream>
 #include <thread>
@@ -15,6 +16,48 @@ using namespace cupid;
 void invalid(const std::string &text) {
   std::istringstream input(text);
   CHECK_THROWS(platform::InputReplay{input});
+}
+
+void replay_deadlines() {
+  constexpr u64 maximum = std::numeric_limits<u64>::max();
+  std::istringstream no_events("");
+  platform::InputReplay empty(no_events);
+  CHECK(empty.needs_update(0, 0));
+  CHECK(empty.update(0, 0));
+  CHECK(!empty.needs_update(maximum, maximum));
+  CHECK(!empty.update(maximum, maximum));
+  empty.reset();
+  CHECK(empty.needs_update(maximum, maximum));
+  CHECK(empty.update(maximum, maximum));
+  CHECK(!empty.needs_update(0, 0));
+
+  std::istringstream events("field 7 pad0.stick-x=20\n"
+                            "instruction 10 pad0.stick-x=200\n"
+                            "field 7 pad0.stick-x=99\n"
+                            "instruction 18446744073709551615 pad0.a=1\n"
+                            "field 18446744073709551615 pad0.a=0 pad0.b=1\n");
+  platform::InputReplay replay(events);
+  CHECK(replay.update(0, 0));
+  CHECK(!replay.needs_update(9, 6));
+  CHECK(!replay.update(9, 6));
+  CHECK(replay.needs_update(10, 7));
+  CHECK(replay.update(10, 7));
+  CHECK(replay.state().pads[0].stick_x == 99);
+  CHECK(!replay.needs_update(0, 0));
+  CHECK(!replay.needs_update(maximum - 1, maximum - 1));
+  CHECK(replay.needs_update(maximum, maximum - 1));
+  CHECK(replay.update(maximum, maximum - 1));
+  CHECK(replay.state().pads[0].buttons == 0x100);
+  CHECK(!replay.needs_update(maximum, maximum - 1));
+  CHECK(replay.needs_update(0, maximum));
+  CHECK(replay.update(0, maximum));
+  CHECK(replay.state().pads[0].buttons == 0x200);
+  CHECK(!replay.needs_update(maximum, maximum));
+  CHECK(!replay.update(maximum, maximum));
+  replay.reset();
+  CHECK(replay.needs_update(10, 7));
+  CHECK(replay.update(10, 7));
+  CHECK(replay.state().pads[0].stick_x == 99 && replay.state().pads[0].buttons == 0);
 }
 
 std::vector<u8> polling_program() {
@@ -193,6 +236,7 @@ void follow_guest_input(Console console) {
 
 int main() {
   return run_tests([] {
+    replay_deadlines();
     std::istringstream input(
         "# Both counters are absolute from the new machine.\n"
         "instruction 0 pad0.a=1 pad1.connected=1 pad1.stick-y=255 remote0.ir0-x=480 "

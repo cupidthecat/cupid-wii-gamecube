@@ -45,6 +45,17 @@ void InputReplay::reset() {
   state_.remotes[0].connected = true;
   state_.remotes[0].nunchuk.attached = true;
   initialized_ = false;
+  update_deadlines();
+}
+
+void InputReplay::update_deadlines() {
+  pending_ = 0;
+  for (unsigned kind = 0; kind < 2; ++kind) {
+    if (positions_[kind] < events_[kind].size()) {
+      next_[kind] = events_[kind][positions_[kind]].when;
+      pending_ |= 1u << kind;
+    }
+  }
 }
 
 void InputReplay::read(std::istream &input) {
@@ -198,6 +209,8 @@ void InputReplay::apply(InputState &state, const Action &action) {
 }
 
 bool InputReplay::update(u64 instructions, u64 fields) {
+  if (!needs_update(instructions, fields))
+    return false;
   const std::array<u64, 2> counters{instructions, fields};
   bool changed = !initialized_;
   initialized_ = true;
@@ -217,6 +230,7 @@ bool InputReplay::update(u64 instructions, u64 fields) {
       apply(state_, action);
     changed = true;
   }
+  update_deadlines();
   return changed;
 }
 

@@ -284,7 +284,8 @@ void Machine::step() {
         ios_.set_remote(0, output_->remote_state());
     }
   }
-  if (input_replay_ && input_replay_->update(state.instructions, devices_.field_count())) {
+  if (input_replay_ && input_replay_->needs_update(state.instructions, devices_.field_count()) &&
+      input_replay_->update(state.instructions, devices_.field_count())) {
     const auto &input = input_replay_->state();
     for (unsigned port = 0; port < input.pads.size(); ++port) {
       devices_.set_pad(port, input.pads[port]);

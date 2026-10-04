@@ -50,6 +50,9 @@ private:
 
   std::span<const u32> bp_, xf_;
   Plane depth_{};
+  std::array<u32, 7> scissor_state_{};
+  std::vector<Scissor> scissor_rectangles_;
+  bool scissor_state_valid_ = false;
   void triangle(TransformedVertex a, TransformedVertex b, TransformedVertex c);
   void line(TransformedVertex a, TransformedVertex b);
   void point(const TransformedVertex &vertex);

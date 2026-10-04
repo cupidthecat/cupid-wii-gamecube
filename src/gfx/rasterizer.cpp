@@ -78,6 +78,13 @@ void Rasterizer::draw(u8 opcode, std::span<const std::optional<TransformedVertex
       throw VertexError("Non-finite or out-of-range XF viewport");
   if ((xf_[0x103f] & 15) > 8)
     throw VertexError("XF texture generator count exceeds eight");
+  const std::array<u32, 7> scissor_state{bp_[0x20],   bp_[0x21],   bp_[0x59],  xf_[0x101a],
+                                         xf_[0x101b], xf_[0x101d], xf_[0x101e]};
+  if (!scissor_state_valid_ || scissor_state != scissor_state_) {
+    scissor_rectangles_ = scissors();
+    scissor_state_ = scissor_state;
+    scissor_state_valid_ = true;
+  }
   std::vector<TransformedVertex> vertices;
   vertices.reserve(input.size());
   for (const auto &vertex : input)
@@ -251,10 +258,14 @@ void Rasterizer::triangle(TransformedVertex a, TransformedVertex b, TransformedV
                  int((bp_[0x59] >> 10) & 511) * 2);
     return;
   }
-  std::vector<TransformedVertex> polygon{a, b, c};
   const bool bypass = (xf_[0x1005] & 1) && a.clip_position[3] >= 0 && b.clip_position[3] >= 0 &&
                       c.clip_position[3] >= 0;
   const unsigned mask = a_mask | b_mask | c_mask;
+  if (!mask || bypass) {
+    rasterize(project(a), project(b), project(c));
+    return;
+  }
+  std::vector<TransformedVertex> polygon{a, b, c};
   if (!bypass) {
     for (unsigned plane = 0; plane < 6; ++plane) {
       if (!(mask & (1u << plane)))
@@ -365,7 +376,7 @@ void Rasterizer::rasterize(const ScreenVertex &a, const ScreenVertex &b, const S
   const std::array<float, 3> inverse_w{1.0f / a.vertex.clip_position[3],
                                        1.0f / b.vertex.clip_position[3],
                                        1.0f / c.vertex.clip_position[3]};
-  for (const auto &scissor : scissors()) {
+  for (const auto &scissor : scissor_rectangles_) {
     update_depth(a, b, c, scissor.x_offset, scissor.y_offset);
     std::array<int, 3> x{}, y{};
     for (unsigned i = 0; i < 3; ++i) {

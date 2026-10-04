@@ -167,6 +167,75 @@ void scissor_tests() {
   CHECK(f.samples.contains(0) && f.samples.contains(1923));
 }
 
+void scissor_state_change_tests() {
+  struct Work {
+    std::array<int, 6> rectangle_and_origin;
+    std::array<s64, 9> edges;
+    bool operator==(const Work &) const = default;
+  };
+
+  const auto collect = [](std::vector<Work> &commands) {
+    return [&commands](const RasterWork &work) {
+      Work result{
+          {work.left, work.top, work.right, work.bottom, work.depth.x_origin, work.depth.y_origin},
+          {}};
+      for (unsigned i = 0; i < 3; ++i) {
+        result.edges[i * 3] = work.edges[i].dx;
+        result.edges[i * 3 + 1] = work.edges[i].dy;
+        result.edges[i * 3 + 2] = work.edges[i].constant;
+      }
+      commands.push_back(result);
+      return true;
+    };
+  };
+  Fixture retained;
+  retained.bp[0x20] = 0;
+  retained.bp[0x21] = (2047 << 12) | 2047;
+  retained.xf[0x1005] = 1;
+  retained.put(0x101a, 1024);
+  retained.put(0x101b, 1024);
+  std::vector<Work> commands;
+  retained.rasterizer.hardware = collect(commands);
+  // Cover every wrapped region so viewport changes can alter the submission order.
+  const std::array<std::optional<TransformedVertex>, 3> vertices{
+      retained.vertex(-248, -248), retained.vertex(520, -248), retained.vertex(-248, 520)};
+  const auto compare = [&] {
+    commands.clear();
+    retained.rasterizer.draw(0x90, vertices);
+    Fixture fresh;
+    fresh.bp = retained.bp;
+    fresh.xf = retained.xf;
+    std::vector<Work> expected;
+    fresh.rasterizer.hardware = collect(expected);
+    fresh.rasterizer.draw(0x90, vertices);
+    CHECK(commands == expected);
+  };
+  compare();
+  compare();
+  retained.bp[0x20] = (100 << 12) | 100;
+  compare();
+  retained.bp[0x21] = (500 << 12) | 500;
+  compare();
+  retained.bp[0x21] = (2047 << 12) | 2047;
+  compare();
+  retained.bp[0x59] = 10 | (10 << 10);
+  compare();
+  retained.put(0x101a, 512);
+  compare();
+  retained.put(0x101b, 512);
+  compare();
+  retained.put(0x101d, 1374);
+  compare();
+  retained.put(0x101e, 1374);
+  compare();
+  retained.bp[0x20] = (1600 << 12) | 1600;
+  compare();
+  CHECK(commands.empty());
+  retained.bp[0x20] = 0;
+  compare();
+  CHECK(!commands.empty());
+}
+
 void clipping_and_depth_tests() {
   Fixture f;
   f.draw({f.vertex(-8, 0), f.vertex(4, 0), f.vertex(4, 4)});
@@ -257,6 +326,7 @@ int main() {
     assembly_tests();
     interpolation_tests();
     scissor_tests();
+    scissor_state_change_tests();
     clipping_and_depth_tests();
     line_and_point_tests();
   });

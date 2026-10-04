@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <bit>
 #include <stdexcept>
-#include <vector>
+#include <utility>
 #if defined(_M_X64) || defined(__x86_64__)
 #include <wmmintrin.h>
 #if defined(_MSC_VER)
@@ -16,46 +16,70 @@
 #endif
 
 namespace cupid::disc::detail {
+namespace {
+using ShaState = std::array<u32, 5>;
+
+template <std::size_t Round> void sha_round(std::array<u32, 16> &words, ShaState &work) {
+  constexpr std::size_t slot = Round % 16;
+  if constexpr (Round >= 16)
+    words[slot] = std::rotl(words[(Round - 3) % 16] ^ words[(Round - 8) % 16] ^
+                                words[(Round - 14) % 16] ^ words[slot],
+                            1);
+  u32 function, constant;
+  if constexpr (Round < 20) {
+    function = work[3] ^ (work[1] & (work[2] ^ work[3]));
+    constant = 0x5a827999;
+  } else if constexpr (Round < 40) {
+    function = work[1] ^ work[2] ^ work[3];
+    constant = 0x6ed9eba1;
+  } else if constexpr (Round < 60) {
+    function = (work[1] & work[2]) | (work[3] & (work[1] | work[2]));
+    constant = 0x8f1bbcdc;
+  } else {
+    function = work[1] ^ work[2] ^ work[3];
+    constant = 0xca62c1d6;
+  }
+  const u32 next = std::rotl(work[0], 5) + function + work[4] + constant + words[slot];
+  work = {next, work[0], std::rotl(work[1], 30), work[2], work[3]};
+}
+
+template <std::size_t... Rounds>
+void sha_rounds(std::array<u32, 16> &words, ShaState &work, std::index_sequence<Rounds...>) {
+  (sha_round<Rounds>(words, work), ...);
+}
+
+void sha_block(std::span<const u8, 64> bytes, ShaState &state) {
+  std::array<u32, 16> words{};
+  for (std::size_t i = 0; i < words.size(); ++i) {
+    const auto offset = i * 4;
+    words[i] = (static_cast<u32>(bytes[offset]) << 24) |
+               (static_cast<u32>(bytes[offset + 1]) << 16) |
+               (static_cast<u32>(bytes[offset + 2]) << 8) | bytes[offset + 3];
+  }
+  auto work = state;
+  sha_rounds(words, work, std::make_index_sequence<80>{});
+  for (std::size_t i = 0; i < state.size(); ++i)
+    state[i] += work[i];
+}
+} // namespace
+
 Digest sha1(std::span<const u8> bytes) {
   const u64 bit_count = static_cast<u64>(bytes.size()) * 8;
-  std::vector<u8> padded(bytes.begin(), bytes.end());
-  padded.push_back(0x80);
-  while (padded.size() % 64 != 56)
-    padded.push_back(0);
-  for (int shift = 56; shift >= 0; shift -= 8)
-    padded.push_back(static_cast<u8>(bit_count >> shift));
-  std::array<u32, 5> state{0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0};
-  for (std::size_t start = 0; start < padded.size(); start += 64) {
-    std::array<u32, 80> schedule{};
-    for (std::size_t i = 0; i < 16; ++i) {
-      for (std::size_t j = 0; j < 4; ++j)
-        schedule[i] = (schedule[i] << 8) | padded[start + i * 4 + j];
-    }
-    for (std::size_t i = 16; i < schedule.size(); ++i)
-      schedule[i] =
-          std::rotl(schedule[i - 3] ^ schedule[i - 8] ^ schedule[i - 14] ^ schedule[i - 16], 1);
-    auto work = state;
-    for (std::size_t i = 0; i < schedule.size(); ++i) {
-      u32 f, constant;
-      if (i < 20) {
-        f = (work[1] & work[2]) | (~work[1] & work[3]);
-        constant = 0x5a827999;
-      } else if (i < 40) {
-        f = work[1] ^ work[2] ^ work[3];
-        constant = 0x6ed9eba1;
-      } else if (i < 60) {
-        f = (work[1] & work[2]) | (work[1] & work[3]) | (work[2] & work[3]);
-        constant = 0x8f1bbcdc;
-      } else {
-        f = work[1] ^ work[2] ^ work[3];
-        constant = 0xca62c1d6;
-      }
-      const u32 next = std::rotl(work[0], 5) + f + work[4] + constant + schedule[i];
-      work = {next, work[0], std::rotl(work[1], 30), work[2], work[3]};
-    }
-    for (std::size_t i = 0; i < state.size(); ++i)
-      state[i] += work[i];
+  ShaState state{0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0};
+  while (bytes.size() >= 64) {
+    sha_block(bytes.first<64>(), state);
+    bytes = bytes.subspan(64);
   }
+  // Only the final one or two blocks need padding or a copy of the input.
+  std::array<u8, 128> tail{};
+  std::copy(bytes.begin(), bytes.end(), tail.begin());
+  tail[bytes.size()] = 0x80;
+  const std::size_t padded_size = bytes.size() < 56 ? 64 : 128;
+  for (std::size_t i = 0; i < 8; ++i)
+    tail[padded_size - 1 - i] = static_cast<u8>(bit_count >> (i * 8));
+  sha_block(std::span<const u8>(tail).first<64>(), state);
+  if (padded_size == 128)
+    sha_block(std::span<const u8>(tail).subspan<64, 64>(), state);
   Digest result{};
   for (std::size_t i = 0; i < result.size(); ++i)
     result[i] = static_cast<u8>(state[i / 4] >> ((3 - i % 4) * 8));

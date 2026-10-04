@@ -14,6 +14,7 @@ parsing, bounds checks, chunk decoder, SHA-1, AES-CBC, and cache code.
 | Wii directories and sector reads | `Source/Core/DiscIO/VolumeWii.cpp`: constructor, `Read` |
 | Wii hash hierarchy and encryption | `Source/Core/DiscIO/VolumeWii.cpp`: `HashGroup`, `EncryptGroup`; `Source/Core/DiscIO/WiiEncryptionCache.cpp`: `EncryptGroup`, `EncryptGroups` |
 | AES-CBC and runtime instruction selection | `Source/Core/Common/Crypto/AES.cpp`: `ContextGeneric::Crypt`, `ContextAESNI::Crypt`, `CreateContext` |
+| SHA-1 blocks, padding, and digest | `Source/Core/Common/Crypto/SHA1.cpp`: `BlockContext::Update`, `BlockContext::Finish`, `ContextMbed`, `CalculateDigest`; `Source/Core/DiscIO/VolumeWii.cpp`: `HashGroup` |
 | IOS metadata field | `Source/Core/Core/IOS/ES/Formats.h`: `TMDHeader`; `Formats.cpp`: `TMDReader::GetIOSId` |
 | Ticket, TMD, certificate chain, and contents | `Source/Core/DiscIO/VolumeWii.cpp`: lazy metadata readers; `Source/Core/Core/IOS/ES/Formats.cpp`: `TicketReader::IsValid`, `GetTitleId`, `TMDReader::IsValid`, `GetContents` |
 | File system structure, paths, and lookup | `Source/Core/DiscIO/FileSystemGCWii.cpp`: `FileInfoGCWii` accessors and `IsValid`, `FileSystemGCWii` constructor and `FindFileInfo`; `Source/Core/Common/StringUtil.cpp`: `SHIFTJISToUTF8` |
@@ -178,3 +179,53 @@ The expanded public disc suite passed both builds and Clang sanitizers at `-O2`
 and Debug `-O0`; the direct Debug run took 81.132 seconds. Fallback checks forced
 feature dispatch off on the same AES-capable host, rather than using a physical
 host without AES instructions.
+
+Portable SHA-1 now hashes full 64-byte blocks directly, retains a 16-word rolling
+schedule, and selects its 80 rounds at compile time. Only the final one or two
+blocks use a 128-byte stack buffer. It no longer allocates and copies a padded
+version of the complete input. The change adds no CPU instruction requirement or
+runtime dependency.
+
+Public regressions check the two-block and million-byte vectors in
+[FIPS PUB 180-1, Appendices B and C](https://nvlpubs.nist.gov/nistpubs/Legacy/FIPS/fipspub180-1.pdf).
+Independent CPython/OpenSSL digests cover padding and full-block boundaries,
+620-byte hash tables, 1,024-byte hash inputs, and 32 KiB sectors at eight input
+alignments. Each check also verifies that the input remains unchanged. A private
+deterministic corpus compared 17,408 messages and 65,744,918 input bytes with the
+previous implementation and installed Mbed TLS on Linux. GCC 13.3, Clang 18.1.3,
+Clang sanitizers, and MSVC 19.51 returned the same aggregate digest
+`ddafc0f59bd7469fa348262d755a9afd2a2cb34d`. The MSVC corpus compared the previous
+implementation; its public suite separately checked the literal vectors.
+
+Both isolated source snapshots matched the complete pinned-reader corpus above,
+including all generated codecs, malformed retry and error-order checks, both
+supplied images, FST entries, sampled files, and Wii metadata. The expanded public
+disc suite passed both GCC builds, MSVC, and Clang AddressSanitizer and
+UndefinedBehaviorSanitizer at `-O2` and Debug `-O0`. The direct Debug sanitizer run
+took 182.442 seconds with leak detection enabled.
+
+Before timing the final components, isolated headless runs compared one billion
+step attempts per build and game, using native CPU execution, software graphics,
+audio disabled, and independent copies of the same user seeds. All 52 final state
+fields, final frame bytes, and persisted user file bytes matched. The supplied
+GameCube image ended at 72 VI fields and the Wii image at 76.
+
+Six uninstrumented processes per workload ran in before/current/current/before/
+before/current order. The 248,000-message SHA workload returned the same 4,960,000
+digest bytes with SHA-1 `920550a9a5adbc162c073be8a7298b192f1fb4a4`. Its median fell
+from 1.552920 to 0.616891 seconds on GCC, a 60.3% reduction. The same 120 physical
+Wii reads and 7,864,320
+bytes used in the earlier measurements retained SHA-1
+`e97c58dda718365151d8e69ac2ec5cdc3f2236c1`. Their GCC median fell from
+2.969370 to 2.079090 seconds, a 30.0% reduction. MSVC medians fell from
+1.024680 to 0.783546 seconds for SHA (23.5%) and from 1.567120 to 1.527260 seconds
+for physical reads (2.5%). Other builds and
+tests shared the host. Linux used installed compression libraries; MSVC used the
+pinned compression builds. These component timings establish no gameplay speedup.
+
+A separate observer matched stock results for both images at three billion step
+attempts: all 52 state fields, final frame bytes, and persisted user bytes. Guest
+disc API time totaled 55.6 ms for 320 GameCube VI fields and 216.9 ms for 241 Wii VI
+fields. Repeated chunk misses were four and three respectively. These boot/title
+prefixes do not identify the one-entry chunk cache as a gameplay bottleneck. The
+GameCube replay's first button press occurs at field 1,000, beyond those runs.

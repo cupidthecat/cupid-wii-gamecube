@@ -1,0 +1,333 @@
+cmake_minimum_required(VERSION 3.28)
+project(cupid-wii-gamecube VERSION 0.1.0 LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+set(CMAKE_VS_GLOBALS "VcpkgEnabled=false;VcpkgApplocalDeps=false")
+
+option(CUPID_HEADLESS_ONLY "Build without video, audio and host-controller output" OFF)
+option(CUPID_USE_SYSTEM_DEPS "Use installed dependency libraries instead of pinned sources" OFF)
+option(CUPID_BUILD_TESTS "Build public synthetic tests" ON)
+option(CUPID_ENABLE_SANITIZERS "Enable address and undefined-behavior sanitizers" OFF)
+option(CUPID_WARNINGS_AS_ERRORS "Treat project compiler warnings as errors" OFF)
+option(CUPID_ENABLE_LOCAL_INTEGRATION "Run tests requiring locally supplied private assets" OFF)
+set(CUPID_LOCAL_GAME "" CACHE FILEPATH "Local disc image for opt-in bounded integration")
+set(CUPID_BEHAVIOR_REFERENCE_ROOT "" CACHE PATH "External pinned behavioral checkout for opt-in differential checks")
+set(CUPID_COMMIT "" CACHE STRING "Source revision recorded in the executable")
+if(CUPID_COMMIT STREQUAL "")
+  find_package(Git QUIET)
+  if(Git_FOUND)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse --short=12 HEAD
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      OUTPUT_VARIABLE CUPID_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+  endif()
+  if(CUPID_COMMIT STREQUAL "")
+    set(CUPID_COMMIT "unknown")
+  endif()
+endif()
+configure_file(cmake/build_info.hpp.in generated/cupid/build_info.hpp @ONLY)
+include(cmake/Dependencies.cmake)
+
+add_library(cupid_options INTERFACE)
+target_compile_features(cupid_options INTERFACE cxx_std_20)
+target_compile_definitions(cupid_options INTERFACE
+  CUPID_VERSION="${PROJECT_VERSION}" CUPID_COMMIT="${CUPID_COMMIT}")
+if(MSVC)
+  target_compile_options(cupid_options INTERFACE /W4 /permissive- /Zc:__cplusplus /Zc:preprocessor /utf-8 /fp:strict)
+  target_compile_definitions(cupid_options INTERFACE NOMINMAX WIN32_LEAN_AND_MEAN)
+  if(CUPID_WARNINGS_AS_ERRORS)
+    target_compile_options(cupid_options INTERFACE /WX)
+  endif()
+else()
+  target_compile_options(cupid_options INTERFACE -Wall -Wextra -Wpedantic -frounding-math -ffp-contract=off)
+  if(CUPID_WARNINGS_AS_ERRORS)
+    target_compile_options(cupid_options INTERFACE -Werror)
+  endif()
+endif()
+if(CUPID_ENABLE_SANITIZERS)
+  if(MSVC OR NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    message(FATAL_ERROR "Address and undefined-behavior sanitizers require GCC or Clang")
+  endif()
+  target_compile_options(cupid_options INTERFACE -fsanitize=address,undefined -fno-omit-frame-pointer)
+  target_link_options(cupid_options INTERFACE -fsanitize=address,undefined)
+endif()
+
+set(cupid_sources
+  src/core/memory.cpp
+  src/cpu/interpreter.cpp
+  src/cpu/floating.cpp
+  src/cpu/estimates.cpp
+  src/cpu/fused.cpp
+  src/cpu/cache.cpp
+  src/disc/image.cpp
+  src/disc/crypto.cpp
+  src/disc/filesystem.cpp
+  src/hw/devices.cpp
+  src/hw/remote.cpp
+  src/hw/sdp.cpp
+  src/ios/ipc.cpp
+  src/ios/memory_values.cpp
+  src/ios/network.cpp
+  src/gfx/command_processor.cpp
+  src/gfx/vertex.cpp
+  src/gfx/rasterizer.cpp
+  src/gfx/texture.cpp
+  src/gfx/fragment.cpp
+  src/gfx/efb_copy.cpp
+  src/gfx/xfb_copy.cpp
+  src/runtime/boot.cpp
+  src/runtime/elf.cpp
+  src/runtime/fonts.cpp
+  src/dsp/engine.cpp
+  src/dsp/audio.cpp
+  src/runtime/machine.cpp
+  src/platform/output.cpp
+  src/platform/input_replay.cpp)
+add_library(cupid_core STATIC ${cupid_sources})
+target_include_directories(cupid_core PUBLIC include "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_link_libraries(cupid_core PUBLIC cupid_options cupid_dependencies)
+add_executable(cupid-wii-gamecube src/main.cpp)
+target_link_libraries(cupid-wii-gamecube PRIVATE cupid_core)
+include(cmake/DeveloperChecks.cmake)
+
+if(CUPID_BUILD_TESTS)
+  enable_testing()
+  foreach(suite IN ITEMS cpu core disc device remote sdp sdp_transport runtime elf fonts dsp ios network gfx vertex texture fragment rasterizer efb_copy xfb_copy efb_access guest_video input_replay audio_stats)
+    add_executable(cupid_${suite}_tests tests/${suite}_tests.cpp)
+    target_include_directories(cupid_${suite}_tests PRIVATE tests)
+    target_link_libraries(cupid_${suite}_tests PRIVATE cupid_core)
+    add_test(NAME ${suite} COMMAND cupid_${suite}_tests)
+    set_tests_properties(${suite} PROPERTIES TIMEOUT 60 LABELS "public;unit")
+  endforeach()
+  set_tests_properties(guest_video PROPERTIES TIMEOUT 180 LABELS "public;guest;integration")
+  set_tests_properties(input_replay PROPERTIES LABELS "public;guest;input")
+  set_tests_properties(sdp_transport PROPERTIES LABELS "public;integration;usb")
+  set_tests_properties(efb_access PROPERTIES LABELS "public;guest;integration;graphics")
+  foreach(argument IN ITEMS help version self-test)
+    add_test(NAME cli_${argument} COMMAND cupid-wii-gamecube --${argument})
+    set_tests_properties(cli_${argument} PROPERTIES TIMEOUT 30 LABELS "public;cli")
+  endforeach()
+  if(NOT CUPID_HEADLESS_ONLY)
+    add_executable(cupid_output_tests tests/output_tests.cpp)
+    target_include_directories(cupid_output_tests PRIVATE tests)
+    target_link_libraries(cupid_output_tests PRIVATE cupid_core)
+    add_test(NAME output COMMAND cupid_output_tests)
+    set_tests_properties(output PROPERTIES TIMEOUT 30 LABELS "public;backend"
+      ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
+    add_executable(cupid_input_tests tests/input_tests.cpp)
+    target_include_directories(cupid_input_tests PRIVATE tests)
+    target_link_libraries(cupid_input_tests PRIVATE cupid_core)
+    add_test(NAME input COMMAND cupid_input_tests)
+    set_tests_properties(input PROPERTIES TIMEOUT 60 LABELS "public;backend;input"
+      ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
+  else()
+    add_test(NAME output COMMAND "${CMAKE_COMMAND}" -E echo
+      "SKIP: host video/audio backend is excluded from this headless build")
+    set_tests_properties(output PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "public;backend")
+    add_test(NAME input COMMAND "${CMAKE_COMMAND}" -E echo
+      "SKIP: host input backend is excluded from this headless build")
+    set_tests_properties(input PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "public;backend;input")
+  endif()
+  if(CUPID_BEHAVIOR_REFERENCE_ROOT)
+    set(cupid_float_reference "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Common/FloatUtils.cpp")
+    if(NOT EXISTS "${cupid_float_reference}")
+      message(FATAL_ERROR "The behavioral checkout must contain Source/Core/Common/FloatUtils.cpp")
+    endif()
+    add_executable(cupid_cpu_reference_checks tests/cpu_reference_checks.cpp "${cupid_float_reference}")
+    target_include_directories(cupid_cpu_reference_checks SYSTEM PRIVATE
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core")
+    target_link_libraries(cupid_cpu_reference_checks PRIVATE cupid_core)
+    add_test(NAME cpu_reference_checks COMMAND cupid_cpu_reference_checks)
+    set_tests_properties(cpu_reference_checks PROPERTIES TIMEOUT 60 LABELS "private;differential")
+    add_executable(cupid_cpu_fused_reference_checks tests/cpu_fused_reference_checks.cpp)
+    set_target_properties(cupid_cpu_fused_reference_checks PROPERTIES CXX_STANDARD 23)
+    set(FMT_TEST OFF CACHE BOOL "" FORCE)
+    set(FMT_DOC OFF CACHE BOOL "" FORCE)
+    set(FMT_INSTALL OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(fmt SYSTEM EXCLUDE_FROM_ALL
+      URL https://github.com/fmtlib/fmt/archive/refs/tags/9.1.0.tar.gz
+      URL_HASH SHA256=5dea48d1fcddc3ec571ce2058e13910a0d4a6bab4cc09a809d8b1dd1c88ae6f2)
+    FetchContent_MakeAvailable(fmt)
+    target_include_directories(cupid_cpu_fused_reference_checks SYSTEM PRIVATE
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+      target_compile_definitions(cupid_cpu_fused_reference_checks PRIVATE _M_X86_64)
+    endif()
+    target_link_libraries(cupid_cpu_fused_reference_checks PRIVATE cupid_core fmt::fmt-header-only)
+    if(WIN32)
+      target_compile_definitions(cupid_cpu_fused_reference_checks PRIVATE UNICODE _UNICODE)
+    endif()
+    add_test(NAME cpu_fused_reference_checks COMMAND cupid_cpu_fused_reference_checks)
+    set_tests_properties(cpu_fused_reference_checks PROPERTIES TIMEOUT 60 LABELS "private;differential")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+      set(cupid_ni_reference "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Common/x64FPURoundMode.cpp")
+      if(NOT EXISTS "${cupid_ni_reference}")
+        message(FATAL_ERROR "The behavioral checkout must contain Source/Core/Common/x64FPURoundMode.cpp")
+      endif()
+      add_executable(cupid_cpu_ni_reference_checks tests/cpu_ni_reference_checks.cpp "${cupid_ni_reference}")
+      set_target_properties(cupid_cpu_ni_reference_checks PROPERTIES CXX_STANDARD 23)
+      target_include_directories(cupid_cpu_ni_reference_checks SYSTEM PRIVATE
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core")
+      target_compile_definitions(cupid_cpu_ni_reference_checks PRIVATE _M_X86_64)
+      if(WIN32)
+        target_compile_definitions(cupid_cpu_ni_reference_checks PRIVATE UNICODE _UNICODE)
+      endif()
+      target_link_libraries(cupid_cpu_ni_reference_checks PRIVATE cupid_core fmt::fmt-header-only)
+      add_test(NAME cpu_ni_reference_checks COMMAND cupid_cpu_ni_reference_checks)
+      set_tests_properties(cpu_ni_reference_checks PROPERTIES TIMEOUT 120 LABELS "private;differential")
+    else()
+      add_test(NAME cpu_ni_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
+        "SKIP: optional NI arithmetic comparisons require an x86_64 SIMD behavioral target")
+      set_tests_properties(cpu_ni_reference_checks PROPERTIES
+        SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;differential")
+    endif()
+    set(cupid_vertex_reference
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/VideoBackends/Software/TransformUnit.cpp")
+    if(NOT EXISTS "${cupid_vertex_reference}")
+      message(FATAL_ERROR "The behavioral checkout must contain Source/Core/VideoBackends/Software/TransformUnit.cpp")
+    endif()
+    add_executable(cupid_vertex_reference_checks tests/vertex_reference_checks.cpp "${cupid_vertex_reference}")
+    # Keep diagnostics from the unmodified comparison source visible without
+    # applying the product's warning-as-error policy to that external file.
+    set_source_files_properties("${cupid_vertex_reference}" PROPERTIES
+      COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->;$<$<CXX_COMPILER_ID:GNU>:-O1>")
+    set_target_properties(cupid_vertex_reference_checks PROPERTIES CXX_STANDARD 23)
+    target_include_directories(cupid_vertex_reference_checks SYSTEM PRIVATE
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core")
+    target_link_libraries(cupid_vertex_reference_checks PRIVATE cupid_core fmt::fmt)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+      target_compile_definitions(cupid_vertex_reference_checks PRIVATE _M_X86_64)
+    endif()
+    if(WIN32)
+      target_compile_definitions(cupid_vertex_reference_checks PRIVATE UNICODE _UNICODE)
+    endif()
+    add_test(NAME vertex_reference_checks COMMAND cupid_vertex_reference_checks)
+    set_tests_properties(vertex_reference_checks PROPERTIES TIMEOUT 60 LABELS "private;differential")
+    set(cupid_rasterizer_references
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/VideoBackends/Software/Rasterizer.cpp"
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/VideoBackends/Software/Clipper.cpp"
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/VideoCommon/BPFunctions.cpp")
+    set(cupid_texture_reference
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/VideoCommon/TextureDecoder_Common.cpp"
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/VideoBackends/Software/TextureSampler.cpp")
+    set(cupid_fragment_reference
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/VideoBackends/Software/Tev.cpp"
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/VideoCommon/BPMemory.cpp")
+    set(cupid_sdp_reference
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/IOS/USB/Bluetooth/WiimoteHIDAttr.cpp")
+    set(cupid_efb_copy_reference
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/VideoBackends/Software/TextureEncoder.cpp")
+    set(cupid_xfb_copy_reference
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/VideoBackends/Software/SWEfbInterface.cpp")
+    foreach(reference IN LISTS cupid_rasterizer_references cupid_texture_reference cupid_fragment_reference cupid_sdp_reference cupid_efb_copy_reference cupid_xfb_copy_reference)
+      if(NOT EXISTS "${reference}")
+        message(FATAL_ERROR "Required behavioral target file is absent: ${reference}")
+      endif()
+    endforeach()
+    add_executable(cupid_rasterizer_reference_checks tests/rasterizer_reference_checks.cpp
+      ${cupid_rasterizer_references})
+    if(NOT EXISTS "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Externals/picojson/picojson.h")
+      message(FATAL_ERROR "The optional rasterizer target requires its genuine picojson dependency")
+    endif()
+    target_include_directories(cupid_rasterizer_reference_checks SYSTEM PRIVATE
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Externals/picojson")
+    add_executable(cupid_texture_reference_checks tests/texture_reference_checks.cpp
+      ${cupid_texture_reference})
+    add_executable(cupid_fragment_reference_checks tests/fragment_reference_checks.cpp
+      ${cupid_fragment_reference})
+    add_executable(cupid_sdp_reference_checks tests/sdp_reference_checks.cpp
+      "${cupid_sdp_reference}")
+    add_executable(cupid_efb_copy_reference_checks tests/efb_copy_reference_checks.cpp
+      "${cupid_efb_copy_reference}")
+    add_executable(cupid_xfb_copy_reference_checks tests/xfb_copy_reference_checks.cpp
+      "${cupid_xfb_copy_reference}")
+    set_source_files_properties(${cupid_rasterizer_references} ${cupid_texture_reference} ${cupid_fragment_reference} "${cupid_sdp_reference}" "${cupid_efb_copy_reference}" "${cupid_xfb_copy_reference}"
+      PROPERTIES COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->;$<$<CXX_COMPILER_ID:GNU>:-O1>")
+    set_property(SOURCE "${cupid_efb_copy_reference}" APPEND PROPERTY COMPILE_OPTIONS
+      "$<$<CXX_COMPILER_ID:GNU>:-Wno-error=unused-parameter>")
+    set_property(SOURCE "${cupid_xfb_copy_reference}" APPEND PROPERTY COMPILE_OPTIONS
+      "$<$<CXX_COMPILER_ID:GNU>:-Wno-error=unused-parameter>")
+    foreach(comparison IN ITEMS rasterizer texture fragment sdp efb_copy xfb_copy)
+      set(target cupid_${comparison}_reference_checks)
+      set_target_properties(${target} PROPERTIES CXX_STANDARD 23)
+      target_include_directories(${target} SYSTEM PRIVATE
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core")
+      target_link_libraries(${target} PRIVATE cupid_core fmt::fmt)
+      if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+        target_compile_definitions(${target} PRIVATE _M_X86_64)
+      endif()
+      if(WIN32)
+        target_compile_definitions(${target} PRIVATE UNICODE _UNICODE)
+      endif()
+      if(MSVC)
+        target_compile_options(${target} PRIVATE /Gy /Gw)
+        target_link_options(${target} PRIVATE /OPT:REF)
+      else()
+        target_compile_options(${target} PRIVATE -ffunction-sections -fdata-sections)
+        target_link_options(${target} PRIVATE -Wl,--gc-sections)
+      endif()
+      add_test(NAME ${comparison}_reference_checks COMMAND ${target})
+      set_tests_properties(${comparison}_reference_checks PROPERTIES TIMEOUT 60 LABELS "private;differential")
+    endforeach()
+    set_tests_properties(efb_copy_reference_checks xfb_copy_reference_checks PROPERTIES TIMEOUT 180)
+  else()
+    add_test(NAME cpu_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
+      "SKIP: optional differential source checkout is absent; set CUPID_BEHAVIOR_REFERENCE_ROOT")
+    set_tests_properties(cpu_reference_checks PROPERTIES
+      SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;differential")
+    add_test(NAME cpu_fused_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
+      "SKIP: optional fused arithmetic comparison requires CUPID_BEHAVIOR_REFERENCE_ROOT and C++23")
+    set_tests_properties(cpu_fused_reference_checks PROPERTIES
+      SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;differential")
+    add_test(NAME cpu_ni_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
+      "SKIP: optional NI arithmetic comparisons require CUPID_BEHAVIOR_REFERENCE_ROOT and x86_64")
+    set_tests_properties(cpu_ni_reference_checks PROPERTIES
+      SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;differential")
+    add_test(NAME vertex_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
+      "SKIP: optional vertex comparisons require CUPID_BEHAVIOR_REFERENCE_ROOT and C++23")
+    set_tests_properties(vertex_reference_checks PROPERTIES
+      SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;differential")
+    foreach(comparison IN ITEMS rasterizer texture fragment sdp efb_copy xfb_copy)
+      add_test(NAME ${comparison}_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
+        "SKIP: optional ${comparison} comparisons require CUPID_BEHAVIOR_REFERENCE_ROOT and C++23")
+      set_tests_properties(${comparison}_reference_checks PROPERTIES
+        SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;differential")
+    endforeach()
+  endif()
+  if(CUPID_ENABLE_LOCAL_INTEGRATION)
+    if(NOT EXISTS "${CUPID_LOCAL_GAME}")
+      message(FATAL_ERROR "Local integration requires an existing CUPID_LOCAL_GAME path")
+    endif()
+    add_test(NAME local_disc_integration COMMAND cupid-wii-gamecube
+      --game "${CUPID_LOCAL_GAME}" --headless --max-instructions 10000)
+    set_tests_properties(local_disc_integration PROPERTIES TIMEOUT 60 LABELS "private;integration")
+  else()
+    add_test(NAME local_disc_integration COMMAND "${CMAKE_COMMAND}" -E echo
+      "SKIP: private-asset integration is disabled; enable CUPID_ENABLE_LOCAL_INTEGRATION with CUPID_LOCAL_GAME")
+    set_tests_properties(local_disc_integration PROPERTIES
+      SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;integration")
+  endif()
+endif()
+
+include(GNUInstallDirs)
+install(TARGETS cupid-wii-gamecube RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT Runtime)
+install(FILES LICENSE DESTINATION "${CMAKE_INSTALL_DATADIR}/cupid-wii-gamecube" COMPONENT Runtime)
+install(DIRECTORY LICENSES/ DESTINATION "${CMAKE_INSTALL_DATADIR}/cupid-wii-gamecube/LICENSES" COMPONENT Runtime)
+install(DIRECTORY docs/ DESTINATION "${CMAKE_INSTALL_DATADIR}/cupid-wii-gamecube/docs" COMPONENT Runtime)
+set(CPACK_PACKAGE_NAME cupid-wii-gamecube)
+set(CPACK_PACKAGE_VENDOR cupid-wii-gamecube)
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_FILE_NAME "cupid-wii-gamecube-${PROJECT_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "GameCube and Wii command-line runtime")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
+set(CPACK_GENERATOR "TGZ")
+if(WIN32)
+  set(CPACK_GENERATOR "ZIP")
+endif()
+set(CPACK_COMPONENTS_ALL Runtime)
+set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
+set(CPACK_COMPONENTS_GROUPING ALL_COMPONENTS_IN_ONE)
+include(CPack)

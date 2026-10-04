@@ -1,0 +1,85 @@
+name: build-and-test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install build and host-output requirements
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ clang libsdl2-dev
+      - name: Configure
+        run: cmake -S . -B build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=${{ matrix.compiler == 'gcc' && 'gcc' || 'clang' }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler == 'gcc' && 'g++' || 'clang++' }} -DCUPID_WARNINGS_AS_ERRORS=ON -DCUPID_COMMIT=${GITHUB_SHA}
+      - name: Build
+        run: cmake --build build/ci --parallel 2
+      - name: Test
+        run: ctest --test-dir build/ci --output-on-failure
+      - name: Verify packaged executable
+        run: cmake -DBUILD_DIR=build/ci -P tools/package-verify.cmake
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: linux-${{ matrix.compiler }}
+          path: build/ci/cupid-wii-gamecube-*.tar.gz
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Configure MSVC
+        run: cmake -S . -B build/ci -G "Visual Studio 17 2022" -A x64 -DCUPID_WARNINGS_AS_ERRORS=ON -DCUPID_COMMIT=${{ github.sha }}
+      - name: Build
+        run: cmake --build build/ci --config Release --parallel 2
+      - name: Test
+        run: ctest --test-dir build/ci -C Release --output-on-failure
+      - name: Verify packaged executable
+        run: cmake -DBUILD_DIR=build/ci -P tools/package-verify.cmake
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-msvc
+          path: build/ci/cupid-wii-gamecube-*.zip
+          if-no-files-found: error
+
+  sanitizers:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install compilers
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ clang
+      - name: Configure instrumented headless runtime
+        run: cmake -S . -B build/sanitizers -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCUPID_HEADLESS_ONLY=ON -DCUPID_ENABLE_SANITIZERS=ON -DCUPID_WARNINGS_AS_ERRORS=ON -DCMAKE_C_COMPILER=${{ matrix.compiler == 'gcc' && 'gcc' || 'clang' }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler == 'gcc' && 'g++' || 'clang++' }}
+      - name: Build
+        run: cmake --build build/sanitizers --parallel 2
+      - name: Run address and undefined-behavior checks
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build/sanitizers --output-on-failure
+
+  source-checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install source-check tools
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build clang-18 clang-format-18 clang-tidy-18
+      - name: Configure
+        run: cmake -S . -B build/checks -G Ninja -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18 -DCUPID_HEADLESS_ONLY=ON
+      - name: Check formatting
+        run: cmake --build build/checks --target format-check
+      - name: Check static analysis
+        run: cmake --build build/checks --target static-check

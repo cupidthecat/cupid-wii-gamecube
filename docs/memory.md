@@ -18,7 +18,7 @@ Instruction-cache lookup uses a normalized identity while a miss still reads fro
 
 Instruction backing reads validate the complete four-byte word or 32-byte line against real RAM before changing their destination. A rejected copy leaves every destination word untouched and increments `instruction_backing_read_errors`, with no device callback or PI request. With the cache disabled, the initialized fetch word remains zero. An unlocked failed fill retains the selected way's words but installs the requested tag and validity; invalidation and reset retain those backing words. An invalid locked miss has an undefined target value and produces an explicit unsupported diagnostic in the product.
 
-Fetched-zero execution remains a separate delivery difference under audit: the target interpreter skips dispatch, while the product currently enters its illegal-instruction exception path. The backing comparisons check fetch values and cache metadata; guest execution cases use valid retained opcodes. Data-cache visibility remains unfinished.
+Fetched-zero execution skips dispatch, advances the PC and adds no guest cycles. A separate actual interpreter comparison covers that delivery with clear pending-exception state. The backing comparisons check fetch values and cache metadata; their guest execution cases use valid retained opcodes. Data-cache visibility remains unfinished.
 
 ## Source mapping and checks
 
@@ -36,4 +36,4 @@ The complete comparison passed strict MSVC and GCC. It checks 722 CPU RAM cases,
 
 A full rebuild exposed a lost byte/halfword narrowing step in the new CPU device bridge. The new focused callback-width regression failed before correction and passed afterward; the existing authored EFB guest assertions also pass on MSVC and GCC without changes. The original failing matrix and its unchanged-input receipts are retained separately from the corrected validation.
 
-These are controlled software comparisons and authored integration tests. They exclude data-cache visibility, complete MMIO/EFB width behavior, invalid locked-fetch opcode values, fetched-zero execution delivery, full interrupt scheduling and physical-console equivalence. [Tests](testing.md) records the broader toolchain matrix separately.
+These are controlled software comparisons and authored integration tests. The memory comparison excludes data-cache visibility, complete MMIO/EFB width behavior, invalid locked-fetch opcode values, full interrupt scheduling and physical-console equivalence. [CPU mappings](cpu-reference.md) records the separate zero-word execution checks, and [tests](testing.md) records the broader toolchain matrix.

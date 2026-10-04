@@ -188,6 +188,7 @@ void Machine::load_executable(std::span<const u8> file, bool elf) {
     input_replay_->reset();
   memory_.clear();
   cpu_.reset();
+  step_attempts_ = last_poll_ = 0;
   cpu_.configure_boot();
   initialize_boot_memory(memory_, console_);
   boot_ = elf ? load_elf(memory_, file) : load_dol(memory_, file);
@@ -204,6 +205,7 @@ void Machine::load_disc(const std::filesystem::path &path) {
     throw std::runtime_error("Disc console differs from the selected console mode");
   memory_.clear();
   cpu_.reset();
+  step_attempts_ = last_poll_ = 0;
   if (console_ == Console::Wii) {
     const auto version = image_->required_ios();
     if (!version || !ios::initialize_ios_memory(memory_, *version))
@@ -226,7 +228,7 @@ void Machine::step() {
   if (shutdown_requested_)
     throw LimitReached("guest-shutdown");
   const auto &state = cpu_.state();
-  if (limits_.instructions && state.instructions >= limits_.instructions)
+  if (limits_.instructions && step_attempts_ >= limits_.instructions)
     throw LimitReached("instruction-limit");
   if (limits_.frames && output_ && output_->presented_frames() >= limits_.frames)
     throw LimitReached("frame-limit");
@@ -238,8 +240,8 @@ void Machine::step() {
         ios_.set_remote(port, input.remotes[port]);
     }
   }
-  if (state.instructions - last_poll_ >= 4096 || state.instructions == 0) {
-    last_poll_ = state.instructions;
+  if (step_attempts_ - last_poll_ >= 4096 || step_attempts_ == 0) {
+    last_poll_ = step_attempts_;
     if (limits_.seconds > 0 &&
         std::chrono::duration<double>(std::chrono::steady_clock::now() - started_).count() >=
             limits_.seconds)
@@ -253,6 +255,7 @@ void Machine::step() {
   }
   const u32 before = state.pc;
   cpu_.set_external_interrupt(devices_.external_interrupt_pending());
+  ++step_attempts_;
   const u32 cycles = cpu_.step();
   graphics_.advance(cycles);
   dsp_.advance(cycles);
@@ -261,11 +264,12 @@ void Machine::step() {
   if (trace_ && state.instructions >= trace_start_ && trace_emitted_ < trace_count_ &&
       (!trace_after_boot_ || boot_.stage == "game-entry")) {
     ++trace_emitted_;
-    trace_ << "{\"step\":" << state.instructions << ",\"pc_before\":" << before
-           << ",\"pc_after\":" << state.pc << ",\"opcode\":" << state.last_opcode
-           << ",\"cr\":" << state.cr << ",\"msr\":" << state.msr
-           << ",\"lr\":" << state.spr[cpu::spr::lr] << ",\"ctr\":" << state.spr[cpu::spr::ctr]
-           << ",\"dar\":" << state.spr[cpu::spr::dar] << ",\"dsisr\":" << state.spr[cpu::spr::dsisr]
+    trace_ << "{\"step\":" << state.instructions << ",\"attempt\":" << step_attempts_
+           << ",\"pc_before\":" << before << ",\"pc_after\":" << state.pc
+           << ",\"opcode\":" << state.last_opcode << ",\"cr\":" << state.cr
+           << ",\"msr\":" << state.msr << ",\"lr\":" << state.spr[cpu::spr::lr]
+           << ",\"ctr\":" << state.spr[cpu::spr::ctr] << ",\"dar\":" << state.spr[cpu::spr::dar]
+           << ",\"dsisr\":" << state.spr[cpu::spr::dsisr]
            << ",\"srr0\":" << state.spr[cpu::spr::srr0] << ",\"gpr\":[";
     for (unsigned i = 0; i < state.gpr.size(); ++i)
       trace_ << (i ? "," : "") << state.gpr[i];
@@ -301,8 +305,8 @@ void Machine::write_state(std::ostream &out, const std::string &outcome) const {
       << "\",\"console\":\"" << (console_ == Console::Wii ? "wii" : "gamecube")
       << "\",\"outcome\":\"" << outcome << "\",\"stage\":\"" << boot_.stage
       << "\",\"pc\":" << state.pc << ",\"entry\":" << boot_.entry
-      << ",\"instructions\":" << state.instructions << ",\"cycles\":" << state.cycles
-      << ",\"vi_fields\":" << devices_.field_count()
+      << ",\"instructions\":" << state.instructions << ",\"step_attempts\":" << step_attempts_
+      << ",\"cycles\":" << state.cycles << ",\"vi_fields\":" << devices_.field_count()
       << ",\"presented_frames\":" << (output_ ? output_->presented_frames() : 0)
       << ",\"audio_samples\":" << (output_ ? output_->audio_samples() : 0)
       << ",\"audio_nonzero_samples\":" << (output_ ? output_->audio_nonzero_samples() : 0)

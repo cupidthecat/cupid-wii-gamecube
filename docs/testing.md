@@ -72,6 +72,7 @@ The same option enables these C++23 comparisons and downloads pinned fmt 9.1.0:
 - `cpu_ni_reference_checks` compares scalar guest arithmetic under all rounding modes with NI enabled and disabled, including tiny results at the normal-value boundary. It uses the actual SIMD rounding and flush controls on x86_64 and reports an architecture skip elsewhere.
 - `cpu_memory_reference_checks` compares page-crossing integer, binary64 and quantized loads, RAM stores, BAT updates and cached TLB attributes against the unchanged MMU, MMIO and interpreter implementations. It checks destination and update registers, both floating lanes, faults, DAR, DSISR, page-table words, write transactions and memory-error requests. See [CPU mappings](cpu-reference.md) for its selected attribute combinations and exclusions.
 - `physical_memory_reference_checks` compares physical memory aliases, ranges, locked-cache transfers, page-table access and instruction-cache behavior against the unchanged memory, MMU, cache and MMIO implementations. It requires x86_64.
+- `cpu_step_reference_checks` compares zero-opcode dispatch, exception state and performance-monitor behavior through the unchanged stepping implementation. Scheduler timing and nonzero dispatch are excluded. It requires x86_64.
 - `host_audio_reference_checks` compares the complete unchanged host mixer with independently implemented queues, including exact samples, gain/rate changes, overflow, buffering, initial speaker rates, early callbacks and four-speaker mixing. See [host audio](host-audio.md) for its 17,653 checkpoints and excluded streams.
 - `vertex_reference_checks` compares position, normal, lighting and texture-coordinate transforms.
 - `rasterizer_reference_checks` compares clipping, coverage and interpolated samples for triangle, line and point commands.
@@ -80,6 +81,7 @@ The same option enables these C++23 comparisons and downloads pinned fmt 9.1.0:
 - `sdp_reference_checks` compares complete HID and identity service records, transaction fields and all captured continuation fragments.
 - `efb_copy_reference_checks` compares encoded texture bytes across framebuffer formats, copy formats, scale, dimensions and source positions.
 - `xfb_copy_reference_checks` compares filtered YUV output across framebuffer formats, dimensions, scale, gamma, source positions and destination stride.
+- `pointer_reference_checks` compares projected infrared coordinates and sizes against the unchanged camera and matrix implementations across cursor positions and sensor-bar placements.
 
 Graphics comparisons link fmt. The product still builds as C++20 and does not link it. Test-only hooks stop with errors if unused application or image-decoding paths are entered.
 
@@ -87,7 +89,9 @@ External graphics and memory comparison sources retain visible compiler warnings
 
 Unused parameters in the unmodified framebuffer-copy and memory comparison sources remain visible warnings on GCC.
 
-The default public run marks all thirteen comparison tests as skipped because the external checkout is not a dependency of the product build. Keep the comparison checkout's revision with the test results. These comparisons cover the named helpers, memory transactions, graphics stages, service records and mixer paths; they do not compare complete CPU execution or prove hardware accuracy.
+The stepping target's unmodified CPU metadata source also retains its enum conditional warnings on GCC.
+
+The default public run marks all fifteen comparison tests as skipped because the external checkout is not a dependency of the product build. Keep the comparison checkout's revision with the test results. These comparisons cover the named helpers, memory transactions, graphics stages, pointer projection, service records and mixer paths; they do not compare complete CPU execution or prove hardware accuracy.
 
 ## Package checks
 
@@ -176,3 +180,19 @@ This snapshot repaired instruction-cache fills when backing memory is unavailabl
 The five configurations retained their previous counts: Windows and GCC each passed 35 public suites and thirteen comparisons; Clang passed 35 public suites; both headless sanitizer builds passed 32 public suites. Declared skips remained 1, 1, 14, 17 and 17 respectively.
 
 Clang-format 18 passed, including test adapter includes. Clang 18 static analysis checked all 37 product translation units with no project diagnostics. All 131 captured source, header, test and build input hashes remained unchanged through the final checks. These comparisons cover defined instruction-read and cache behavior; they do not prove hardware accuracy.
+
+## Checked snapshot after `bee4094c74bb`
+
+This snapshot added bounds for attempted CPU steps, corrected the default pointer projection, and expanded DSP command handling. Public regressions cover zero-cycle and fault bounds, polling after 4,096 attempted steps, reset accounting, and pointer mapping in all three display modes.
+
+| Configuration | Public tests passed | Direct comparisons passed | Declared skips |
+| --- | ---: | ---: | ---: |
+| Windows MSVC Release | 36 | 15 | 1 |
+| Linux GCC Release | 36 | 15 | 1 |
+| Linux Clang Release | 36 | 0 | 16 |
+| Linux GCC ASan + UBSan, headless | 33 | 0 | 19 |
+| Linux Clang ASan + UBSan, headless | 33 | 0 | 19 |
+
+Windows and GCC each passed 48 zero-dispatch comparisons and 232,098 exact pointer projections, with all thirteen earlier comparisons passing again. The stepping comparison excludes scheduler timing and nonzero dispatch. Pointer comparisons cover coordinates and sizes for the tested cursor positions and sensor-bar placements.
+
+Clang-format 18 passed, including test adapter includes. Clang 18 static analysis checked all 38 product translation units with no project diagnostics. All 136 captured source, header, test and build input hashes remained unchanged through the final checks.

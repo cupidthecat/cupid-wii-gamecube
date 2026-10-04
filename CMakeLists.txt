@@ -89,6 +89,7 @@ set(cupid_sources
   src/dsp/handheld.cpp
   src/dsp/handheld_task.cpp
   src/runtime/machine.cpp
+  src/platform/pointer.cpp
   src/platform/output.cpp
   src/platform/input_replay.cpp)
 add_library(cupid_core STATIC ${cupid_sources})
@@ -100,7 +101,7 @@ include(cmake/DeveloperChecks.cmake)
 
 if(CUPID_BUILD_TESTS)
   enable_testing()
-  foreach(suite IN ITEMS cpu core disc device remote remote_speaker host_mixer extension_cipher sdp sdp_transport runtime elf fonts dsp handheld ios network sysconf gfx vertex texture fragment rasterizer efb_copy xfb_copy efb_access guest_video input_replay audio_stats)
+  foreach(suite IN ITEMS cpu core disc device remote remote_speaker host_mixer extension_cipher sdp sdp_transport runtime elf fonts dsp handheld ios network sysconf gfx vertex texture fragment rasterizer efb_copy xfb_copy efb_access guest_video input_replay audio_stats pointer)
     add_executable(cupid_${suite}_tests tests/${suite}_tests.cpp)
     target_include_directories(cupid_${suite}_tests PRIVATE tests)
     target_link_libraries(cupid_${suite}_tests PRIVATE cupid_core)
@@ -265,10 +266,48 @@ if(CUPID_BUILD_TESTS)
       endif()
       add_test(NAME physical_memory_reference_checks COMMAND cupid_physical_memory_reference_checks)
       set_tests_properties(physical_memory_reference_checks PROPERTIES TIMEOUT 120 LABELS "private;differential")
+      set(cupid_step_references ${cupid_physical_memory_references}
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/PowerPC/Interpreter/Interpreter.cpp"
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/PowerPC/PPCTables.cpp"
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/PowerPC/PowerPC.cpp"
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/Debugger/Debugger_SymbolMap.cpp")
+      foreach(reference IN LISTS cupid_step_references)
+        if(NOT EXISTS "${reference}")
+          message(FATAL_ERROR "Required behavioral target file is absent: ${reference}")
+        endif()
+      endforeach()
+      add_executable(cupid_cpu_step_reference_checks tests/cpu_step_reference_checks.cpp
+        ${cupid_step_references})
+      set_source_files_properties(${cupid_step_references} PROPERTIES
+        COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->;$<$<CXX_COMPILER_ID:GNU>:-O1>;$<$<CXX_COMPILER_ID:GNU>:-Wno-error=unused-parameter>")
+      set_property(SOURCE "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/PowerPC/PowerPC.cpp"
+        APPEND PROPERTY COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:GNU>:-Wno-error=extra>")
+      set_target_properties(cupid_cpu_step_reference_checks PROPERTIES CXX_STANDARD 23)
+      target_include_directories(cupid_cpu_step_reference_checks SYSTEM PRIVATE
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core"
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Externals/picojson")
+      target_compile_definitions(cupid_cpu_step_reference_checks PRIVATE _M_X86_64)
+      target_link_libraries(cupid_cpu_step_reference_checks PRIVATE cupid_core fmt::fmt)
+      if(WIN32)
+        target_compile_definitions(cupid_cpu_step_reference_checks PRIVATE UNICODE _UNICODE)
+      endif()
+      if(MSVC)
+        target_compile_options(cupid_cpu_step_reference_checks PRIVATE /Gy /Gw)
+        target_link_options(cupid_cpu_step_reference_checks PRIVATE /OPT:REF)
+      else()
+        target_compile_options(cupid_cpu_step_reference_checks PRIVATE -ffunction-sections -fdata-sections)
+        target_link_options(cupid_cpu_step_reference_checks PRIVATE -Wl,--gc-sections)
+      endif()
+      add_test(NAME cpu_step_reference_checks COMMAND cupid_cpu_step_reference_checks)
+      set_tests_properties(cpu_step_reference_checks PROPERTIES TIMEOUT 120 LABELS "private;differential")
     else()
       add_test(NAME physical_memory_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
         "SKIP: optional physical memory comparisons require an x86_64 behavioral target")
       set_tests_properties(physical_memory_reference_checks PROPERTIES
+        SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;differential")
+      add_test(NAME cpu_step_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
+        "SKIP: optional CPU stepping comparisons require an x86_64 behavioral target")
+      set_tests_properties(cpu_step_reference_checks PROPERTIES
         SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;differential")
     endif()
     set(cupid_vertex_reference
@@ -311,7 +350,10 @@ if(CUPID_BUILD_TESTS)
       "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/VideoBackends/Software/SWEfbInterface.cpp")
     set(cupid_host_audio_reference
       "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/AudioCommon/Mixer.cpp")
-    foreach(reference IN LISTS cupid_rasterizer_references cupid_texture_reference cupid_fragment_reference cupid_sdp_reference cupid_efb_copy_reference cupid_xfb_copy_reference cupid_host_audio_reference)
+    set(cupid_pointer_reference
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/HW/WiimoteEmu/Camera.cpp"
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Common/Matrix.cpp")
+    foreach(reference IN LISTS cupid_rasterizer_references cupid_texture_reference cupid_fragment_reference cupid_sdp_reference cupid_efb_copy_reference cupid_xfb_copy_reference cupid_host_audio_reference cupid_pointer_reference)
       if(NOT EXISTS "${reference}")
         message(FATAL_ERROR "Required behavioral target file is absent: ${reference}")
       endif()
@@ -335,13 +377,15 @@ if(CUPID_BUILD_TESTS)
       "${cupid_xfb_copy_reference}")
     add_executable(cupid_host_audio_reference_checks tests/host_audio_reference_checks.cpp
       "${cupid_host_audio_reference}")
-    set_source_files_properties(${cupid_rasterizer_references} ${cupid_texture_reference} ${cupid_fragment_reference} "${cupid_sdp_reference}" "${cupid_efb_copy_reference}" "${cupid_xfb_copy_reference}" "${cupid_host_audio_reference}"
+    add_executable(cupid_pointer_reference_checks tests/pointer_reference_checks.cpp
+      ${cupid_pointer_reference})
+    set_source_files_properties(${cupid_rasterizer_references} ${cupid_texture_reference} ${cupid_fragment_reference} "${cupid_sdp_reference}" "${cupid_efb_copy_reference}" "${cupid_xfb_copy_reference}" "${cupid_host_audio_reference}" ${cupid_pointer_reference}
       PROPERTIES COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->;$<$<CXX_COMPILER_ID:GNU>:-O1>")
     set_property(SOURCE "${cupid_efb_copy_reference}" APPEND PROPERTY COMPILE_OPTIONS
       "$<$<CXX_COMPILER_ID:GNU>:-Wno-error=unused-parameter>")
     set_property(SOURCE "${cupid_xfb_copy_reference}" APPEND PROPERTY COMPILE_OPTIONS
       "$<$<CXX_COMPILER_ID:GNU>:-Wno-error=unused-parameter>")
-    foreach(comparison IN ITEMS rasterizer texture fragment sdp efb_copy xfb_copy host_audio)
+    foreach(comparison IN ITEMS rasterizer texture fragment sdp efb_copy xfb_copy host_audio pointer)
       set(target cupid_${comparison}_reference_checks)
       set_target_properties(${target} PROPERTIES CXX_STANDARD 23)
       target_include_directories(${target} SYSTEM PRIVATE
@@ -385,11 +429,15 @@ if(CUPID_BUILD_TESTS)
       "SKIP: optional physical memory comparisons require CUPID_BEHAVIOR_REFERENCE_ROOT and x86_64")
     set_tests_properties(physical_memory_reference_checks PROPERTIES
       SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;differential")
+    add_test(NAME cpu_step_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
+      "SKIP: optional CPU stepping comparisons require CUPID_BEHAVIOR_REFERENCE_ROOT and x86_64")
+    set_tests_properties(cpu_step_reference_checks PROPERTIES
+      SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;differential")
     add_test(NAME vertex_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
       "SKIP: optional vertex comparisons require CUPID_BEHAVIOR_REFERENCE_ROOT and C++23")
     set_tests_properties(vertex_reference_checks PROPERTIES
       SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;differential")
-    foreach(comparison IN ITEMS rasterizer texture fragment sdp efb_copy xfb_copy host_audio)
+    foreach(comparison IN ITEMS rasterizer texture fragment sdp efb_copy xfb_copy host_audio pointer)
       add_test(NAME ${comparison}_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
         "SKIP: optional ${comparison} comparisons require CUPID_BEHAVIOR_REFERENCE_ROOT and C++23")
       set_tests_properties(${comparison}_reference_checks PROPERTIES

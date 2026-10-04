@@ -11,6 +11,7 @@ The behavioral reference is pinned at `562875dd60fd0ff50b65dbbb611a2096802cd1b9`
 | DAC profiles, command packets and synchronization | `Source/Core/Core/HW/DSPHLE/UCodes/Zelda.{h,cpp}`, profile table, `HandleMailDefault`, `HandleMailLight`, `RunPendingCommands`, `SendCommandAck`, `RenderAudio` |
 | Voice blocks, decoding, resampling and mixing | `Zelda.cpp`, voice-block layout, `FetchVPB`, `StoreVPB`, `LoadInputSamples`, PCM/AFC/MRAM download methods, `DecodeAFC`, `Resample`, `AddVoice`, filter/reverb methods, `FinalizeFrame`; fixed-point helpers in `Zelda.h` |
 | JoyBoot authentication in light audio tasks | `Source/Core/Core/HW/DSPHLE/UCodes/GBA.{h,cpp}`, `ProcessGBACrypto`; `Zelda.cpp`, `SUPPORTS_GBA_CRYPTO` profiles, `HandleMailLight`, `RunPendingCommands`; `UCodes.cpp`, `UCodeFactory` callers |
+| Scoped two-word command `0x0c` compatibility | `Source/Core/Core/HW/DSPHLE/UCodes/Zelda.cpp`, `WEIRD_CMD_0C` profile mappings, `HandleMailLight`, `RunPendingCommands`, `SendCommandAck`; `MailHandler.cpp`, pending-mail and interrupt handling |
 | Standalone handheld task, pending-mail IRQ and task controls | `GBA.{h,cpp}`, `Initialize`, `HandleMail`, `Update`; `UCodes.{h,cpp}`, `PrepareBootUCode`, task constants and hash mapping; `DSPHLE.cpp`, `SetUCode`, `SwapUCode`; `Source/Core/Common/Hash.cpp`, `HashEctor` |
 
 The selected hash profiles include `0x56d36052` with per-frame synchronization and `0xd643001f` with main-memory audio addressing and combined render packets. The other recognized DAC profiles use the same implemented family with their documented protocol and layout differences. Recognition is not a claim that every command used by each title is supported.
@@ -109,6 +110,32 @@ selection and suspension methods were compiled unchanged. The project DSP units
 were rebuilt together against a copied coherent core and matching headers;
 input hashes matched before and after execution. These checks cover software
 task transitions, not physical link transfers or scheduler timing on hardware.
+
+## Two-word command compatibility comparison
+
+The unchanged full `Zelda.cpp` renderer and command handlers, together with
+`MailHandler.cpp`, were compiled against checked RAM, ARAM and interrupt
+adapters. For profiles `0x24b22038` and `0x42f64ac4`, the fixture used 25 sample
+and voice-block cases each, with 32 two-word commands before rendering and eight
+afterward. It compared partial command receipt, acknowledgments, interrupt
+counts, decoded PCM and mutable RAM. Ten other profiles verified their existing
+parameter-free `0x0c` paths over 256 synchronization values each; the separately
+tested authentication profiles retained their computed one-parameter path.
+
+All 16,234 checkpoints passed over 217,220,352 RAM bytes, with SHA-1
+`7abcb7738bac25d77d5f826c668516dc8c01cf49`. Source and fixture hashes matched
+before and after execution. The previous implementation's explicit rejection
+was reproduced before the correction. Serialization and task switching were
+outside this fixture; their adapters did not replace the tested command,
+renderer or mailbox methods. This comparison establishes the named profiles'
+defined two-word compatibility behavior, not the unknown operation's purpose.
+
+The authored nine-instruction PowerPC regression passed on both consoles in
+strict GCC and MSVC builds. The changed DSP units and guest fixture also passed
+Clang AddressSanitizer and UndefinedBehaviorSanitizer checks while linked to a
+copied coherent core. The guest sees no acknowledgment until both arguments are
+written, reads the exact reply, verifies unchanged RAM and executes another
+command. Unrelated light-protocol command rejection remains checked.
 
 ## Public tests and limits
 

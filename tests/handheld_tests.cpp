@@ -138,14 +138,66 @@ void guest_command(Console console) {
   }
 }
 
-void unknown_variants() {
+void compatibility_variants(Console console) {
   for (const u32 hash : {0x24b22038u, 0x42f64ac4u}) {
-    Memory memory(Console::GameCube);
-    dsp::Engine engine(memory, Console::GameCube);
+    Memory memory(console);
+    dsp::Engine engine(memory, console);
+    hw::Devices devices(console);
+    unsigned interrupts = 0;
+    engine.interrupt = [&] { ++interrupts; };
     load_profile(memory, engine, hash);
-    CHECK_THROWS(send(engine, 0x8c370000));
+    memory.mmio_handles = [&](u32 address) { return devices.handles(address); };
+    memory.mmio_read = [&](u32 address, unsigned width) { return devices.read(address, width); };
+    memory.mmio_write = [&](u32 address, u32 value, unsigned width) {
+      devices.write(address, value, width);
+    };
+    devices.dsp_read = [&](u32 offset) { return engine.read16(offset); };
+    devices.dsp_write = [&](u32 offset, u16 value) { engine.write16(offset, value); };
+    auto marker = memory.range(0x11000, 64);
+    std::fill(marker.begin(), marker.end(), u8(0xa5));
+    const auto instruction = [](u32 op, u32 target, u32 base, u32 immediate) {
+      return (op << 26) | (target << 21) | (base << 16) | (immediate & 0xffff);
+    };
+    const std::array<u32, 9> program{
+        instruction(44, 3, 11, 0), instruction(44, 4, 11, 2),  instruction(44, 5, 11, 0),
+        instruction(44, 6, 11, 2), instruction(44, 7, 11, 0),  instruction(44, 8, 11, 2),
+        instruction(40, 9, 11, 4), instruction(40, 10, 11, 6), 0x4e800020};
+    for (unsigned index = 0; index < program.size(); ++index)
+      memory.write32(0x1000 + index * 4, program[index]);
+    cpu::Interpreter cpu(memory, console);
+    auto &state = cpu.state();
+    state.pc = 0x1000;
+    state.gpr[3] = 0x8c37;
+    state.gpr[4] = 0x1234;
+    state.gpr[5] = 0xffff;
+    state.gpr[6] = 0xfffc;
+    state.gpr[7] = 0xdead;
+    state.gpr[8] = 0xbeef;
+    state.gpr[11] = 0x0c005000;
+    for (unsigned index = 0; index < program.size(); ++index) {
+      cpu.step();
+      if (index < 5 || index >= 7)
+        CHECK(!(engine.read16(4) & 0x8000));
+      else
+        CHECK(engine.read16(4) == 0x8000);
+    }
+    CHECK(state.pc == 0 && state.instructions == program.size());
+    CHECK(state.gpr[9] == 0x8000 && state.gpr[10] == 0x7a);
+    CHECK(state.spr[cpu::spr::dar] == 0 && state.spr[cpu::spr::dsisr] == 0);
+    CHECK(interrupts == 0);
+    CHECK(std::all_of(marker.begin(), marker.end(), [](u8 byte) { return byte == 0xa5; }));
+    send(engine, 0x80000000);
+    CHECK(receive(engine) == 0x80000062 && !(engine.read16(4) & 0x8000));
+    CHECK_THROWS(send(engine, 0x8d000000));
+    CHECK(std::all_of(marker.begin(), marker.end(), [](u8 byte) { return byte == 0xa5; }));
   }
+  Memory memory(console);
+  dsp::Engine engine(memory, console);
+  load_profile(memory, engine, 0x6ba3b3ea);
+  send(engine, 0x8c371234);
+  CHECK(receive(engine) == 0x8000007a && !(engine.read16(4) & 0x8000));
 }
+
 } // namespace
 
 namespace {
@@ -354,7 +406,8 @@ int main() {
     memory_requests(Console::Wii);
     guest_command(Console::GameCube);
     guest_command(Console::Wii);
-    unknown_variants();
+    compatibility_variants(Console::GameCube);
+    compatibility_variants(Console::Wii);
     standalone_guest(Console::GameCube);
     standalone_guest(Console::Wii);
     checked_task(Console::GameCube);

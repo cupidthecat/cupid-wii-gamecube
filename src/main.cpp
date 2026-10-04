@@ -187,7 +187,7 @@ Usage: cupid-wii-gamecube --game PATH [options]
   --input-config PATH         Keyboard action=key mappings
   --input-replay PATH         Deterministic guest input events, including headless
   --user-dir PATH             Explicit persistent-data directory (userdata)
-  --max-instructions N        Stop after N guest instructions (default 1000000)
+  --max-instructions N        Bound CPU steps, including faults (default 1000000)
   --max-frames N              Stop after N presented frames (0 disables)
   --run-seconds N             Wall-clock bound (default 10; 0 disables)
   --trace PATH                Write execution state as JSON lines

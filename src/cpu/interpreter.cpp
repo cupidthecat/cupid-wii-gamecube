@@ -628,9 +628,11 @@ u32 Interpreter::step() {
     state_.last_pc = state_.pc;
     state_.last_opcode = current_opcode_;
     fetched = true;
-    cycles = instruction_cycles(current_opcode_);
-    execute(current_opcode_);
-    ++state_.instructions;
+    cycles = current_opcode_ == 0 ? 0 : instruction_cycles(current_opcode_);
+    if (current_opcode_ != 0) {
+      execute(current_opcode_);
+      ++state_.instructions;
+    }
   } catch (const GuestFault &) {
   }
   if (fetched)

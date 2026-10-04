@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cupid/platform/output.hpp"
 #include "cupid/audio/host_mixer.hpp"
+#include "cupid/platform/pointer.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -456,12 +457,8 @@ bool Output::poll(hw::Devices &devices, bool sample_input) {
   const auto area = impl_->display_area();
   if (SDL_GetMouseFocus() == impl_->window && area.w > 1 && area.h > 1 && output_x >= area.x &&
       output_y >= area.y && output_x < area.x + area.w && output_y < area.y + area.h) {
-    const int ir_x = 1023 - static_cast<int>((output_x - area.x) * 1023 / area.w);
-    const int ir_y = 767 - static_cast<int>((output_y - area.y) * 767 / area.h);
-    remote.infrared[0] = {static_cast<u16>(std::clamp(ir_x - 32, 0, 1023)), static_cast<u16>(ir_y),
-                          4};
-    remote.infrared[1] = {static_cast<u16>(std::clamp(ir_x + 32, 0, 1023)), static_cast<u16>(ir_y),
-                          4};
+    remote.infrared = pointer_camera((output_x - area.x) * 2.0 / area.w - 1,
+                                     1 - (output_y - area.y) * 2.0 / area.h);
   }
 #else
   (void)devices;

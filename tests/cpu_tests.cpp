@@ -1718,7 +1718,7 @@ void exceptions_and_system() {
   f.s.msr = 0;
   f.run(fp(21, 1, 2, 3));
   CHECK(f.s.pc == 0x800 && f.s.spr[spr::srr0] == 0x1000);
-  f.run(0);
+  f.run(1);
   CHECK(f.s.pc == 0x700 && (f.s.spr[spr::srr1] & 0x80000));
   f.run(imm(3, 4, 0, 0));
   CHECK(f.s.pc == 0x700 && (f.s.spr[spr::srr1] & 0x20000));
@@ -2644,6 +2644,66 @@ void cache_tests() {
 } // namespace
 
 namespace {
+void zero_dispatch_tests() {
+  unsigned cases = 0;
+  for (Console console : {Console::GameCube, Console::Wii})
+    for (bool enabled : {false, true})
+      for (unsigned monitor_mode : {0u, 1u, 11u})
+        for (u32 address : {0x2000u, 0x01802000u, 0x02002000u, 0x0c002000u}) {
+          cupid::Memory memory(console);
+          Interpreter cpu(memory, console);
+          auto &s = cpu.state();
+          unsigned pi = 0, devices = 0;
+          memory.memory_error = [&] { ++pi; };
+          memory.mmio_handles = [](u32 value) { return (value & 0xf8000000) == 0x08000000; };
+          memory.mmio_read = [&](u32, unsigned) {
+            ++devices;
+            return 0x3860002au;
+          };
+          s.pc = address;
+          s.gpr[3] = 0xabcdef01;
+          s.spr[spr::srr0] = 0x12345678;
+          s.spr[spr::srr1] = 0x56789abc;
+          s.spr[spr::dar] = 0x23456789;
+          s.spr[spr::dsisr] = 0x6789abcd;
+          s.spr[spr::hid0] = enabled ? 0x8000u : 0;
+          s.spr[spr::mmcr0] = monitor_mode == 0 ? 0u : (1u << 6) | monitor_mode;
+          s.spr[spr::mmcr1] = monitor_mode == 0 ? 0u : (monitor_mode << 27) | (1u << 22);
+          const std::array<unsigned, 4> counters{spr::pmc1, spr::pmc2, spr::pmc3, spr::pmc4};
+          for (unsigned n = 0; n < counters.size(); ++n)
+            s.spr[counters[n]] = 0x12345678u + n;
+          s.cycles = 12345;
+          s.timebase = 0x12345678;
+          CHECK(cpu.step() == 0);
+          CHECK(s.pc == address + 4 && s.last_pc == address && s.last_opcode == 0);
+          CHECK(s.cycles == 12345 && s.timebase == 0x12345678);
+          CHECK(s.instructions == 0);
+          CHECK(s.gpr[3] == 0xabcdef01 && s.spr[spr::srr0] == 0x12345678 &&
+                s.spr[spr::srr1] == 0x56789abc);
+          CHECK(s.spr[spr::dar] == 0x23456789 && s.spr[spr::dsisr] == 0x6789abcd);
+          CHECK(pi == 0 && devices == 0);
+          CHECK(memory.instruction_backing_read_errors() == static_cast<u64>(address != 0x2000));
+          for (unsigned n = 0; n < counters.size(); ++n)
+            CHECK(s.spr[counters[n]] == 0x12345678u + n);
+          ++cases;
+        }
+  CHECK(cases == 48);
+  Fixture f;
+  for (unsigned n = 0; n < 11; ++n)
+    f.run(0x60000000);
+  f.s.spr[spr::dec] = 100;
+  const auto cycles = f.s.cycles, instructions = f.s.instructions;
+  for (unsigned n = 0; n < 10; ++n) {
+    CHECK(f.run(0) == 0);
+    CHECK(f.s.pc == 0x1004 && f.s.last_opcode == 0);
+    CHECK(f.s.cycles == cycles && f.s.instructions == instructions);
+    CHECK(f.s.timebase == 0 && f.s.spr[spr::dec] == 100);
+  }
+  f.run(0x60000000);
+  CHECK(f.s.cycles == cycles + 1 && f.s.instructions == instructions + 1);
+  CHECK(f.s.timebase == 1 && f.s.spr[spr::dec] == 100);
+}
+
 void instruction_fill_failure_tests() {
   for (Console console : {Console::GameCube, Console::Wii}) {
     cupid::Memory memory(console);
@@ -2713,6 +2773,7 @@ void instruction_fill_failure_tests() {
 
 int main() {
   return run_tests([] {
+    zero_dispatch_tests();
     instruction_fill_failure_tests();
     integer_tests();
     branch_tests();

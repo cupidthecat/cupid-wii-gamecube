@@ -8,7 +8,9 @@ Storage-fault investigations should compare `srr0`, `dar`, `dsisr`, and the effe
 
 An unresolved physical data access can request the PI memory-access cause without a storage exception. A rejected page-table backing update instead increments `page_table_write_errors`, leaving its successful translation intact. Check those observations separately from DAR/DSISR and from invalid host-copy diagnostics; [memory boundaries](memory.md) explains their caller-specific address rules.
 
-For instruction reads, record `instruction_backing_read_errors` and distinguish a cache hit from a backing copy. A rejected unlocked fill can retain the selected way's old instruction words and install the new tag. Replacing that case with an ISI changes the observed target behavior. Invalid locked misses and fetched-zero execution have separately documented limits.
+For instruction reads, record `instruction_backing_read_errors` and distinguish a cache hit from a backing copy. A rejected unlocked fill can retain the selected way's old instruction words and install the new tag. Replacing that case with an ISI changes the observed target behavior. Invalid locked misses retain a separate unsupported diagnostic. A fetched zero skips dispatch and contributes no guest cycles.
+
+Compare `step_attempts` with `instructions` when a run stops making progress. Interrupt delivery, guest faults and zero words consume attempted steps without increasing the successful instruction counter. The step bound and 4,096-step polling cadence use attempts; traces record both counters. Repeated faults cannot hide behind a stationary successful count.
 
 For a suspected loop, examine whether registers or counters change and capture its first entry. Sunshine's startup cache loop was initially bounded before its return; its prologue and decrementing CTR were correct. A complete run showed the large sweep finishing. Raising a bound is useful evidence when the trace demonstrates progress, but does not repair a fault or prove game compatibility.
 

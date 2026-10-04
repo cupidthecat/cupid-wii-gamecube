@@ -59,9 +59,10 @@ void display_geometry(platform::DisplayAspect mode) {
   CHECK(output.poll(devices));
   CHECK(SDL_GetMouseFocus() == window);
   const auto &points = output.remote_state().infrared;
-  CHECK(points[0].x >= 479 && points[0].x <= 481);
-  CHECK(points[1].x >= 543 && points[1].x <= 545);
-  CHECK(points[0].y >= 383 && points[0].y <= 385);
+  CHECK(points[0].x == 580 && points[1].x == 443);
+  CHECK(points[0].y == 452 && points[1].y == 452);
+  CHECK(points[0].size == 1 && points[1].size == 1);
+  CHECK(points[2].x == 0xffff && points[3].x == 0xffff);
   SDL_WarpMouseInWindow(window, mode == platform::DisplayAspect::Standard ? 20 : 450,
                         mode == platform::DisplayAspect::Standard ? 300 : 20);
   CHECK(output.poll(devices));

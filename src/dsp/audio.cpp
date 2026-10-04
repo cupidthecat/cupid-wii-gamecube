@@ -819,8 +819,11 @@ struct AudioProgram::Impl {
         return;
       }
       case 12:
-        if (profile.special_command_12)
-          throw std::runtime_error("DSP audio command 12 variant is not implemented");
+        if (profile.special_command_12) {
+          // This named profile consumes two reserved words without a modeled operation.
+          pop();
+          pop();
+        }
         if (profile.joyboot_command)
           process_joyboot_request(memory, pop());
         acknowledge(sync);
@@ -910,9 +913,12 @@ struct AudioProgram::Impl {
       if (id != 0 && id != 1 && id != 2 && id != 12)
         throw std::runtime_error("DSP light audio command is not implemented");
       append(value);
-      expected = id == 1 ? 4 : id == 2 ? 2 : id == 12 && profile.joyboot_command ? 1 : 0;
-      if (id == 12 && profile.special_command_12)
-        throw std::runtime_error("DSP light audio command 12 variant is not implemented");
+      expected = id == 1    ? 4
+                 : id == 2  ? 2
+                 : id == 12 ? (profile.joyboot_command      ? 1
+                               : profile.special_command_12 ? 2
+                                                            : 0)
+                            : 0;
       if (expected) {
         state = State::Receiving;
       } else {

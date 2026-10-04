@@ -2,7 +2,9 @@
 #include "cupid/runtime/machine.hpp"
 #include "test_support.hpp"
 #include <array>
+#include <limits>
 #include <sstream>
+#include <thread>
 
 namespace {
 void memory_error_interrupt(cupid::Console console) {
@@ -25,6 +27,82 @@ void memory_error_interrupt(cupid::Console console) {
   CHECK(memory.read32(0x0c003000) == initial);
   CHECK(!devices.external_interrupt_pending());
 }
+
+void fault_step_limits(cupid::Console console) {
+  using namespace cupid;
+  runtime::Machine machine(console);
+  machine.load_executable(runtime::self_test_dol());
+  machine.set_limits({5, 0, 0});
+  machine.step();
+  CHECK(machine.cpu().state().instructions == 1);
+  // A reserved nonzero opcode faults repeatedly at the program vector.
+  machine.memory().write32(0x700, 1);
+  machine.cpu().state().pc = 0x80000700;
+  for (unsigned attempt = 1; attempt < 5; ++attempt)
+    machine.step();
+  CHECK(machine.cpu().state().instructions == 1);
+  CHECK(machine.cpu().state().pc == 0x700);
+  bool bounded = false;
+  try {
+    machine.step();
+  } catch (const runtime::LimitReached &limit) {
+    bounded = true;
+    CHECK(std::string(limit.what()) == "instruction-limit");
+  }
+  CHECK(bounded);
+  std::ostringstream state;
+  machine.write_state(state, "test");
+  CHECK(state.str().find("\"step_attempts\":5") != std::string::npos);
+}
+
+void fault_poll_cadence(cupid::Console console) {
+  using namespace cupid;
+  runtime::Machine machine(console);
+  machine.load_executable(runtime::self_test_dol());
+  machine.set_limits({0, 0, 0});
+  machine.step();
+  machine.memory().write32(0x700, 1);
+  machine.cpu().state().pc = 0x80000700;
+  for (unsigned attempt = 1; attempt < 4096; ++attempt)
+    machine.step();
+  CHECK(machine.cpu().state().instructions == 1);
+  machine.set_limits({0, 0, std::numeric_limits<double>::min()});
+  std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  bool bounded = false;
+  try {
+    machine.step();
+  } catch (const runtime::LimitReached &limit) {
+    bounded = true;
+    CHECK(std::string(limit.what()) == "time-limit");
+  }
+  CHECK(bounded);
+}
+
+void zero_step_limits(cupid::Console console) {
+  using namespace cupid;
+  runtime::Machine machine(console);
+  machine.load_executable(runtime::self_test_dol());
+  machine.set_limits({5, 0, 0});
+  machine.step();
+  const auto cycles = machine.cpu().state().cycles;
+  machine.cpu().state().pc = 0x80005000;
+  for (unsigned attempt = 1; attempt < 5; ++attempt)
+    machine.step();
+  CHECK(machine.cpu().state().pc == 0x80005010);
+  CHECK(machine.cpu().state().cycles == cycles);
+  CHECK(machine.cpu().state().instructions == 1);
+  CHECK(machine.cpu().state().spr[cpu::spr::srr0] == 0);
+  CHECK_THROWS(machine.step());
+  std::ostringstream state;
+  machine.write_state(state, "test");
+  CHECK(state.str().find("\"step_attempts\":5") != std::string::npos);
+  machine.load_executable(runtime::self_test_dol());
+  machine.step();
+  CHECK(machine.cpu().state().instructions == 1);
+  std::ostringstream reset;
+  machine.write_state(reset, "test");
+  CHECK(reset.str().find("\"step_attempts\":1") != std::string::npos);
+}
 } // namespace
 
 int main() {
@@ -32,6 +110,12 @@ int main() {
     using namespace cupid;
     memory_error_interrupt(Console::GameCube);
     memory_error_interrupt(Console::Wii);
+    fault_step_limits(Console::GameCube);
+    fault_step_limits(Console::Wii);
+    fault_poll_cadence(Console::GameCube);
+    fault_poll_cadence(Console::Wii);
+    zero_step_limits(Console::GameCube);
+    zero_step_limits(Console::Wii);
     runtime::Machine machine(Console::GameCube);
     machine.load_executable(runtime::self_test_dol());
     for (unsigned i = 0; i < 7; ++i)

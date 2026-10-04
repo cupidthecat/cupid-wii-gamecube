@@ -23,7 +23,7 @@ cupid-wii-gamecube --game "/path/to/program.dol" --console gamecube \
 
 | Option | Meaning |
 | --- | --- |
-| `--max-instructions N` | Absolute guest instruction bound, including apploader execution. Default: 1,000,000. Zero disables it. |
+| `--max-instructions N` | Absolute CPU step-attempt bound, including apploader execution, interrupts, faults and zero words. Default: 1,000,000. Zero disables it. |
 | `--run-seconds N` | Wall-clock bound. Default: 10 seconds. Zero disables it. |
 | `--max-frames N` | Bound on frames actually presented by VI. Zero disables it. |
 | `--dump-state PATH` | Final JSON machine state, including boot stage, CPU state, device fields, graphics commands, frames, and audio sample count. |
@@ -34,7 +34,9 @@ cupid-wii-gamecube --game "/path/to/program.dol" --console gamecube \
 | `--log PATH` | Progress and diagnostic messages. |
 | `--frame-dump PATH` | Last actual guest frame as binary PPM, if a frame was presented. |
 
-The runtime prints final state to stdout even when `--dump-state` is absent. Traces contain register state after each instruction, together with its previous PC and fetched opcode. Instruction and time bounds also apply during boot.
+The runtime prints final state to stdout even when `--dump-state` is absent. Traces contain register state after each CPU step, together with its previous PC and the most recently fetched opcode. An interrupt or fault before fetching can retain the earlier opcode value. Step and time bounds also apply during boot. Final `step_attempts` counts every CPU step entered; `instructions` counts successfully executed nonzero instructions. Each trace record retains that successful count in `step` and supplies a separate `attempt` sequence. Replay events and `--trace-start` still use the successful instruction count.
+
+Time checks and interactive polling occur at startup and at most every 4,096 attempted steps. Repeated guest faults or zero-cycle fetches therefore cannot freeze polling or evade an enabled step bound. Zero disables only the selected bound; disabling every bound allows an indefinite run.
 
 Audio diagnostics count individual signed 16-bit sample values, so two values form one stereo frame. `audio_nonzero_samples` counts values with nonzero amplitude; `audio_peak` is the largest absolute value, including 32768 for the negative limit. `audio_hash` is FNV-1a over canonical big-endian sample bytes in arrival order. These measurements include headless runs with host audio disabled. A nonzero value establishes signal data in the tested span; it does not verify correct mixing or audible playback.
 
@@ -42,7 +44,7 @@ Those fields retain the main DMA values before host mixing. Remote output leaves
 
 `page_table_write_errors` counts rejected backing writes when translation updates page-table reference/change bits. The translation and local TLB flags can remain valid even when a bounded host write rejects allocation padding. This counter is separate from PI interrupt requests and guest storage exceptions. See [memory boundaries](memory.md).
 
-`instruction_backing_read_errors` counts rejected whole-word or whole-line instruction copies. Such a rejection leaves the destination unchanged and raises no PI request. A later cache hit can return retained words without another backing-copy attempt. Invalid locked misses instead report an unsupported runtime condition; fetched-zero execution delivery remains under audit.
+`instruction_backing_read_errors` counts rejected whole-word or whole-line instruction copies. Such a rejection leaves the destination unchanged and raises no PI request. A later cache hit can return retained words without another backing-copy attempt. Invalid locked misses instead report an unsupported runtime condition. A fetched zero advances the PC without dispatching an instruction or adding guest cycles.
 
 ```sh
 cupid-wii-gamecube --game "/path/to/game.rvz" --headless --audio none \

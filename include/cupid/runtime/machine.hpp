@@ -74,7 +74,7 @@ private:
   BootInfo boot_;
   RunLimits limits_;
   std::chrono::steady_clock::time_point started_ = std::chrono::steady_clock::now();
-  u64 last_poll_ = 0, trace_count_ = 0;
+  u64 step_attempts_ = 0, last_poll_ = 0, trace_count_ = 0;
   u64 trace_emitted_ = 0;
   u64 trace_start_ = 0;
   bool trace_after_boot_ = false;

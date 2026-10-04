@@ -179,7 +179,42 @@ void Machine::install_fonts(const IplFonts &fonts) {
 }
 
 void Machine::set_input_replay(const std::filesystem::path &path) {
-  input_replay_ = std::make_unique<platform::InputReplay>(path);
+  auto replay = std::make_unique<platform::InputReplay>(path);
+  input_replay_ = std::move(replay);
+  input_replay_follower_.reset();
+  input_follow_diagnostic_ = {};
+}
+
+void Machine::set_input_replay_follow(const std::filesystem::path &path,
+                                      std::function<void(const std::string &)> diagnostic) {
+  auto follower = std::make_unique<platform::InputReplayFollower>(path);
+  auto replay = follower->refresh();
+  if (!replay)
+    throw std::runtime_error("Cannot initialize input replay follow mode: " + follower->error());
+  input_replay_ = std::move(replay);
+  input_replay_follower_ = std::move(follower);
+  input_follow_diagnostic_ = std::move(diagnostic);
+  last_input_follow_poll_ = std::chrono::steady_clock::now();
+  if (input_follow_diagnostic_)
+    input_follow_diagnostic_("Following input replay: accepted version 1");
+}
+
+void Machine::refresh_input_replay() {
+  const auto rejected = input_replay_follower_->rejected_updates();
+  const auto status = input_replay_follower_->status();
+  if (auto replay = input_replay_follower_->refresh()) {
+    input_replay_ = std::move(replay);
+    if (input_follow_diagnostic_)
+      input_follow_diagnostic_("Following input replay: accepted version " +
+                               std::to_string(input_replay_follower_->accepted_updates()));
+  } else if (input_follow_diagnostic_) {
+    if (input_replay_follower_->rejected_updates() != rejected)
+      input_follow_diagnostic_("Input replay replacement rejected: " +
+                               input_replay_follower_->error());
+    else if (status == platform::InputReplayFollowStatus::Rejected &&
+             input_replay_follower_->status() != platform::InputReplayFollowStatus::Rejected)
+      input_follow_diagnostic_("Input replay source recovered; accepted replay retained");
+  }
 }
 
 void Machine::load_executable(std::span<const u8> file, bool elf) {
@@ -232,25 +267,29 @@ void Machine::step() {
     throw LimitReached("instruction-limit");
   if (limits_.frames && output_ && output_->presented_frames() >= limits_.frames)
     throw LimitReached("frame-limit");
+  if (step_attempts_ - last_poll_ >= 4096 || step_attempts_ == 0) {
+    last_poll_ = step_attempts_;
+    const auto now = std::chrono::steady_clock::now();
+    if (limits_.seconds > 0 &&
+        std::chrono::duration<double>(now - started_).count() >= limits_.seconds)
+      throw LimitReached("time-limit");
+    if (input_replay_follower_ && now - last_input_follow_poll_ >= std::chrono::milliseconds(100)) {
+      last_input_follow_poll_ = now;
+      refresh_input_replay();
+    }
+    if (output_) {
+      if (!output_->poll(devices_, !input_replay_))
+        throw LimitReached("window-closed");
+      if (console_ == Console::Wii && !input_replay_)
+        ios_.set_remote(0, output_->remote_state());
+    }
+  }
   if (input_replay_ && input_replay_->update(state.instructions, devices_.field_count())) {
     const auto &input = input_replay_->state();
     for (unsigned port = 0; port < input.pads.size(); ++port) {
       devices_.set_pad(port, input.pads[port]);
       if (console_ == Console::Wii)
         ios_.set_remote(port, input.remotes[port]);
-    }
-  }
-  if (step_attempts_ - last_poll_ >= 4096 || step_attempts_ == 0) {
-    last_poll_ = step_attempts_;
-    if (limits_.seconds > 0 &&
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - started_).count() >=
-            limits_.seconds)
-      throw LimitReached("time-limit");
-    if (output_) {
-      if (!output_->poll(devices_, !input_replay_))
-        throw LimitReached("window-closed");
-      if (console_ == Console::Wii && !input_replay_)
-        ios_.set_remote(0, output_->remote_state());
     }
   }
   const u32 before = state.pc;
@@ -266,10 +305,11 @@ void Machine::step() {
     ++trace_emitted_;
     trace_ << "{\"step\":" << state.instructions << ",\"attempt\":" << step_attempts_
            << ",\"pc_before\":" << before << ",\"pc_after\":" << state.pc
-           << ",\"opcode\":" << state.last_opcode << ",\"cr\":" << state.cr
-           << ",\"msr\":" << state.msr << ",\"lr\":" << state.spr[cpu::spr::lr]
-           << ",\"ctr\":" << state.spr[cpu::spr::ctr] << ",\"dar\":" << state.spr[cpu::spr::dar]
-           << ",\"dsisr\":" << state.spr[cpu::spr::dsisr]
+           << ",\"opcode\":" << state.last_opcode
+           << ",\"opcode_fetched\":" << (cpu_.last_step_fetched_instruction() ? "true" : "false")
+           << ",\"cr\":" << state.cr << ",\"msr\":" << state.msr
+           << ",\"lr\":" << state.spr[cpu::spr::lr] << ",\"ctr\":" << state.spr[cpu::spr::ctr]
+           << ",\"dar\":" << state.spr[cpu::spr::dar] << ",\"dsisr\":" << state.spr[cpu::spr::dsisr]
            << ",\"srr0\":" << state.spr[cpu::spr::srr0] << ",\"gpr\":[";
     for (unsigned i = 0; i < state.gpr.size(); ++i)
       trace_ << (i ? "," : "") << state.gpr[i];
@@ -307,6 +347,10 @@ void Machine::write_state(std::ostream &out, const std::string &outcome) const {
       << "\",\"pc\":" << state.pc << ",\"entry\":" << boot_.entry
       << ",\"instructions\":" << state.instructions << ",\"step_attempts\":" << step_attempts_
       << ",\"cycles\":" << state.cycles << ",\"vi_fields\":" << devices_.field_count()
+      << ",\"input_replay_updates\":"
+      << (input_replay_follower_ ? input_replay_follower_->accepted_updates() : 0)
+      << ",\"input_replay_rejections\":"
+      << (input_replay_follower_ ? input_replay_follower_->rejected_updates() : 0)
       << ",\"presented_frames\":" << (output_ ? output_->presented_frames() : 0)
       << ",\"audio_samples\":" << (output_ ? output_->audio_samples() : 0)
       << ",\"audio_nonzero_samples\":" << (output_ ? output_->audio_nonzero_samples() : 0)

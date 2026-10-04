@@ -691,7 +691,8 @@ void Interpreter::RunInterpreterOp(Interpreter &, UGeckoInstruction) {
 }
 
 void JitInterface::UpdateMembase() {
-  unused();
+  if (m_jit)
+    unused();
 }
 
 const TBreakPoint *BreakPoints::GetBreakpoint(u32) const {
@@ -706,20 +707,122 @@ std::string PPCSymbolDB::GetDescription(u32) const {
   unused();
 }
 
+unsigned translated_fault_cases(Core::System &system) {
+  unsigned cases = 0, cycle_divergences = 0;
+  // Large cache and BAT arrays use normal heap lifetimes rather than nested
+  // native stack frames. The actual service constructors remain unchanged.
+  for (bool wii : {false, true}) {
+    system.SetIsWii(wii);
+    auto memory_owner = std::make_unique<Memory::MemoryManager>(system);
+    auto &memory = *memory_owner;
+    memory.Init();
+    auto manager = std::make_unique<PowerPC::PowerPCManager>(system);
+    active_manager = manager.get();
+    auto mmu = std::make_unique<PowerPC::MMU>(system, memory, *manager);
+    mmu->IBATUpdated();
+    mmu->DBATUpdated();
+    auto &state = manager->GetPPCState();
+    state.iCache.Cache::Init(memory);
+    ::Interpreter cpu(system, state, *mmu, manager->GetBranchWatch(), manager->GetSymbolDB());
+    cpu.Init();
+    state.spr[SPR_SDR] = 0;
+    mmu->SDRUpdated();
+    for (unsigned monitor_mode : {0u, 1u, 11u})
+      for (bool enabled : {false, true})
+        for (u32 mode : {0u, cupid::cpu::msr::pr, cupid::cpu::msr::fp, cupid::cpu::msr::ee,
+                         cupid::cpu::msr::dr, cupid::cpu::msr::ile})
+          for (bool no_execute : {false, true})
+            for (u32 address : {0x80342000u, 0x9efff000u}) {
+              ++cases;
+              state.iCache.Reset(system.GetJitInterface());
+              state.msr.Hex = cupid::cpu::msr::ir | cupid::cpu::msr::ri | mode;
+              state.sr[address >> 28] = no_execute ? 0x10000000u : 0u;
+              state.spr[SPR_HID0] = enabled ? 0x8000u : 0u;
+              state.pc = address;
+              state.npc = 0x12345678;
+              state.Exceptions = 0;
+              state.gpr[3] = 0xabcdef01;
+              state.spr[SPR_SRR0] = 0x12345678;
+              state.spr[SPR_SRR1] = 0x56789abc;
+              state.spr[SPR_DAR] = 0xabcdef01;
+              state.spr[SPR_DSISR] = 0x12345678;
+              state.spr[SPR_MMCR0] = monitor_mode == 0 ? 0u : (1u << 6) | monitor_mode;
+              state.spr[SPR_MMCR1] = monitor_mode == 0 ? 0u : (monitor_mode << 27) | (1u << 22);
+              const std::array<u32, 4> counters{SPR_PMC1, SPR_PMC2, SPR_PMC3, SPR_PMC4};
+              for (unsigned n = 0; n < counters.size(); ++n)
+                state.spr[counters[n]] = 0x12345678u + n;
+              cupid::Memory product_memory(wii ? cupid::Console::Wii : cupid::Console::GameCube);
+              cupid::cpu::Interpreter product_cpu(product_memory, wii ? cupid::Console::Wii
+                                                                      : cupid::Console::GameCube);
+              auto &product = product_cpu.state();
+              unsigned product_pi = 0;
+              product_memory.memory_error = [&] { ++product_pi; };
+              product.pc = address;
+              product.msr = state.msr.Hex;
+              product.sr[address >> 28] = state.sr[address >> 28];
+              product.gpr[3] = state.gpr[3];
+              product.spr[cupid::cpu::spr::hid0] = state.spr[SPR_HID0];
+              product.spr[cupid::cpu::spr::dar] = state.spr[SPR_DAR];
+              product.spr[cupid::cpu::spr::dsisr] = state.spr[SPR_DSISR];
+              product.spr[cupid::cpu::spr::srr0] = state.spr[SPR_SRR0];
+              product.spr[cupid::cpu::spr::srr1] = state.spr[SPR_SRR1];
+              product.spr[cupid::cpu::spr::mmcr0] = state.spr[SPR_MMCR0];
+              product.spr[cupid::cpu::spr::mmcr1] = state.spr[SPR_MMCR1];
+              product.cycles = 11;
+              product.timebase = 0x12345678;
+              for (unsigned n = 0; n < counters.size(); ++n)
+                product.spr[counters[n]] = state.spr[counters[n]];
+              const unsigned before_hooks = hook_checks, before_pi = reference_pi_requests;
+              const int cycles = cpu.SingleStepInner();
+              const u32 product_cycles = product_cpu.step();
+              require(product.pc == state.pc && product.msr == state.msr.Hex &&
+                          product.gpr[3] == state.gpr[3] &&
+                          product.spr[cupid::cpu::spr::srr0] == state.spr[SPR_SRR0] &&
+                          product.spr[cupid::cpu::spr::srr1] == state.spr[SPR_SRR1] &&
+                          product.spr[cupid::cpu::spr::dar] == state.spr[SPR_DAR] &&
+                          product.spr[cupid::cpu::spr::dsisr] == state.spr[SPR_DSISR],
+                      cases, "actual/product ISI guest state");
+              require(state.pc == 0x400 && state.npc == 0x400 && state.spr[SPR_SRR0] == address,
+                      cases, "actual ISI vector and saved instruction address");
+              require(cycles == 0 && state.Exceptions == 0, cases,
+                      "actual ISI zero cycle metadata");
+              require(product.instructions == 0 && product_pi == 0 &&
+                          product_memory.instruction_backing_read_errors() == 0,
+                      cases, "product excluded execution and backing services");
+              require(hook_checks == before_hooks + 1 && reference_pi_requests == before_pi, cases,
+                      "actual ISI hook and physical service counts");
+              for (unsigned n = 0; n < counters.size(); ++n)
+                require(state.spr[counters[n]] == 0x12345678u + n &&
+                            product.spr[counters[n]] == state.spr[counters[n]],
+                        cases, "actual/product ISI counter retention");
+              if (product_cycles != static_cast<u32>(cycles) || product.cycles != 11 ||
+                  product.timebase != 0x12345678)
+                ++cycle_divergences;
+            }
+    memory.Shutdown();
+    active_manager = nullptr;
+  }
+  require(cycle_divergences == 0, cases, "actual/product ISI cycle and clock retention");
+  return cases;
+}
+
 int main() {
   try {
     auto &system = Core::System::GetInstance();
     unsigned cases = 0;
     for (bool wii : {false, true}) {
       system.SetIsWii(wii);
-      Memory::MemoryManager memory(system);
+      auto memory_owner = std::make_unique<Memory::MemoryManager>(system);
+      auto &memory = *memory_owner;
       memory.Init();
-      PowerPC::PowerPCManager manager(system);
-      active_manager = &manager;
-      PowerPC::MMU mmu(system, memory, manager);
-      auto &state = manager.GetPPCState();
+      auto manager = std::make_unique<PowerPC::PowerPCManager>(system);
+      active_manager = manager.get();
+      auto mmu = std::make_unique<PowerPC::MMU>(system, memory, *manager);
+      mmu->IBATUpdated();
+      mmu->DBATUpdated();
+      auto &state = manager->GetPPCState();
       state.iCache.Cache::Init(memory);
-      ::Interpreter cpu(system, state, mmu, manager.GetBranchWatch(), manager.GetSymbolDB());
+      ::Interpreter cpu(system, state, *mmu, manager->GetBranchWatch(), manager->GetSymbolDB());
       cpu.Init();
       for (unsigned monitor_mode : {0u, 1u, 11u})
         for (bool enabled : {false, true})
@@ -788,9 +891,13 @@ int main() {
       memory.Shutdown();
       active_manager = nullptr;
     }
+    const unsigned isi_cases = translated_fault_cases(system);
     std::cout
         << cases
         << " actual/product zero-dispatch cases passed; scheduler and nonzero dispatch excluded\n";
+    std::cout
+        << isi_cases
+        << " actual/product translated-ISI cases passed; scheduler and nonzero dispatch excluded\n";
     return 0;
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';

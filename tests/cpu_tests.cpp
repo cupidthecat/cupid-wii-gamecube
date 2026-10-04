@@ -2644,6 +2644,233 @@ void cache_tests() {
 } // namespace
 
 namespace {
+void translated_fetch_fault_tests() {
+  unsigned cases = 0;
+  for (Console console : {Console::GameCube, Console::Wii})
+    for (bool enabled : {false, true})
+      for (unsigned monitor_mode : {0u, 1u, 11u})
+        for (u32 mode : {0u, msr::pr, msr::fp, msr::ee, msr::dr, msr::ile})
+          for (bool no_execute : {false, true})
+            for (u32 address : {0x80342000u, 0x9efff000u}) {
+              cupid::Memory memory(console);
+              Interpreter cpu(memory, console);
+              auto &s = cpu.state();
+              unsigned pi = 0;
+              memory.memory_error = [&] { ++pi; };
+              s.pc = address;
+              s.msr = msr::ir | msr::ri | mode;
+              s.sr[address >> 28] = no_execute ? 0x10000000u : 0u;
+              s.gpr[3] = 0xabcdef01;
+              s.spr[spr::dar] = 0xabcdef01;
+              s.spr[spr::dsisr] = 0x12345678;
+              s.spr[spr::hid0] = enabled ? 0x8000u : 0u;
+              s.spr[spr::mmcr0] = monitor_mode == 0 ? 0u : (1u << 6) | monitor_mode;
+              s.spr[spr::mmcr1] = monitor_mode == 0 ? 0u : (monitor_mode << 27) | (1u << 22);
+              constexpr std::array<unsigned, 4> counters{spr::pmc1, spr::pmc2, spr::pmc3,
+                                                         spr::pmc4};
+              for (unsigned n = 0; n < counters.size(); ++n)
+                s.spr[counters[n]] = 0x12345678u + n;
+              s.cycles = 11;
+              s.timebase = 0x12345678;
+              const u32 old_msr = s.msr;
+              CHECK(cpu.step() == 0);
+              CHECK(!cpu.last_step_fetched_instruction());
+              CHECK(s.pc == 0x400 && s.spr[spr::srr0] == address);
+              CHECK(s.spr[spr::srr1] == ((old_msr & 0x87c0ffffu) | 0x40000000u));
+              CHECK(s.msr ==
+                    (((old_msr & ~msr::le) | ((old_msr & msr::ile) ? msr::le : 0u)) & ~0x04ef36u));
+              CHECK(s.gpr[3] == 0xabcdef01 && s.spr[spr::dar] == 0xabcdef01 &&
+                    s.spr[spr::dsisr] == 0x12345678);
+              CHECK(s.cycles == 11 && s.instructions == 0 && s.timebase == 0x12345678);
+              CHECK(pi == 0 && memory.instruction_backing_read_errors() == 0);
+              for (unsigned n = 0; n < counters.size(); ++n)
+                CHECK(s.spr[counters[n]] == 0x12345678u + n);
+              ++cases;
+            }
+  CHECK(cases == 288);
+  {
+    Fixture aligned_control;
+    aligned_control.s.pc = 0x1001;
+    CHECK(aligned_control.cpu.step() == 1);
+    CHECK(aligned_control.s.pc == 0x600 && aligned_control.s.cycles == 1);
+    CHECK(aligned_control.s.spr[spr::srr0] == 0x1001);
+  }
+  {
+    Fixture unfinished;
+    unfinished.memory.unsupported_device = true;
+    unfinished.s.pc = 0x3000;
+    unfinished.s.gpr[3] = 0xabcdef01;
+    unfinished.s.spr[spr::srr0] = 0x12345678;
+    unfinished.s.cycles = 11;
+    bool unsupported = false;
+    try {
+      unfinished.cpu.step();
+    } catch (const UnsupportedInstruction &error) {
+      unsupported = true;
+      CHECK(error.pc == 0x3000);
+    }
+    CHECK(unsupported && unfinished.s.pc == 0x3000 && unfinished.s.cycles == 11);
+    CHECK(unfinished.s.instructions == 0 && unfinished.s.gpr[3] == 0xabcdef01);
+    CHECK(unfinished.s.spr[spr::srr0] == 0x12345678);
+  }
+  {
+    class HostFaultFetch final : public Memory {
+    public:
+      u32 read32(u32) override {
+        throw std::runtime_error("Authored host fetch failure");
+      }
+    } backing;
+
+    Interpreter cpu(backing);
+    auto &s = cpu.state();
+    s.pc = 0x1000;
+    s.cycles = 11;
+    s.spr[spr::srr0] = 0x12345678;
+    bool host_error = false;
+    try {
+      cpu.step();
+    } catch (const UnsupportedInstruction &) {
+      CHECK(false);
+    } catch (const std::runtime_error &error) {
+      host_error = true;
+      CHECK(std::string(error.what()) == "Authored host fetch failure");
+    }
+    CHECK(host_error && s.pc == 0x1000 && s.cycles == 11 && s.instructions == 0);
+    CHECK(s.spr[spr::srr0] == 0x12345678);
+  }
+  Fixture f;
+  for (unsigned n = 0; n < 11; ++n)
+    f.run(0x60000000);
+  f.s.spr[spr::dec] = 100;
+  const auto cycles = f.s.cycles, instructions = f.s.instructions;
+  for (unsigned n = 0; n < 10; ++n) {
+    f.s.pc = 0x80342000;
+    f.s.msr = msr::ir;
+    CHECK(f.cpu.step() == 0);
+    CHECK(f.s.pc == 0x400 && f.s.spr[spr::srr0] == 0x80342000);
+    CHECK(f.s.cycles == cycles && f.s.instructions == instructions);
+    CHECK(f.s.timebase == 0 && f.s.spr[spr::dec] == 100);
+  }
+  f.run(0x60000000);
+  CHECK(f.s.cycles == cycles + 1 && f.s.instructions == instructions + 1);
+  CHECK(f.s.timebase == 1 && f.s.spr[spr::dec] == 100);
+}
+
+void fetch_diagnostic_tests() {
+  Fixture initial;
+  CHECK(!initial.cpu.last_step_fetched_instruction());
+  initial.run(0x60000000);
+  CHECK(initial.cpu.last_step_fetched_instruction());
+  initial.cpu.reset();
+  CHECK(!initial.cpu.last_step_fetched_instruction());
+
+  for (u32 opcode : {1u, fp(21, 1, 2, 3)}) {
+    Fixture decoded;
+    decoded.run(imm(14, 3, 0, 7));
+    const auto instructions = decoded.s.instructions;
+    decoded.run(opcode);
+    CHECK(decoded.cpu.last_step_fetched_instruction());
+    CHECK(decoded.s.last_pc == 0x1000 && decoded.s.last_opcode == opcode);
+    CHECK(decoded.s.pc == (opcode == 1 ? 0x700u : 0x800u));
+    CHECK(decoded.s.instructions == instructions);
+  }
+
+  for (bool translated : {false, true}) {
+    Fixture rejected;
+    const u32 opcode = imm(14, 3, 0, 7);
+    rejected.run(opcode);
+    rejected.s.pc = translated ? 0x80342000u : 0x1001u;
+    rejected.s.msr = translated ? msr::ir : 0;
+    rejected.cpu.step();
+    CHECK(!rejected.cpu.last_step_fetched_instruction());
+    CHECK(rejected.s.pc == (translated ? 0x400u : 0x600u));
+    CHECK(rejected.s.last_pc == 0x1000 && rejected.s.last_opcode == opcode);
+  }
+
+  {
+    Fixture interrupt;
+    const u32 opcode = imm(14, 3, 0, 7);
+    interrupt.run(opcode);
+    interrupt.s.msr = msr::ee | msr::ri;
+    interrupt.cpu.set_external_interrupt(true);
+    interrupt.cpu.step();
+    CHECK(!interrupt.cpu.last_step_fetched_instruction());
+    CHECK(interrupt.s.pc == 0x500);
+    CHECK(interrupt.s.last_pc == 0x1000 && interrupt.s.last_opcode == opcode);
+  }
+
+  {
+    Fixture unavailable;
+    const u32 opcode = imm(14, 3, 0, 7);
+    unavailable.run(opcode);
+    unavailable.memory.unsupported_device = true;
+    unavailable.s.pc = 0x3000;
+    bool unsupported = false;
+    try {
+      unavailable.cpu.step();
+    } catch (const UnsupportedInstruction &) {
+      unsupported = true;
+    }
+    CHECK(unsupported && !unavailable.cpu.last_step_fetched_instruction());
+    CHECK(unavailable.s.pc == 0x3000 && unavailable.s.last_pc == 0x1000);
+    CHECK(unavailable.s.last_opcode == opcode);
+  }
+
+  {
+    Fixture little_endian;
+    const u32 opcode = imm(14, 3, 0, 7);
+    little_endian.run(opcode);
+    little_endian.s.msr = msr::le;
+    CHECK_THROWS(little_endian.cpu.step());
+    CHECK(!little_endian.cpu.last_step_fetched_instruction());
+    CHECK(little_endian.s.last_pc == 0x1000 && little_endian.s.last_opcode == opcode);
+  }
+
+  for (bool unfinished_device : {false, true}) {
+    Fixture unfinished;
+    const u32 opcode = unfinished_device ? imm(32, 3, 4, 0) : special(371, 3, 1);
+    unfinished.memory.unsupported_device = unfinished_device;
+    unfinished.s.gpr[4] = 0x3000;
+    CHECK_THROWS(unfinished.run(opcode));
+    CHECK(unfinished.cpu.last_step_fetched_instruction());
+    CHECK(unfinished.s.last_pc == 0x1000 && unfinished.s.last_opcode == opcode);
+    CHECK(unfinished.s.pc == 0x1000 && unfinished.s.instructions == 0);
+  }
+
+  {
+    class HostFaultMemory final : public Memory {
+    public:
+      bool fail = false;
+
+      u32 read32(u32 address) override {
+        if (fail)
+          throw std::runtime_error("Authored diagnostic fetch failure");
+        return Memory::read32(address);
+      }
+    } memory;
+
+    Interpreter cpu(memory);
+    auto &s = cpu.state();
+    memory.write32(0x1000, 0x60000000);
+    s.pc = 0x1000;
+    cpu.step();
+    CHECK(cpu.last_step_fetched_instruction());
+    memory.fail = true;
+    s.pc = 0x1000;
+    bool host_error = false;
+    try {
+      cpu.step();
+    } catch (const UnsupportedInstruction &) {
+      CHECK(false);
+    } catch (const std::runtime_error &error) {
+      host_error = true;
+      CHECK(std::string(error.what()) == "Authored diagnostic fetch failure");
+    }
+    CHECK(host_error && !cpu.last_step_fetched_instruction());
+    CHECK(s.pc == 0x1000 && s.last_pc == 0x1000 && s.last_opcode == 0x60000000);
+  }
+}
+
 void zero_dispatch_tests() {
   unsigned cases = 0;
   for (Console console : {Console::GameCube, Console::Wii})
@@ -2675,6 +2902,7 @@ void zero_dispatch_tests() {
           s.cycles = 12345;
           s.timebase = 0x12345678;
           CHECK(cpu.step() == 0);
+          CHECK(cpu.last_step_fetched_instruction());
           CHECK(s.pc == address + 4 && s.last_pc == address && s.last_opcode == 0);
           CHECK(s.cycles == 12345 && s.timebase == 0x12345678);
           CHECK(s.instructions == 0);
@@ -2773,6 +3001,8 @@ void instruction_fill_failure_tests() {
 
 int main() {
   return run_tests([] {
+    fetch_diagnostic_tests();
+    translated_fetch_fault_tests();
     zero_dispatch_tests();
     instruction_fill_failure_tests();
     integer_tests();

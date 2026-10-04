@@ -2,7 +2,7 @@
 
 Begin with a bounded run, a dedicated user directory, and final JSON state. Keep the exact input and command unchanged while locating the first divergence. A guest can remain in an exception handler until a run bound, so an exit code of zero needs its outcome and state interpreted together.
 
-Use `--trace-after-boot` to avoid recording apploader execution when investigating game startup. `--trace-start` and `--trace-count` capture a narrow instruction window. Trace PCs and opcodes are the values actually fetched by the interpreter, including its instruction-cache state.
+Use `--trace-after-boot` to avoid recording apploader execution when investigating game startup. `--trace-start` and `--trace-count` capture a narrow instruction window. `pc_before` records the step's starting PC. Check `opcode_fetched` before attributing `opcode` to that PC: a false value marks an interrupt or failure before obtaining a word and retains the earlier opcode. A true value records the word actually obtained by the interpreter, including its instruction-cache state, zero words and decoded guest faults.
 
 Storage-fault investigations should compare `srr0`, `dar`, `dsisr`, and the effective address formed by the faulting instruction. Then reproduce the relevant CPU-to-memory-to-device transaction in a small synthetic test. Testing only a device's canonical register address can miss a CPU-translated alias fault.
 

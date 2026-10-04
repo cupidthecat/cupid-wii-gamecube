@@ -6,6 +6,8 @@
 #include <fstream>
 #include <random>
 #include <sstream>
+#include <thread>
+#include <vector>
 
 namespace {
 using namespace cupid;
@@ -68,6 +70,125 @@ void guest_input(Console console) {
   CHECK(machine.cpu().state().instructions == 16);
   std::filesystem::remove(path);
 }
+
+struct ReplayFile {
+  std::filesystem::path path;
+
+  ReplayFile() {
+    std::random_device random;
+    path =
+        std::filesystem::temp_directory_path() / ("cupid-follow-guest-" + std::to_string(random()) +
+                                                  "-" + std::to_string(random()) + ".txt");
+    CHECK(!std::filesystem::exists(path));
+  }
+
+  ~ReplayFile() {
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+  }
+
+  void write(const std::string &text) {
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    file << text;
+    file.close();
+    CHECK(file);
+  }
+};
+
+void unchanged_cpu(const cpu::State &before, const cpu::State &after) {
+  CHECK(before.gpr == after.gpr && before.spr == after.spr && before.sr == after.sr);
+  for (std::size_t index = 0; index < before.fpr.size(); ++index)
+    CHECK(before.fpr[index].bits == after.fpr[index].bits);
+  CHECK(before.pc == after.pc && before.msr == after.msr && before.cr == after.cr);
+  CHECK(before.fpscr == after.fpscr && before.last_pc == after.last_pc);
+  CHECK(before.last_opcode == after.last_opcode && before.cycles == after.cycles);
+  CHECK(before.instructions == after.instructions && before.timebase == after.timebase);
+}
+
+void follow_guest_input(Console console) {
+  ReplayFile replay;
+  replay.write("instruction 0 pad0.a=1 pad0.stick-x=200\n"
+               "instruction 4200 pad0.a=0 pad0.b=1 pad0.stick-x=20\n");
+  runtime::Machine machine(console);
+  machine.load_executable(polling_program());
+  machine.set_limits({0, 0, 0});
+  auto &state = machine.cpu().state();
+  state.fpr[0].bits = {0x7ff123456789abcdull, 0x8000000000000000ull};
+  auto before = state;
+  std::vector<std::string> diagnostics;
+  machine.set_input_replay_follow(replay.path, [&](const std::string &text) {
+    unchanged_cpu(before, state);
+    diagnostics.push_back(text);
+  });
+  unchanged_cpu(before, state);
+  CHECK(diagnostics.size() == 1);
+  const auto step = [&] {
+    before = state;
+    machine.step();
+  };
+  const auto advance = [&](u64 instructions) {
+    while (state.instructions < instructions)
+      step();
+  };
+  const auto poll = [&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(110));
+    step();
+  };
+  advance(9);
+  CHECK(machine.memory().read32(0x6000) == 0x0180c880);
+  advance(4096);
+  const std::string invalid_replay = "instruction 0 pad0.a=0\nfield 8 remote0.ir0-x=2000\n";
+  replay.write(invalid_replay);
+  poll();
+  CHECK(diagnostics.size() == 2 && diagnostics.back().find("rejected") != std::string::npos);
+  advance(4120);
+  CHECK(machine.memory().read32(0x6000) == 0x0180c880);
+  advance(4230);
+  CHECK(machine.memory().read32(0x6000) == 0x02801480);
+
+  advance(8192);
+  const std::string replacement = "instruction 0 pad0.x=1 pad0.stick-x=99\n";
+  replay.write(replacement);
+  poll();
+  CHECK(diagnostics.size() == 3 && diagnostics.back().find("version 2") != std::string::npos);
+  advance(8220);
+  CHECK(machine.memory().read32(0x6000) == 0x04806380);
+
+  advance(12288);
+  replay.write(invalid_replay);
+  poll();
+  CHECK(diagnostics.size() == 4 && diagnostics.back().find("rejected") != std::string::npos);
+  advance(12320);
+  CHECK(machine.memory().read32(0x6000) == 0x04806380);
+  advance(16384);
+  replay.write(replacement);
+  poll();
+  CHECK(diagnostics.size() == 5 && diagnostics.back().find("recovered") != std::string::npos);
+  std::ostringstream followed;
+  machine.write_state(followed, "test");
+  CHECK(followed.str().find("\"input_replay_updates\":2,") != std::string::npos);
+  CHECK(followed.str().find("\"input_replay_rejections\":2,") != std::string::npos);
+
+  auto missing = replay.path;
+  missing += ".missing";
+  CHECK(!std::filesystem::exists(missing));
+  before = state;
+  CHECK_THROWS(machine.set_input_replay_follow(missing));
+  unchanged_cpu(before, state);
+  replay.write(invalid_replay);
+  CHECK_THROWS(machine.set_input_replay(replay.path));
+  unchanged_cpu(before, state);
+  replay.write("instruction 0 pad0.b=1 pad0.stick-x=40\n");
+  machine.set_input_replay(replay.path);
+  unchanged_cpu(before, state);
+  advance(state.instructions + 20);
+  CHECK(machine.memory().read32(0x6000) == 0x02802880);
+  std::ostringstream one_shot;
+  machine.write_state(one_shot, "test");
+  CHECK(one_shot.str().find("\"input_replay_updates\":0,") != std::string::npos);
+  CHECK(one_shot.str().find("\"input_replay_rejections\":0,") != std::string::npos);
+  CHECK(diagnostics.size() == 5);
+}
 } // namespace
 
 int main() {
@@ -122,5 +243,7 @@ int main() {
     invalid("instruction 18446744073709551616 pad0.a=0");
     guest_input(Console::GameCube);
     guest_input(Console::Wii);
+    follow_guest_input(Console::GameCube);
+    follow_guest_input(Console::Wii);
   });
 }

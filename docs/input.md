@@ -44,6 +44,8 @@ Remote report generation implements buttons, accelerometers, basic/extended/full
 
 `--input-replay PATH` supplies deterministic controller events in interactive or headless runs. It replaces live input sampling while preserving window-close and Escape handling. Events enter the normal SI or Remote/HID path; they do not change guest memory or skip instructions.
 
+Use [replay follow mode](input-replay-follow.md) to supply validated replacements during an ongoing run. It keeps the same absolute counters and ordinary device input path.
+
 Each line starts with `instruction N` or `field N`, followed by one or more `device.action=value` assignments. Counters are absolute from boot: instructions include the apploader, and fields count VI device fields, including fields without a presented framebuffer. Counters must be nondecreasing within their own type. Events run before the next CPU instruction; simultaneously ready events follow file order. Values persist until replaced. `#` starts a comment.
 
 ```text

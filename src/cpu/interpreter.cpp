@@ -285,6 +285,7 @@ void Interpreter::reset() {
   data_tlb_recent_ = {};
   instruction_cache_.reset();
   external_interrupt_ = decrementer_pending_ = monitor_pending_ = reservation_ = false;
+  last_step_fetched_ = false;
   tick_remainder_ = decrementer_remainder_ = 0;
 }
 
@@ -603,6 +604,7 @@ void Interpreter::tick(u32 cycles) {
 }
 
 u32 Interpreter::step() {
+  last_step_fetched_ = false;
   next_pc_ = state_.pc + 4;
   u32 cycles = 1;
   if (take_interrupt(state_.pc)) {
@@ -616,6 +618,7 @@ u32 Interpreter::step() {
       alignment(state_.pc);
     if (state_.msr & msr::le)
       unsupported("Little-endian instruction mode is not implemented");
+    cycles = 0;
     try {
       current_opcode_ = instruction_cache_.read(bus_, translate(state_.pc, true),
                                                 (state_.spr[spr::hid0] & 0x8000) != 0,
@@ -627,6 +630,7 @@ u32 Interpreter::step() {
     }
     state_.last_pc = state_.pc;
     state_.last_opcode = current_opcode_;
+    last_step_fetched_ = true;
     fetched = true;
     cycles = current_opcode_ == 0 ? 0 : instruction_cycles(current_opcode_);
     if (current_opcode_ != 0) {

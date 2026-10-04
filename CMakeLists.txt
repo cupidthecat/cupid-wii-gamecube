@@ -91,7 +91,8 @@ set(cupid_sources
   src/runtime/machine.cpp
   src/platform/pointer.cpp
   src/platform/output.cpp
-  src/platform/input_replay.cpp)
+  src/platform/input_replay.cpp
+  src/platform/input_replay_follow.cpp)
 add_library(cupid_core STATIC ${cupid_sources})
 target_include_directories(cupid_core PUBLIC include "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_link_libraries(cupid_core PUBLIC cupid_options cupid_dependencies)
@@ -101,7 +102,7 @@ include(cmake/DeveloperChecks.cmake)
 
 if(CUPID_BUILD_TESTS)
   enable_testing()
-  foreach(suite IN ITEMS cpu core disc device remote remote_speaker host_mixer extension_cipher sdp sdp_transport runtime elf fonts dsp handheld ios network sysconf gfx vertex texture fragment rasterizer efb_copy xfb_copy efb_access guest_video input_replay audio_stats pointer)
+  foreach(suite IN ITEMS cpu core disc device remote remote_speaker host_mixer extension_cipher sdp sdp_transport runtime elf fonts dsp handheld ios network sysconf gfx vertex texture fragment rasterizer efb_copy xfb_copy efb_access guest_video input_replay input_replay_follow input_replay_follow_guest audio_stats pointer)
     add_executable(cupid_${suite}_tests tests/${suite}_tests.cpp)
     target_include_directories(cupid_${suite}_tests PRIVATE tests)
     target_link_libraries(cupid_${suite}_tests PRIVATE cupid_core)
@@ -110,6 +111,8 @@ if(CUPID_BUILD_TESTS)
   endforeach()
   set_tests_properties(guest_video PROPERTIES TIMEOUT 180 LABELS "public;guest;integration")
   set_tests_properties(input_replay PROPERTIES LABELS "public;guest;input")
+  set_tests_properties(input_replay_follow PROPERTIES LABELS "public;unit;input")
+  set_tests_properties(input_replay_follow_guest PROPERTIES TIMEOUT 180 LABELS "public;guest;integration;usb;input")
   set_tests_properties(sdp_transport PROPERTIES LABELS "public;integration;usb")
   set_tests_properties(efb_access PROPERTIES LABELS "public;guest;integration;graphics")
   foreach(argument IN ITEMS help version self-test)

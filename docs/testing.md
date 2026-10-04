@@ -196,3 +196,21 @@ This snapshot added bounds for attempted CPU steps, corrected the default pointe
 Windows and GCC each passed 48 zero-dispatch comparisons and 232,098 exact pointer projections, with all thirteen earlier comparisons passing again. The stepping comparison excludes scheduler timing and nonzero dispatch. Pointer comparisons cover coordinates and sizes for the tested cursor positions and sensor-bar placements.
 
 Clang-format 18 passed, including test adapter includes. Clang 18 static analysis checked all 38 product translation units with no project diagnostics. All 136 captured source, header, test and build input hashes remained unchanged through the final checks.
+
+## Checked snapshot after `c140c115aa88`
+
+This snapshot corrected translated instruction-fault timing, added the fetched-opcode trace flag, and connected complete input-replay replacements to SI and USB/HID input. Public tests cover accepted replacements, rejected edits, recovery, retained controls and full CPU-state preservation during follow callbacks.
+
+| Configuration | Public tests passed | Direct comparisons passed | Declared skips |
+| --- | ---: | ---: | ---: |
+| Windows MSVC Release | 38 | 15 | 1 |
+| Linux GCC Release | 38 | 15 | 1 |
+| Linux Clang Release | 38 | 0 | 16 |
+| Linux GCC ASan + UBSan, headless | 35 | 0 | 19 |
+| Linux Clang ASan + UBSan, headless | 35 | 0 | 19 |
+
+Windows and GCC each passed 48 zero-dispatch and 288 translated instruction-fault comparisons. These exclude scheduler timing and nonzero dispatch. The native comparison fixture initially exceeded the default stack: its service objects now use ordinary heap lifetimes, and actual BAT reset callers initialize their lookup arrays. Both original failures remain recorded. The trace regression failed with the previous Machine implementation and passed with the updated implementation using the same current CPU and frozen inputs.
+
+The first sanitizer runs exceeded the guest follower test's inherited 60-second budget. The unchanged binaries completed every assertion in 136.53 seconds on GCC and 109.86 seconds on Clang. Taking full CPU snapshots only at the declared 4,096-attempt poll boundaries reduced separate instrumented runs to 98.97 and 81.45 seconds. The fixture also checks callback cadence. Its 28 guest instructions, device-cycle bounds, three-second update waits, report checks and full-state assertions remain unchanged. With a scoped 180-second budget, the corrected full sanitizer runs passed this test in 140.65 and 112.22 seconds.
+
+Separate authored CLI checks passed on Windows and GCC in both console modes: valid follow input ran exactly 16 CPU steps, and invalid initial input was rejected before boot. Clang-format 18 passed, including test adapter includes. Clang 18 static analysis checked all 39 product translation units with no project diagnostics. All 140 captured source, header, test and build input hashes remained unchanged through the corrected checks.

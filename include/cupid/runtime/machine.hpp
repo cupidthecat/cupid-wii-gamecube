@@ -5,12 +5,14 @@
 #include "cupid/hw/devices.hpp"
 #include "cupid/ios/ipc.hpp"
 #include "cupid/platform/input_replay.hpp"
+#include "cupid/platform/input_replay_follow.hpp"
 #include "cupid/platform/output.hpp"
 #include "cupid/runtime/boot.hpp"
 #include "cupid/runtime/fonts.hpp"
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 
@@ -52,6 +54,8 @@ public:
                  u64 start = 0);
   void set_user_directory(const std::filesystem::path &path);
   void set_input_replay(const std::filesystem::path &path);
+  void set_input_replay_follow(const std::filesystem::path &path,
+                               std::function<void(const std::string &)> diagnostic = {});
   void install_bios(const Bios &bios);
   void install_fonts(const IplFonts &fonts);
   void load_executable(std::span<const u8> file, bool elf = false);
@@ -62,6 +66,8 @@ public:
   void write_state(std::ostream &out, const std::string &outcome) const;
 
 private:
+  void refresh_input_replay();
+
   Console console_;
   Memory memory_;
   cpu::Interpreter cpu_;
@@ -82,5 +88,8 @@ private:
   std::filesystem::path user_directory_;
   bool shutdown_requested_ = false;
   std::unique_ptr<platform::InputReplay> input_replay_;
+  std::unique_ptr<platform::InputReplayFollower> input_replay_follower_;
+  std::chrono::steady_clock::time_point last_input_follow_poll_{};
+  std::function<void(const std::string &)> input_follow_diagnostic_;
 };
 } // namespace cupid::runtime

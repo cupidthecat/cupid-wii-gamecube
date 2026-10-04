@@ -8,6 +8,7 @@
 - [Font validation](fonts.md): separately validated private IPL font blocks.
 - [Input](input.md): keyboard, controller, mouse, and motion bindings with test scope.
 - [Pointer camera](pointer-camera.md): mouse pose, infrared projection, source mapping and exact checks.
+- [Following replays](input-replay-follow.md): changing ordinary headless input during a long run.
 - [Compatibility](compatibility.md): local game observations and unverified gameplay requirements.
 - [Debugging](debugging.md): bounded runs, trace capture, and finding the first fault.
 

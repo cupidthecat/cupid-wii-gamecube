@@ -59,6 +59,10 @@ public:
   void configure_boot();
   u32 step();
 
+  bool last_step_fetched_instruction() const noexcept {
+    return last_step_fetched_;
+  }
+
   void set_external_interrupt(bool active) {
     external_interrupt_ = active;
   }
@@ -82,6 +86,7 @@ private:
   std::array<u8, 64> instruction_tlb_recent_{}, data_tlb_recent_{};
   bool external_interrupt_ = false, decrementer_pending_ = false, monitor_pending_ = false;
   bool reservation_ = false;
+  bool last_step_fetched_ = false;
   u32 reservation_address_ = 0, next_pc_ = 0, current_opcode_ = 0;
   u32 tick_remainder_ = 0, decrementer_remainder_ = 0;
   void exception(u32 vector, u32 saved_pc, u32 cause = 0);

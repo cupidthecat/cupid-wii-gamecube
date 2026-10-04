@@ -2,11 +2,98 @@
 #include "cupid/runtime/machine.hpp"
 #include "test_support.hpp"
 #include <array>
+#include <fstream>
 #include <limits>
+#include <random>
 #include <sstream>
 #include <thread>
 
 namespace {
+struct TraceFile {
+  std::filesystem::path path;
+
+  TraceFile() {
+    std::random_device random;
+    path = std::filesystem::temp_directory_path() /
+           ("cupid-trace-" + std::to_string(random()) + "-" + std::to_string(random()) + ".jsonl");
+    CHECK(!std::filesystem::exists(path));
+  }
+
+  ~TraceFile() {
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+  }
+};
+
+void trace_fetch_status(cupid::Console console) {
+  using namespace cupid;
+  TraceFile temporary;
+  u32 initial_opcode = 0;
+  {
+    runtime::Machine machine(console);
+    machine.load_executable(runtime::self_test_dol());
+    machine.set_trace(temporary.path, 7);
+    auto &state = machine.cpu().state();
+    initial_opcode = machine.memory().read32(0x4000);
+    machine.memory().write32(0x5004, 1);
+    machine.step();
+    CHECK(state.instructions == 1);
+    state.pc = 0x80005000;
+    machine.step();
+    CHECK(state.last_opcode == 0 && state.pc == 0x80005004);
+    machine.step();
+    CHECK(state.last_opcode == 1 && state.pc == 0x700);
+
+    // An interrupt at the last fetched PC still has no new instruction word.
+    state.pc = state.last_pc;
+    state.msr = cpu::msr::ee;
+    machine.memory().write32(0x0c003004, 1);
+    machine.memory().memory_access_error();
+    machine.step();
+    CHECK(state.pc == 0x500 && state.last_opcode == 1);
+    machine.memory().write32(0x0c003000, 1);
+    state.pc = 0x80005005;
+    machine.step();
+    CHECK(state.pc == 0x600 && state.last_opcode == 1);
+
+    state.pc = 0x40005000;
+    state.msr = cpu::msr::ir;
+    state.sr[4] = 1u << 28;
+    const auto cycles = state.cycles;
+    machine.step();
+    CHECK(state.pc == 0x400 && state.last_opcode == 1 && state.cycles == cycles);
+    CHECK(state.instructions == 1);
+
+    machine.load_executable(runtime::self_test_dol());
+    CHECK(!machine.cpu().last_step_fetched_instruction());
+    machine.step();
+    CHECK(machine.cpu().state().instructions == 1);
+  }
+
+  std::ifstream trace(temporary.path);
+  CHECK(trace);
+  constexpr std::array<bool, 7> fetched{true, true, true, false, false, false, true};
+  const std::array<u32, 7> opcodes{initial_opcode, 0, 1, 1, 1, 1, initial_opcode};
+  constexpr std::array<u32, 7> before{0x80004000, 0x80005000, 0x80005004, 0x80005004,
+                                      0x80005005, 0x40005000, 0x80004000};
+  constexpr std::array<u32, 7> after{0x80004004, 0x80005004, 0x700,     0x500,
+                                     0x600,      0x400,      0x80004004};
+  std::string record;
+  for (std::size_t index = 0; index < fetched.size(); ++index) {
+    CHECK(std::getline(trace, record));
+    CHECK(record.find(std::string("\"opcode_fetched\":") + (fetched[index] ? "true" : "false")) !=
+          std::string::npos);
+    CHECK(record.find("\"opcode\":" + std::to_string(opcodes[index]) + ",") != std::string::npos);
+    CHECK(record.find("\"pc_before\":" + std::to_string(before[index]) + ",") != std::string::npos);
+    CHECK(record.find("\"pc_after\":" + std::to_string(after[index]) + ",") != std::string::npos);
+    CHECK(record.find("\"attempt\":" + std::to_string(index == 6 ? 1 : index + 1) + ",") !=
+          std::string::npos);
+    CHECK(record.find("\"step\":1,") != std::string::npos);
+  }
+  CHECK(!std::getline(trace, record));
+  CHECK(!trace.bad());
+}
+
 void memory_error_interrupt(cupid::Console console) {
   cupid::runtime::Machine machine(console);
   auto &memory = machine.memory();
@@ -108,6 +195,8 @@ void zero_step_limits(cupid::Console console) {
 int main() {
   return run_tests([] {
     using namespace cupid;
+    trace_fetch_status(Console::GameCube);
+    trace_fetch_status(Console::Wii);
     memory_error_interrupt(Console::GameCube);
     memory_error_interrupt(Console::Wii);
     fault_step_limits(Console::GameCube);

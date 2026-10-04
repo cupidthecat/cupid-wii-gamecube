@@ -92,9 +92,22 @@ nonzero host values. DMA retained 192,000 guest values; Remote-only output
 retained zero. The independent channel tones satisfied the original spectral
 assertions with strict MSVC compilation.
 
-Linux's SDL dummy-backend tests pass. A live PulseAudio monitor attempt timed
-out during shutdown; the host sound server subsequently stopped answering
-`pactl info`. A successful real Linux endpoint check remains outstanding.
+Linux's SDL dummy-backend tests pass. A separate strict GCC driver also passes
+through SDL's PulseAudio backend into an isolated, clocked software sink.
+Monitor capture detects the intended 997 Hz left and 1,489 Hz right tones for
+both main DMA and Remote-only output, with the original spectral assertions.
+The callback records 77,558 and 30,456 nonzero values respectively; main DMA
+retains 192,000 guest values, and Remote-only output retains zero. All six
+copied runtime artifacts and 38 public headers match their hashes before and
+after the test. This checks the audio protocol and mixer through a software
+sink; it does not establish physical output.
+
+The shared WSLg sound server remains a separate failure. After `pactl info`
+responded again, a bounded attempt to capture `RDPSink.monitor` timed out while
+the output driver was running. The server then stopped answering the same
+read-only query. The failed trace and captured build inputs are preserved.
+Successful Linux output through that shared endpoint and commercial-game
+audibility remain outstanding.
 
 ## Behavior mapping
 

@@ -34,7 +34,7 @@ cupid-wii-gamecube --game "/path/to/program.dol" --console gamecube \
 | `--log PATH` | Progress and diagnostic messages. |
 | `--frame-dump PATH` | Last actual guest frame as binary PPM, if a frame was presented. |
 
-The runtime prints final state to stdout even when `--dump-state` is absent. Traces contain register state after each CPU step, together with its previous PC and the most recently fetched opcode. An interrupt or fault before fetching can retain the earlier opcode value. Step and time bounds also apply during boot. Final `step_attempts` counts every CPU step entered; `instructions` counts successfully executed nonzero instructions. Each trace record retains that successful count in `step` and supplies a separate `attempt` sequence. Replay events and `--trace-start` still use the successful instruction count.
+The runtime prints final state to stdout even when `--dump-state` is absent. Traces contain register state after each CPU step, together with its previous PC and the most recently fetched opcode. `opcode_fetched` is true when that step obtained a word, including zero words and decoded guest faults. It is false for interrupt delivery or a fault before fetching; `opcode` then retains its earlier value. Step and time bounds also apply during boot. Final `step_attempts` counts every CPU step entered; `instructions` counts successfully executed nonzero instructions. Each trace record retains that successful count in `step` and supplies a separate `attempt` sequence. Replay events and `--trace-start` still use the successful instruction count.
 
 Time checks and interactive polling occur at startup and at most every 4,096 attempted steps. Repeated guest faults or zero-cycle fetches therefore cannot freeze polling or evade an enabled step bound. Zero disables only the selected bound; disabling every bound allows an indefinite run.
 
@@ -58,6 +58,8 @@ cupid-wii-gamecube --game "/path/to/game.rvz" --headless --audio none \
 `--input-config PATH` reads `action=key` lines. Empty lines and lines beginning with `#` are ignored. The keys use SDL key names. Keyboard, mouse, controller, Remote, Nunchuk, tilt, and shake defaults are documented in [input](input.md), together with the verified test scope and remaining transport limitations.
 
 `--input-replay PATH` reads controller events scheduled by absolute instruction count or VI field count. It works headless and replaces live input sampling. See [the replay format](input.md#input-replay) for actions, ranges, and ordering.
+
+`--input-replay-follow PATH` uses that same format and accepts valid complete file replacements during a run. Select it or one-shot `--input-replay`. The initial file must validate before boot; later malformed, missing or unreadable replacements leave the last accepted source active. Diagnostics go to stderr and `--log`, and final state records `input_replay_updates` and `input_replay_rejections`. See [following replays](input-replay-follow.md) for polling, absolute counters and safe file replacement.
 
 ## Inspecting a disc
 

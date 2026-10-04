@@ -21,7 +21,7 @@ struct UsageError : std::runtime_error {
 struct Options {
   std::filesystem::path game, bios, user = "userdata", trace, state, log, output, input, frame_dump;
   std::filesystem::path ipl_fonts;
-  std::filesystem::path input_replay;
+  std::filesystem::path input_replay, input_replay_follow;
   std::string console = "auto", graphics = "software", audio = "none";
   std::string display_aspect = "standard", remote_speakers = "off";
   std::string extract_file;
@@ -110,7 +110,11 @@ Options parse(int argc, char **argv) {
       o.input = value();
     else if (arg == "--input-replay")
       o.input_replay = value();
-    else if (arg == "--log")
+    else if (arg == "--input-replay-follow") {
+      o.input_replay_follow = value();
+      if (o.input_replay_follow.empty())
+        throw UsageError("Input replay follow path must not be empty");
+    } else if (arg == "--log")
       o.log = value();
     else if (arg == "--output")
       o.output = value();
@@ -150,6 +154,8 @@ Options parse(int argc, char **argv) {
     throw UsageError("Remote speakers must be on or off");
   if (o.remote_speakers == "on" && o.audio != "sdl")
     throw UsageError("Remote speakers require --audio sdl");
+  if (!o.input_replay.empty() && !o.input_replay_follow.empty())
+    throw UsageError("Select --input-replay or --input-replay-follow");
   if (o.read_disc && o.read_game)
     throw UsageError("Select one disc-read address space");
   const unsigned commands = unsigned(o.inspect) + unsigned(o.validate_bios) +
@@ -186,12 +192,13 @@ Usage: cupid-wii-gamecube --game PATH [options]
   --remote-speakers on|off     Mix decoded Remote speakers (default off; requires SDL audio)
   --input-config PATH         Keyboard action=key mappings
   --input-replay PATH         Deterministic guest input events, including headless
+  --input-replay-follow PATH  Reload valid complete replay replacements during a run
   --user-dir PATH             Explicit persistent-data directory (userdata)
   --max-instructions N        Bound CPU steps, including faults (default 1000000)
   --max-frames N              Stop after N presented frames (0 disables)
   --run-seconds N             Wall-clock bound (default 10; 0 disables)
   --trace PATH                Write execution state as JSON lines
-  --trace-count N             Maximum traced instructions (default 1000)
+  --trace-count N             Maximum trace records (default 1000)
   --trace-start N             Begin tracing at instruction N (default 0)
   --trace-after-boot          Start the trace at the game's entry point
   --dump-state PATH           Write final machine state as JSON
@@ -235,8 +242,8 @@ void state_output(runtime::Machine &machine, const Options &options, const std::
 }
 
 void protect_inputs(const Options &options) {
-  for (const auto &input :
-       {options.game, options.bios, options.ipl_fonts, options.input, options.input_replay}) {
+  for (const auto &input : {options.game, options.bios, options.ipl_fonts, options.input,
+                            options.input_replay, options.input_replay_follow}) {
     if (input.empty())
       continue;
     for (const auto &output :
@@ -421,6 +428,8 @@ int main(int argc, char **argv) {
     machine.set_user_directory(options.user);
     if (!options.input_replay.empty())
       machine.set_input_replay(options.input_replay);
+    if (!options.input_replay_follow.empty())
+      machine.set_input_replay_follow(options.input_replay_follow, message);
     if (!options.bios.empty()) {
       auto bios = runtime::load_bios(options.bios);
       machine.install_bios(bios);

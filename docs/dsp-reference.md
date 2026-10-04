@@ -65,8 +65,8 @@ caller path for profiles `0xdf059f68` and `0x4be6a5cb`. All **393,218 checkpoint
 **50,331,904 RAM bytes**, queued mailbox words and interrupt counts. SHA-1 over the RAM was
 `ac2077b16264e96bbd8976c66ef4daa5174a898a`. This covers initialization, 65,536 sequential requests
 per profile, parameter receipt, acknowledgments, update calls and address aliases. Upload switching
-and save-state adapters were outside these cases. The unknown command-12 variants remain explicit
-failures; this does not establish standalone task, JoyBus transfer or hardware behavior.
+and save-state adapters were outside these cases. The other command-12 variants were outside this
+comparison; its results do not establish standalone task, JoyBus transfer or hardware behavior.
 
 The standalone task was then compared with the full unchanged `GBA.cpp`, `UCodes.cpp`,
 `MailHandler.cpp` and `Hash.cpp` implementations. With seed `0x5441534b`, both console modes
@@ -110,6 +110,16 @@ selection and suspension methods were compiled unchanged. The project DSP units
 were rebuilt together against a copied coherent core and matching headers;
 input hashes matched before and after execution. These checks cover software
 task transitions, not physical link transfers or scheduler timing on hardware.
+
+An additional unchanged-caller comparison exercised ROM uploads of the card
+profile `0x65d6cc6f`, pending and halted card updates, return to ROM, initialization
+control words and reset. It then repeated handheld and audio suspension paths.
+Both console modes passed 422,912 checkpoints over 54,132,736 RAM bytes using
+1,024 authored seeds per console. SHA-1 over the compared RAM was
+`1aa8fd44ed6ccda1b137a90c70f02489550b9913`. Fixture and input hashes matched
+before and after execution. The software clock and checked-memory adapters had
+the same limits as the preceding task comparison; physical scheduler timing,
+serialization and audio rendering remained outside this fixture.
 
 ## Two-word command compatibility comparison
 

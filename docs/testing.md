@@ -6,7 +6,7 @@ Public tests run without console firmware, commercial discs, save files or keys:
 ctest --test-dir build/release --output-on-failure
 ```
 
-CTest registers separate CPU, memory/core, disc, device, remote, remote-speaker, service discovery, DSP, graphics-command, vertex, texture, fragment, rasterizer, framebuffer-copy, IOS, network, system-configuration, executable-loader, font-loader and runtime suites, plus CLI help, version and synthetic runtime checks. Each suite has a timeout. Assertions stay active in Release builds because the test support code performs explicit checks.
+CTest registers separate CPU, memory/core, disc, device, remote, remote-speaker, extension-cipher, service discovery, DSP, graphics-command, vertex, texture, fragment, rasterizer, framebuffer-copy, IOS, network, system-configuration, executable-loader, font-loader and runtime suites, plus CLI help, version and synthetic runtime checks. Each suite has a timeout. Assertions stay active in Release builds because the test support code performs explicit checks.
 
 The authored guest video suite executes its display, graphics, controller and input-dependent redraw operations through PowerPC instructions on both console modes. See [guest video](guest-video.md) for the fixture and checked output. It uses no private console assets.
 
@@ -21,6 +21,8 @@ The same suite executes a cached RAM display list through guest stores to a FIFO
 The system configuration suite checks typed SYSCONF parsing, default settings, controller registration, preservation of unrelated values, malformed inputs and serializer bounds. IOS fixtures check initialization before guest file reads, retained file ownership and settings, backups, and unsafe-path failures. See [system configuration](system-config.md) for the independent full-file comparison and its defined boundary choice.
 
 The Remote speaker suite checks PCM8 and Yamaha ADPCM decoding, predictor state, clipping, sample-rate divisors, gain, suppression and invalid-input state preservation. It checks decoder samples and packet metadata.
+
+The extension cipher suite checks authored key records against fixed results from the compiled behavioral target, encryption and decryption, all eight address phases, chunking, address wrap, and retained key material.
 
 The output suite uses SDL's dummy video and audio drivers to create a renderer, upload guest framebuffer data, queue stereo samples at all four supported rates, and poll input. The input suite attaches virtual controllers and checks four-port hotplug, SI buttons and axes, analog triggers, Remote/Nunchuk mappings, and guest rumble through SDL's virtual driver callback. These checks open no host window and play no sound. Headless builds report both suites as skipped. They do not measure driver performance or verify a physical controller.
 
@@ -66,6 +68,7 @@ The same option enables these C++23 comparisons and downloads pinned fmt 9.1.0:
 
 - `cpu_fused_reference_checks` compares single-precision fused arithmetic under four host rounding modes.
 - `cpu_ni_reference_checks` compares scalar guest arithmetic under all rounding modes with NI enabled and disabled, including tiny results at the normal-value boundary. It uses the actual SIMD rounding and flush controls on x86_64 and reports an architecture skip elsewhere.
+- `cpu_memory_reference_checks` compares page-crossing integer, binary64 and quantized loads against the unchanged MMU, MMIO and interpreter implementations. It checks destination and update registers, both floating lanes, faults, DAR, DSISR and page-table words. See [CPU mappings](cpu-reference.md) for its selected attribute combinations and exclusions.
 - `vertex_reference_checks` compares position, normal, lighting and texture-coordinate transforms.
 - `rasterizer_reference_checks` compares clipping, coverage and interpolated samples for triangle, line and point commands.
 - `texture_reference_checks` compares exact texel components across all texture encodings, palettes, texture units, RAM mip levels and manual texture memory. It also compares nearest and bilinear sampling with clamp, repeat and mirror modes, negative coordinates, fractional boundaries and split-bank RGBA8 fetches. The sampling comparisons use manual texture memory at mip level zero; they do not establish LOD selection accuracy.
@@ -76,11 +79,11 @@ The same option enables these C++23 comparisons and downloads pinned fmt 9.1.0:
 
 Graphics comparisons link fmt. The product still builds as C++20 and does not link it. Test-only hooks stop with errors if unused application or image-decoding paths are entered.
 
-External graphics comparison sources retain visible narrowing warnings on MSVC and use `-O1` on GCC to avoid an optimizer warning in their fmt calls. Project source and the test drivers retain the configured warning-as-error policy and strict floating-point flags.
+External graphics and memory comparison sources retain visible compiler warnings on MSVC and use `-O1` on GCC. Project source and the test drivers retain the configured warning-as-error policy and strict floating-point flags.
 
-Unused parameters in the unmodified framebuffer-copy comparison sources remain visible warnings on GCC.
+Unused parameters in the unmodified framebuffer-copy and memory comparison sources remain visible warnings on GCC.
 
-The default public run marks all ten comparison tests as skipped because the external checkout is not a dependency of the product build. Keep the comparison checkout's revision with the test results. These comparisons cover the named helpers, graphics stages and service records; they do not compare complete CPU execution or prove hardware accuracy.
+The default public run marks all eleven comparison tests as skipped because the external checkout is not a dependency of the product build. Keep the comparison checkout's revision with the test results. These comparisons cover the named helpers, memory transactions, graphics stages and service records; they do not compare complete CPU execution or prove hardware accuracy.
 
 ## Package checks
 
@@ -101,3 +104,21 @@ The development snapshot after `e6c92355e39e` included the Remote speaker decode
 The private disc test was skipped in every configuration. The three configurations without the optional behavioral checkout skipped its ten comparisons; headless builds also skipped the two SDL backend suites.
 
 Clang-format 18 passed, and Clang 18 static analysis checked all 33 product translation units with no project diagnostics. SHA256 hashes for all 113 captured source, header, test and build inputs remained unchanged through the five builds, test runs and source checks.
+
+## Checked snapshot after `6f33d49f6e73`
+
+This snapshot added CPU split-load repairs, the extension cipher and Remote binding, the DSP scheduling fast path, and the direct memory-load comparison. Builds retained strict floating-point flags and treated project warnings as errors.
+
+| Configuration | Public tests passed | Direct comparisons passed | Declared skips |
+| --- | ---: | ---: | ---: |
+| Windows MSVC Release | 32 | 11 | 1 |
+| Linux GCC Release | 32 | 11 | 1 |
+| Linux Clang Release | 32 | 0 | 12 |
+| Linux GCC ASan + UBSan, headless | 30 | 0 | 14 |
+| Linux Clang ASan + UBSan, headless | 30 | 0 | 14 |
+
+Both Windows and GCC passed all 14,336 direct memory-load comparisons. The private disc test remained skipped. Configurations without the behavioral checkout skipped all eleven comparisons; headless builds also skipped the two SDL suites.
+
+Clang-format 18 checked the C++ files and test adapter includes. Clang 18 static analysis checked all 34 product translation units with no project diagnostics. All 118 captured source, header, test and build inputs retained their SHA256 hashes through the final builds, tests and source checks.
+
+A separate GCC/Ninja incremental check changed the embedded revision from its short form to the full revision and back. Each change rebuilt only the CLI entry point and state writer before relinking. The executed binaries reported the requested revision in both forms.

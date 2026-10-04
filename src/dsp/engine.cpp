@@ -250,11 +250,14 @@ void Engine::advance(u64 cpu_cycles) {
   if (cpu_cycles > std::numeric_limits<u64>::max() - cycles_)
     throw std::overflow_error("DSP cycle counter overflow");
   cycles_ += cpu_cycles;
-  const bool update = cpu_cycles >= update_interval_ - update_cycles_;
+  if (cpu_cycles < update_interval_ - update_cycles_) {
+    update_cycles_ += cpu_cycles;
+    return;
+  }
   update_cycles_ = (update_cycles_ + cpu_cycles % update_interval_) % update_interval_;
-  if (update && program_ == Program::Card && mails_.pending())
+  if (program_ == Program::Card && mails_.pending())
     request_interrupt();
-  if (update && audio_)
+  if (audio_)
     audio_->update();
 }
 

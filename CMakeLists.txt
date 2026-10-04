@@ -34,8 +34,6 @@ include(cmake/Dependencies.cmake)
 
 add_library(cupid_options INTERFACE)
 target_compile_features(cupid_options INTERFACE cxx_std_20)
-target_compile_definitions(cupid_options INTERFACE
-  CUPID_VERSION="${PROJECT_VERSION}" CUPID_COMMIT="${CUPID_COMMIT}")
 if(MSVC)
   target_compile_options(cupid_options INTERFACE /W4 /permissive- /Zc:__cplusplus /Zc:preprocessor /utf-8 /fp:strict)
   target_compile_definitions(cupid_options INTERFACE NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -68,6 +66,7 @@ set(cupid_sources
   src/disc/filesystem.cpp
   src/hw/devices.cpp
   src/hw/remote.cpp
+  src/hw/extension_cipher.cpp
   src/hw/sdp.cpp
   src/ios/ipc.cpp
   src/ios/memory_values.cpp
@@ -98,7 +97,7 @@ include(cmake/DeveloperChecks.cmake)
 
 if(CUPID_BUILD_TESTS)
   enable_testing()
-  foreach(suite IN ITEMS cpu core disc device remote remote_speaker sdp sdp_transport runtime elf fonts dsp ios network sysconf gfx vertex texture fragment rasterizer efb_copy xfb_copy efb_access guest_video input_replay audio_stats)
+  foreach(suite IN ITEMS cpu core disc device remote remote_speaker extension_cipher sdp sdp_transport runtime elf fonts dsp ios network sysconf gfx vertex texture fragment rasterizer efb_copy xfb_copy efb_access guest_video input_replay audio_stats)
     add_executable(cupid_${suite}_tests tests/${suite}_tests.cpp)
     target_include_directories(cupid_${suite}_tests PRIVATE tests)
     target_link_libraries(cupid_${suite}_tests PRIVATE cupid_core)
@@ -187,6 +186,40 @@ if(CUPID_BUILD_TESTS)
       set_tests_properties(cpu_ni_reference_checks PROPERTIES
         SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;differential")
     endif()
+    set(cupid_memory_references
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/PowerPC/MMU.cpp"
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/HW/MMIO.cpp"
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/PowerPC/Interpreter/Interpreter_LoadStore.cpp"
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/PowerPC/Interpreter/Interpreter_LoadStorePaired.cpp")
+    foreach(reference IN LISTS cupid_memory_references)
+      if(NOT EXISTS "${reference}")
+        message(FATAL_ERROR "Required behavioral target file is absent: ${reference}")
+      endif()
+    endforeach()
+    add_executable(cupid_cpu_memory_reference_checks tests/cpu_memory_reference_checks.cpp
+      ${cupid_memory_references})
+    set_source_files_properties(${cupid_memory_references} PROPERTIES
+      COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->;$<$<CXX_COMPILER_ID:GNU>:-O1>;$<$<CXX_COMPILER_ID:GNU>:-Wno-error=unused-parameter>")
+    set_target_properties(cupid_cpu_memory_reference_checks PROPERTIES CXX_STANDARD 23)
+    target_include_directories(cupid_cpu_memory_reference_checks SYSTEM PRIVATE
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core"
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Externals/picojson")
+    target_link_libraries(cupid_cpu_memory_reference_checks PRIVATE cupid_core fmt::fmt)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+      target_compile_definitions(cupid_cpu_memory_reference_checks PRIVATE _M_X86_64)
+    endif()
+    if(WIN32)
+      target_compile_definitions(cupid_cpu_memory_reference_checks PRIVATE UNICODE _UNICODE)
+    endif()
+    if(MSVC)
+      target_compile_options(cupid_cpu_memory_reference_checks PRIVATE /Gy /Gw)
+      target_link_options(cupid_cpu_memory_reference_checks PRIVATE /OPT:REF)
+    else()
+      target_compile_options(cupid_cpu_memory_reference_checks PRIVATE -ffunction-sections -fdata-sections)
+      target_link_options(cupid_cpu_memory_reference_checks PRIVATE -Wl,--gc-sections)
+    endif()
+    add_test(NAME cpu_memory_reference_checks COMMAND cupid_cpu_memory_reference_checks)
+    set_tests_properties(cpu_memory_reference_checks PROPERTIES TIMEOUT 120 LABELS "private;differential")
     set(cupid_vertex_reference
       "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/VideoBackends/Software/TransformUnit.cpp")
     if(NOT EXISTS "${cupid_vertex_reference}")
@@ -288,6 +321,10 @@ if(CUPID_BUILD_TESTS)
     add_test(NAME cpu_ni_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
       "SKIP: optional NI arithmetic comparisons require CUPID_BEHAVIOR_REFERENCE_ROOT and x86_64")
     set_tests_properties(cpu_ni_reference_checks PROPERTIES
+      SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;differential")
+    add_test(NAME cpu_memory_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
+      "SKIP: optional memory comparisons require CUPID_BEHAVIOR_REFERENCE_ROOT and C++23")
+    set_tests_properties(cpu_memory_reference_checks PROPERTIES
       SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;differential")
     add_test(NAME vertex_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
       "SKIP: optional vertex comparisons require CUPID_BEHAVIOR_REFERENCE_ROOT and C++23")

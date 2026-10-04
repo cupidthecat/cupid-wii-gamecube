@@ -933,6 +933,248 @@ void paired_page_store_tests() {
   }
 }
 
+class ReadTransactionMemory : public TransactionMemory {
+public:
+  std::vector<u32> failed_bytes;
+  std::optional<u32> host_read_error;
+
+  u8 read8(u32 address) override {
+    const u8 value = TransactionMemory::read8(address);
+    if (std::find(failed_bytes.begin(), failed_bytes.end(), address) != failed_bytes.end())
+      throw BusFault(address, false, "Authored byte-read fault", unsupported_fault);
+    if (host_read_error == address)
+      throw std::runtime_error("Authored host read failure");
+    return value;
+  }
+
+  u16 read16(u32 address) override {
+    if (recording && address >= 0x2000)
+      accesses.push_back({address, 0, 2, false});
+    return static_cast<u16>((u16{Memory::read8(address)} << 8) | Memory::read8(address + 1));
+  }
+
+  u64 read64(u32 address) override {
+    if (recording && address >= 0x2000)
+      accesses.push_back({address, 0, 8, false});
+    u64 value = 0;
+    for (unsigned n = 0; n < 8; ++n)
+      value = (value << 8) | Memory::read8(address + n);
+    return value;
+  }
+};
+
+struct ReadTransactionFixture {
+  ReadTransactionMemory memory;
+  Interpreter cpu{memory};
+  State &s = cpu.state();
+
+  void run(u32 opcode) {
+    memory.recording = false;
+    s.pc = 0x1000;
+    memory.write32(0x1000, opcode);
+    memory.accesses.clear();
+    memory.recording = true;
+    cpu.step();
+    memory.recording = false;
+  }
+};
+
+u32 load_page_table_group(unsigned page) {
+  return 0x20000 | (((0x123u ^ page) << 6) & 0xffff);
+}
+
+void prepare_split_load(ReadTransactionFixture &f, bool first, bool second, u32 first_attribute = 0,
+                        u32 second_attribute = 0) {
+  f.s.msr = msr::dr | msr::fp | msr::pr | msr::ri;
+  f.s.spr[spr::hid2] = 0xa0000000;
+  f.s.spr[spr::sdr1] = 0x20000;
+  f.s.sr[4] = 0x123;
+  for (unsigned page = 7; page < 9; ++page) {
+    const bool mapped = page == 7 ? first : second;
+    f.memory.write32(load_page_table_group(page), mapped ? 0x80000000 | (0x123 << 7) : 0);
+    f.memory.write32(load_page_table_group(page) + 4,
+                     (page == 7 ? 0x4000u : 0x8000u) | 3 |
+                         (page == 7 ? first_attribute : second_attribute));
+  }
+  f.s.gpr[9] = 0x8ac12467;
+  f.s.fpr[9].bits = {0x1122334455667788ull, 0x9abcdef012345678ull};
+  f.s.cr = 0x8d6152af;
+}
+
+std::vector<Access> load_data_accesses(const ReadTransactionFixture &f) {
+  std::vector<Access> result;
+  for (const auto &access : f.memory.accesses)
+    if (access.address < 0x10000)
+      result.push_back(access);
+  return result;
+}
+
+void split_load_tests() {
+  struct Instruction {
+    unsigned direct, indexed, width;
+    bool floating;
+  };
+
+  constexpr std::array<Instruction, 4> instructions{
+      {{40, 279, 2, false}, {42, 343, 2, false}, {32, 23, 4, false}, {50, 599, 8, true}}};
+  constexpr std::array<u8, 8> payload{0x81, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef};
+  for (const auto &instruction : instructions)
+    for (unsigned distance = 1; distance < instruction.width; ++distance) {
+      if (instruction.floating && distance != 4)
+        continue;
+      for (const bool indexed : {false, true})
+        for (const bool update : {false, true})
+          for (unsigned mappings = 0; mappings < 4; ++mappings)
+            for (u32 attributes : {0u, 0x20u, 0x40u, 0x60u}) {
+              ReadTransactionFixture f;
+              const bool first = (mappings & 1) != 0, second = (mappings & 2) != 0;
+              prepare_split_load(f, first, second, attributes, attributes ^ 0x60);
+              const u32 address = 0x40008000 - distance, base = address - 5;
+              f.s.gpr[7] = base;
+              f.s.gpr[8] = 5;
+              std::vector<Access> expected;
+              u64 packed = 0;
+              for (unsigned n = 0; n < instruction.width; ++n) {
+                const u32 physical = n < distance ? 0x5000 - distance + n : 0x8000 + n - distance;
+                f.memory.bytes[physical] = payload[n];
+                packed = (packed << 8) | payload[n];
+                if (n < distance ? first : second)
+                  expected.push_back({physical, 0, 1, false});
+              }
+              const u32 original_msr = f.s.msr;
+              f.run(indexed ? ext(instruction.indexed + (update ? 32 : 0), 9, 7, 8)
+                            : imm(instruction.direct + static_cast<unsigned>(update), 9, 7, 5));
+              CHECK(load_data_accesses(f) == expected);
+              CHECK(f.memory.read32(load_page_table_group(7) + 4) ==
+                    (0x4003u | attributes | (first ? 0x100u : 0)));
+              CHECK(f.memory.read32(load_page_table_group(8) + 4) ==
+                    (0x8003u | (attributes ^ 0x60) | (second ? 0x100u : 0)));
+              CHECK(f.s.cr == 0x8d6152af);
+              if (first && second) {
+                CHECK(f.s.pc == 0x1004 && f.s.msr == original_msr);
+                CHECK(f.s.gpr[7] == (update ? address : base));
+                if (instruction.floating)
+                  CHECK(f.s.fpr[9].bits[0] == packed &&
+                        f.s.fpr[9].bits[1] == 0x9abcdef012345678ull);
+                else {
+                  const u32 expected_value =
+                      instruction.direct == 42
+                          ? static_cast<u32>(static_cast<s32>(static_cast<s16>(packed)))
+                          : static_cast<u32>(packed);
+                  CHECK(f.s.gpr[9] == expected_value);
+                }
+              } else {
+                CHECK(f.s.pc == 0x300 && f.s.gpr[7] == base && f.s.gpr[9] == 0x8ac12467);
+                CHECK(f.s.fpr[9].bits[0] == 0x1122334455667788ull &&
+                      f.s.fpr[9].bits[1] == 0x9abcdef012345678ull);
+                CHECK(f.s.spr[spr::srr0] == 0x1000 && f.s.spr[spr::srr1] == original_msr);
+                CHECK(f.s.spr[spr::dsisr] == 0x40000000);
+                CHECK(f.s.spr[spr::dar] ==
+                      (second ? 0x40007fffu : address + instruction.width - 1));
+              }
+            }
+    }
+
+  for (unsigned type : {0u, 4u, 5u, 6u, 7u})
+    for (const bool scalar : {false, true}) {
+      const unsigned width = type == 0 ? 4 : type == 4 || type == 6 ? 1 : 2;
+      const unsigned bytes = width * (scalar ? 1 : 2);
+      for (unsigned distance = 1; distance < bytes; ++distance)
+        for (const bool indexed : {false, true})
+          for (const bool update : {false, true})
+            for (unsigned mappings = 0; mappings < 4; ++mappings) {
+              ReadTransactionFixture f;
+              const bool first = (mappings & 1) != 0, second = (mappings & 2) != 0;
+              prepare_split_load(f, first, second);
+              f.s.spr[913] = type << 16;
+              const u32 address = 0x40008000 - distance;
+              f.s.gpr[7] = address - 5;
+              f.s.gpr[8] = 5;
+              std::vector<Access> expected;
+              constexpr std::array<u8, 8> float_payload{0x3f, 0xc0, 0, 0, 0xc0, 0x10, 0, 0};
+              for (unsigned n = 0; n < bytes; ++n) {
+                const u32 physical = n < distance ? 0x5000 - distance + n : 0x8000 + n - distance;
+                f.memory.bytes[physical] = type == 0 ? float_payload[n] : payload[n];
+                if (n < distance ? first : second)
+                  expected.push_back({physical, 0, 1, false});
+              }
+              const u32 opcode =
+                  indexed ? (4u << 26) | (9u << 21) | (7u << 16) | (8u << 11) | (1u << 7) |
+                                ((update ? 38u : 6u) << 1) | (scalar ? 0x400u : 0)
+                          : imm(update ? 57 : 56, 9, 7,
+                                static_cast<u16>(5 | (1u << 12) | (scalar ? 0x8000u : 0)));
+              f.run(opcode);
+              CHECK(load_data_accesses(f) == expected);
+              CHECK(f.memory.read32(load_page_table_group(7) + 4) == (first ? 0x4103u : 0x4003u));
+              CHECK(f.memory.read32(load_page_table_group(8) + 4) == (second ? 0x8103u : 0x8003u));
+              if (first && second) {
+                CHECK(f.s.pc == 0x1004 && f.s.gpr[7] == (update ? address : address - 5));
+                if (type == 0)
+                  CHECK(f.s.fpr[9].value() == 1.5 && f.s.fpr[9].value(1) == (scalar ? 1.0 : -2.25));
+                else {
+                  const double first_value = type == 4   ? 129.0
+                                             : type == 5 ? 33059.0
+                                             : type == 6 ? -127.0
+                                                         : -32477.0;
+                  const double second_value = type == 4 || type == 6 ? 35.0 : 17767.0;
+                  CHECK(f.s.fpr[9].value() == first_value &&
+                        f.s.fpr[9].value(1) == (scalar ? 1.0 : second_value));
+                }
+              } else {
+                CHECK(f.s.pc == 0x300 && f.s.gpr[7] == address - 5);
+                CHECK(f.s.fpr[9].bits[0] == 0x1122334455667788ull &&
+                      f.s.fpr[9].bits[1] == 0x9abcdef012345678ull);
+                CHECK(f.s.spr[spr::dar] == (second ? 0x40007fffu : address + bytes - 1));
+              }
+            }
+    }
+
+  for (unsigned failed_index = 0; failed_index < 4; ++failed_index) {
+    ReadTransactionFixture f;
+    prepare_split_load(f, true, true);
+    const u32 address = 0x40007ffe;
+    f.s.gpr[7] = address;
+    const u32 physical = failed_index < 2 ? 0x4ffe + failed_index : 0x8000 + failed_index - 2;
+    f.memory.failed_bytes.push_back(physical);
+    f.run(imm(33, 9, 7, 0));
+    CHECK(f.s.pc == 0x300 && f.s.gpr[9] == 0x8ac12467 && f.s.gpr[7] == address);
+    CHECK(f.s.spr[spr::dar] == address + failed_index);
+    CHECK(load_data_accesses(f).size() == 4);
+    CHECK(f.memory.read32(load_page_table_group(7) + 4) == 0x4103 &&
+          f.memory.read32(load_page_table_group(8) + 4) == 0x8103);
+  }
+
+  for (const bool unsupported : {false, true})
+    for (unsigned stopped_index = 0; stopped_index < 4; ++stopped_index) {
+      ReadTransactionFixture f;
+      prepare_split_load(f, true, true);
+      f.s.gpr[7] = 0x40007ffe;
+      f.s.spr[spr::dar] = 0x13579bdf;
+      f.s.spr[spr::dsisr] = 0x2468ace0;
+      const u32 original_msr = f.s.msr;
+      const u32 physical = stopped_index < 2 ? 0x4ffe + stopped_index : 0x8000 + stopped_index - 2;
+      if (unsupported) {
+        f.memory.failed_bytes.push_back(physical);
+        f.memory.unsupported_fault = true;
+      } else
+        f.memory.host_read_error = physical;
+      bool rejected = false;
+      try {
+        f.run(imm(33, 9, 7, 0));
+      } catch (const UnsupportedInstruction &error) {
+        CHECK(unsupported && error.pc == 0x1000 && error.opcode == imm(33, 9, 7, 0));
+        rejected = true;
+      } catch (const std::runtime_error &error) {
+        CHECK(!unsupported && std::string(error.what()) == "Authored host read failure");
+        rejected = true;
+      }
+      CHECK(rejected && f.s.pc == 0x1000 && f.s.gpr[7] == 0x40007ffe && f.s.gpr[9] == 0x8ac12467);
+      CHECK(f.s.msr == original_msr && f.s.cycles == 0 && f.s.instructions == 0);
+      CHECK(f.s.spr[spr::dar] == 0x13579bdf && f.s.spr[spr::dsisr] == 0x2468ace0);
+      CHECK(load_data_accesses(f).size() == stopped_index + 1);
+    }
+}
+
 void external_control_tests() {
   for (const bool write : {false, true})
     for (u32 ear : {0u, 0x01234567u, 0x7fffffffu})
@@ -2044,6 +2286,7 @@ int main() {
     split_store_fault_tests();
     changed_mapping_transaction_tests();
     paired_page_store_tests();
+    split_load_tests();
     external_control_tests();
     conditional_store_fault_tests();
     exceptions_and_system();

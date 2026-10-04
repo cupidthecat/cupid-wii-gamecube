@@ -56,6 +56,8 @@ Remote::Remote() {
 
 void Remote::reset_extension() {
   extension_.fill(u8(0));
+  extension_key_ = {};
+  extension_key_dirty_ = true;
   auto calibration = std::span<u8>(extension_).subspan(0x20, 16);
   for (unsigned axis = 0; axis < 3; ++axis) {
     calibration[axis] = 0x80;
@@ -94,6 +96,7 @@ void Remote::set_linked(bool linked) {
   ir_enabled_ = speaker_enabled_ = speaker_muted_ = false;
   mode_ = 0x30;
   leds_ = 0;
+  last_read_slave_ = 0;
   camera_.fill(u8(0));
   speaker_.fill(u8(0));
   speaker_decoder_.reset();
@@ -187,6 +190,21 @@ void Remote::refresh_peripherals() {
     unfinished("full infrared camera report");
 }
 
+u8 Remote::read_extension(u16 address, std::span<u8> bytes) {
+  const std::size_t offset = u8(address);
+  const auto count = std::min(bytes.size(), extension_.size() - offset);
+  std::copy_n(extension_.begin() + offset, count, bytes.begin());
+  if (extension_[0xf0] == 0xaa) {
+    if (extension_key_dirty_) {
+      extension_key_ = make_extension_key(std::span<const u8, 16>(extension_.data() + 0x40, 16));
+      extension_key_dirty_ = false;
+    }
+    // The target encrypts the requested span, including an unread zero suffix on NACK.
+    extension_key_.encrypt(bytes, u8(address));
+  }
+  return count == bytes.size() ? 0 : 7;
+}
+
 u8 Remote::memory_read(u8 space, u8 slave, u16 address, std::span<u8> bytes) {
   refresh_peripherals();
   if (space == 0) {
@@ -199,21 +217,13 @@ u8 Remote::memory_read(u8 space, u8 slave, u16 address, std::span<u8> bytes) {
     return 6;
   if (slave == 0x50)
     return 8;
-  if (slave == 0x52 && state_.nunchuk.attached) {
-    if (extension_[0xf0] == 0xaa)
-      unfinished("encrypted Nunchuk memory");
-    const std::size_t offset = u8(address);
-    if (bytes.size() > extension_.size() - offset)
-      return 7;
-    std::copy_n(extension_.begin() + offset, bytes.size(), bytes.begin());
-    return 0;
-  }
+  if (slave == 0x52 && state_.nunchuk.attached)
+    return read_extension(address, bytes);
   if (slave == 0x58 && ir_enabled_) {
     const std::size_t offset = u8(address);
-    if (bytes.size() > camera_.size() - offset)
-      return 7;
-    std::copy_n(camera_.begin() + offset, bytes.size(), bytes.begin());
-    return 0;
+    const auto count = std::min(bytes.size(), camera_.size() - offset);
+    std::copy_n(camera_.begin() + offset, count, bytes.begin());
+    return count == bytes.size() ? 0 : 7;
   }
   if (slave == 0x51) {
     const std::size_t offset = u8(address);
@@ -233,20 +243,20 @@ u8 Remote::memory_write(u8 space, u8 slave, u16 address, std::span<const u8> byt
   }
   if (space > 2)
     return 6;
-  if (slave == 0x50)
+  if (last_read_slave_ == 0x50)
     return 8;
   const std::size_t offset = u8(address);
   if (slave == 0x52 && state_.nunchuk.attached) {
-    if (bytes.size() > extension_.size() - offset)
-      return 7;
-    std::copy(bytes.begin(), bytes.end(), extension_.begin() + offset);
-    return 0;
+    const auto count = std::min(bytes.size(), extension_.size() - offset);
+    std::copy_n(bytes.begin(), count, extension_.begin() + offset);
+    if (offset < 0x50 && offset + bytes.size() > 0x40)
+      extension_key_dirty_ = true;
+    return count == bytes.size() ? 0 : 7;
   }
   if (slave == 0x58 && ir_enabled_) {
-    if (bytes.size() > camera_.size() - offset)
-      return 7;
-    std::copy(bytes.begin(), bytes.end(), camera_.begin() + offset);
-    return 0;
+    const auto count = std::min(bytes.size(), camera_.size() - offset);
+    std::copy_n(bytes.begin(), count, camera_.begin() + offset);
+    return count == bytes.size() ? 0 : 7;
   }
   if (slave == 0x51) {
     if (offset == 0) {
@@ -332,6 +342,7 @@ void Remote::receive_output(std::span<const u8> report) {
       ack(operation, 4);
       return;
     }
+    last_read_slave_ = u8(report[2] >> 1);
     read_ = Read{u8((flags >> 2) & 3), u8(report[2] >> 1), u16((u16(report[3]) << 8) | report[4]),
                  u16((u16(report[5]) << 8) | report[6])};
     process_read();
@@ -356,7 +367,7 @@ void Remote::receive_output(std::span<const u8> report) {
     ack(operation);
 }
 
-std::vector<u8> Remote::data_report() const {
+std::vector<u8> Remote::data_report() {
   const bool core = mode_ != 0x3d;
   const bool acceleration = mode_ == 0x31 || mode_ == 0x33 || mode_ == 0x35 || mode_ == 0x37;
   const unsigned ir_bytes = mode_ == 0x33 ? 12 : (mode_ == 0x36 || mode_ == 0x37 ? 10 : 0);
@@ -381,12 +392,11 @@ std::vector<u8> Remote::data_report() const {
   if (ir_bytes != 0)
     packet.insert(packet.end(), camera_.begin() + 0x37, camera_.begin() + 0x37 + ir_bytes);
   if (extension_bytes != 0) {
-    if (state_.nunchuk.attached) {
-      if (extension_[0xf0] == 0xaa)
-        unfinished("encrypted Nunchuk report");
-      packet.insert(packet.end(), extension_.begin(), extension_.begin() + extension_bytes);
-    } else
-      packet.insert(packet.end(), extension_bytes, u8(0xff));
+    const auto first = packet.size();
+    packet.resize(first + extension_bytes, u8(0));
+    auto bytes = std::span<u8>(packet).subspan(first);
+    if (!state_.nunchuk.attached || read_extension(0, bytes) != 0)
+      std::fill(bytes.begin(), bytes.end(), u8(0xff));
   }
   return packet;
 }

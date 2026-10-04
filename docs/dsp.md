@@ -6,6 +6,8 @@ CPU mailbox writes become a complete message when the low half is written. The b
 
 Reset starts the boot ROM protocol. Clearing the initialization bit starts the initialization task, which replies with its boot acknowledgment. The initialization-code bit clears after 130 time-base ticks. Task updates use the console's CPU clock and a one-millisecond interval.
 
+Short instruction intervals accumulate without a division; crossing an update boundary retains the modulo phase and existing task notification behavior. Both implementations pass the same full DSP suite, and independently linked component and guest-startup comparisons retain their observable state. [Performance measurements](performance.md) records the measured scope and its limits.
+
 ROM uploads record the source address, byte length, instruction-memory address, data length and entry point. The engine identifies the uploaded task from a computed hash of its bytes. CARD uses its mailbox completion and return-to-ROM behavior; it does not generate audio.
 
 The audio task accepts setup, frame rendering, voice synchronization and task-switch messages. Setup reads coefficient tables and parameter-block addresses from guest RAM. Rendering waits for the CPU's voice masks, mixes eighty samples per channel and writes signed big-endian samples into the guest's left and right buffers. The guest interleaves those buffers and starts audio DMA. Host audio receives the bytes read by that DMA.

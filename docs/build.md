@@ -47,9 +47,11 @@ The MSVC build links the C/C++ runtime statically. A Visual Studio generator als
 | `CUPID_ENABLE_SANITIZERS` | `OFF` | Adds AddressSanitizer and UndefinedBehaviorSanitizer to project code on GCC or Clang. |
 | `CUPID_ENABLE_LOCAL_INTEGRATION` | `OFF` | Registers the private disc integration run. Requires `CUPID_LOCAL_GAME`. |
 | `CUPID_COMMIT` | current revision | Embeds a revision string. Use an explicit value when building an exported source tree. |
-| `CUPID_BEHAVIOR_REFERENCE_ROOT` | empty | Enables ten CPU, graphics and service-record comparisons against a separately supplied, pinned behavioral checkout. The NI arithmetic test requires x86_64. |
+| `CUPID_BEHAVIOR_REFERENCE_ROOT` | empty | Enables eleven CPU, graphics and service-record comparisons against a separately supplied, pinned behavioral checkout. The NI arithmetic test requires x86_64. |
 
 For a headless test build, use the `headless` preset. For instrumented Linux tests, use `sanitizers`. Sanitizers do not instrument dependency sources.
+
+Version and revision strings come from a generated header used by the CLI and state writer. Updating `CUPID_COMMIT` rebuilds those two consumers without changing compiler definitions for the other modules.
 
 ## Packages
 

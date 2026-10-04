@@ -911,6 +911,30 @@ void bluetooth_remote_transport() {
   fixture.ipc.advance(controller_period);
   CHECK(input(0x82) ==
         std::vector<u8>({0, 0x21, 11, 0, 7, 0, 0x61, 0, 0xa1, 0x31, 0x10, 0x08, 128, 128, 154}));
+  state.nunchuk.attached = true;
+  fixture.ipc.set_remote(0, state);
+  fixture.ipc.advance(controller_period);
+  packet = input(0x82);
+  CHECK(packet ==
+        std::vector<u8>({0, 0x21, 12, 0, 8, 0, 0x61, 0, 0xa1, 0x20, 0x10, 0x08, 6, 0, 0, 0xff}));
+  const std::array<u8, 22> encryption_enable{0x16, 4, 0xa4, 0, 0xf0, 1, 0xaa};
+  speaker_output(encryption_enable);
+  speaker_ack(0x16);
+  // Authored calibration request has the observed guest geometry, with a zero key record.
+  speaker_output(std::array<u8, 7>{0x17, 4, 0xa4, 0, 0x20, 0, 32});
+  packet = input(0x82);
+  CHECK(packet.size() == 31 && packet[9] == 0x21 && packet[12] == 0xf0);
+  CHECK(packet[13] == 0 && packet[14] == 0x20);
+  const std::array<u8, 16> calibration{0x80, 0x80, 0x80, 0,    0xb3, 0xb3, 0xb3, 0,
+                                       0xe0, 0x20, 0x80, 0xe0, 0x20, 0x80, 0xee, 0x43};
+  for (unsigned i = 0; i < calibration.size(); ++i)
+    CHECK(packet[15 + i] == u8(u8(calibration[i] - 0x17) ^ 0x17));
+  fixture.ipc.advance(controller_period);
+  CHECK(input(0x81)[0] == 0x13);
+  packet = input(0x82);
+  CHECK(packet.size() == 31 && packet[9] == 0x21 && packet[12] == 0xf0);
+  CHECK(packet[13] == 0 && packet[14] == 0x30);
+  CHECK(std::all_of(packet.begin() + 15, packet.end(), [](u8 value) { return value == 0xfe; }));
   state.connected = false;
   fixture.ipc.set_remote(0, state);
   fixture.ipc.advance(3645000);

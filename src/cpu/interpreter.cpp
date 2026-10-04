@@ -455,14 +455,33 @@ u32 Interpreter::translate_access(u32 effective, bool instruction, bool write, b
 u64 Interpreter::load(u32 effective, unsigned bytes) {
   if (state_.msr & msr::le)
     unsupported("Little-endian memory mode is not implemented");
+  if ((effective & 4095) + bytes > 4096) {
+    const u32 original_msr = state_.msr;
+    bool failed = false;
+    u32 exception_msr = 0;
+    u64 value = 0;
+    for (unsigned n = 0; n < bytes; ++n) {
+      value <<= 8;
+      try {
+        value |= load(effective + n, 1);
+      } catch (const GuestFault &) {
+        failed = true;
+        exception_msr = state_.msr;
+        state_.msr = original_msr;
+      } catch (...) {
+        if (failed)
+          state_.msr = exception_msr;
+        throw;
+      }
+    }
+    if (failed) {
+      state_.msr = exception_msr;
+      throw GuestFault{};
+    }
+    return value;
+  }
   try {
     const u32 physical = translate(effective);
-    if ((effective & 4095) + bytes > 4096) {
-      u64 value = 0;
-      for (unsigned n = 0; n < bytes; ++n)
-        value = (value << 8) | bus_.read8(translate(effective + n));
-      return value;
-    }
     switch (bytes) {
     case 1:
       return bus_.read8(physical);

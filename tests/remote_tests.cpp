@@ -137,7 +137,11 @@ void remote_memory() {
   CHECK(std::equal(packet.begin() + 7, packet.begin() + 13,
                    std::array<u8, 6>{0, 0, 0xa4, 0x20, 0, 0}.begin()));
   write_register(remote, 0x52, 0xf0, 0xaa);
-  CHECK_THROWS(send(remote, {0x17, 4, 0xa4, 0, 0xfa, 0, 6}));
+  send(remote, {0x17, 4, 0xa4, 0, 0xfa, 0, 6});
+  packet = receive(remote, 0x21);
+  CHECK(packet[4] == 0x50);
+  CHECK(std::equal(packet.begin() + 7, packet.begin() + 13,
+                   std::array<u8, 6>{0xfe, 0xfe, 0x9a, 0x1e, 0xfe, 0xfe}.begin()));
   CHECK_THROWS(remote.set_eeprom(std::array<u8, 1>{0}));
 }
 
@@ -288,6 +292,84 @@ void nunchuk_reset() {
   CHECK(calibration[7] == 0x80 && calibration[11] == 0xb3 && calibration[15] == 0xe0);
 }
 
+void encrypted_bank() {
+  Remote remote;
+  RemoteState state;
+  state.connected = true;
+  state.nunchuk.attached = true;
+  remote.set_state(state);
+  remote.set_linked(true);
+  remote.update();
+  receive(remote, 0x20);
+  write_register(remote, 0x52, 0xf0, 0xaa);
+  const auto partial = read_bytes(remote, 0x52, 0xff, 2);
+  CHECK(partial[4] == 0xf7 && partial[7] == 0xfe && partial[8] == 0xfe);
+  CHECK(std::all_of(partial.begin() + 9, partial.end(), [](u8 value) { return value == 0; }));
+  send(remote, {0x12, 2, 0x32});
+  receive(remote, 0x22);
+  remote.update();
+  const auto report = receive(remote, 0x32);
+  CHECK(report ==
+        std::vector<u8>({0xa1, 0x32, 0, 0, 0x7e, 0x7e, 0x7e, 0x7e, 0x8b, 0xfb, 0xfe, 0xfe}));
+  write_register(remote, 0x52, 0xf0, 0x55);
+  const auto clear = read_bytes(remote, 0x52, 0x20, 16);
+  CHECK(clear[7] == 0x80 && clear[11] == 0xb3);
+  write_register(remote, 0x52, 0xf0, 0xaa);
+  send(remote, {0x17, 4, 0xa4, 0x12, 0x20, 0, 32});
+  auto cipher = receive(remote, 0x21);
+  CHECK(cipher[5] == 0x12 && cipher[6] == 0x20);
+  for (unsigned i = 7; i < 23; ++i)
+    CHECK(cipher[i] == u8(u8(clear[i] - 0x17) ^ 0x17));
+  remote.update();
+  cipher = receive(remote, 0x21);
+  CHECK(cipher[5] == 0x12 && cipher[6] == 0x30);
+  CHECK(std::all_of(cipher.begin() + 7, cipher.end(), [](u8 value) { return value == 0xfe; }));
+  // A write starting outside the key area still dirties a key byte in its transferred prefix.
+  write_bytes(remote, 0x52, 0x3f, std::array<u8, 2>{0xe1, 0xa5});
+  cipher = read_bytes(remote, 0x52, 0x20, 16);
+  const std::array<u8, 8> nonce_subtraction{0x17, 0x17, 0x17, 0x17, 0x17, 0xbc, 0x17, 0x17};
+  const std::array<u8, 8> nonce_mask{0x17, 0x17, 0x17, 0xbc, 0x17, 0x17, 0x17, 0x17};
+  for (unsigned i = 0; i < 16; ++i)
+    CHECK(cipher[7 + i] == u8(u8(clear[7 + i] - nonce_subtraction[i & 7]) ^ nonce_mask[i & 7]));
+  write_bytes(remote, 0x52, 0x40, std::array<u8, 16>{});
+  write_register(remote, 0x52, 0x4f, 0x5a);
+  cipher = read_bytes(remote, 0x52, 0x20, 16);
+  const std::array<u8, 8> answer_subtraction{0x17, 0x17, 0x17, 0xae, 0x17, 0x17, 0x17, 0x17};
+  const std::array<u8, 8> answer_mask{0xae, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17};
+  for (unsigned i = 0; i < 16; ++i)
+    CHECK(cipher[7 + i] == u8(u8(clear[7 + i] - answer_subtraction[i & 7]) ^ answer_mask[i & 7]));
+  remote.set_linked(false);
+  remote.set_linked(true);
+  remote.update();
+  receive(remote, 0x20);
+  write_register(remote, 0x52, 0xf0, 0xaa);
+  cipher = read_bytes(remote, 0x52, 0x20, 16);
+  for (unsigned i = 7; i < 23; ++i)
+    CHECK(cipher[i] == u8(u8(clear[i] - 0x17) ^ 0x17));
+}
+
+void retained_read_slave() {
+  Remote remote;
+  remote.set_linked(true);
+  write_bytes(remote, 0x50, 9, std::array<u8, 1>{1}, 7);
+  CHECK(read_bytes(remote, 0x50, 0, 1)[4] == 0xf8);
+  write_bytes(remote, 0x51, 9, std::array<u8, 1>{1}, 8);
+  CHECK(read_bytes(remote, 0x51, 9, 1)[7] == 0);
+  write_bytes(remote, 0x51, 9, std::array<u8, 1>{1});
+  CHECK(read_bytes(remote, 0x51, 9, 1)[7] == 1);
+  send(remote, {0x17, 4, 0xa0, 0, 0, 0, 0});
+  CHECK(!remote.take_report());
+  write_bytes(remote, 0x51, 9, std::array<u8, 1>{2}, 8);
+  remote.set_linked(false);
+  remote.set_linked(true);
+  write_bytes(remote, 0x51, 9, std::array<u8, 1>{2});
+  send(remote, {0x13, 6});
+  receive(remote, 0x22);
+  write_bytes(remote, 0x58, 0xff, std::array<u8, 2>{0x42, 0x99}, 7);
+  const auto camera = read_bytes(remote, 0x58, 0xff, 2);
+  CHECK(camera[4] == 0xf7 && camera[7] == 0x42 && camera[8] == 0);
+}
+
 } // namespace
 
 int main() {
@@ -297,5 +379,7 @@ int main() {
     speaker_registers();
     speaker_processing();
     nunchuk_reset();
+    encrypted_bank();
+    retained_read_slave();
   });
 }

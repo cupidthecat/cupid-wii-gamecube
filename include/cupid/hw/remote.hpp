@@ -3,6 +3,7 @@
 
 #include "cupid/audio/remote_speaker.hpp"
 #include "cupid/core/types.hpp"
+#include "cupid/hw/extension_cipher.hpp"
 #include <array>
 #include <deque>
 #include <functional>
@@ -75,19 +76,22 @@ private:
   bool speaker_processing_ = false;
   float speaker_pan_ = 0;
   audio::RemoteSpeakerDecoder speaker_decoder_;
-  u8 mode_ = 0x30, leds_ = 0;
+  u8 mode_ = 0x30, leds_ = 0, last_read_slave_ = 0;
   std::array<u8, 0x1700> eeprom_{};
   std::array<u8, 256> extension_{}, camera_{}, speaker_{};
+  ExtensionKey extension_key_;
+  bool extension_key_dirty_ = true;
   std::optional<Read> read_;
   std::deque<std::vector<u8>> reports_;
   void ack(u8 operation, u8 error = 0);
   void status();
   void refresh_peripherals();
   void reset_extension();
+  u8 read_extension(u16 address, std::span<u8> bytes);
   void process_speaker(std::span<const u8> bytes);
   void process_read();
   u8 memory_read(u8 space, u8 slave, u16 address, std::span<u8> bytes);
   u8 memory_write(u8 space, u8 slave, u16 address, std::span<const u8> bytes);
-  std::vector<u8> data_report() const;
+  std::vector<u8> data_report();
 };
 } // namespace cupid::hw

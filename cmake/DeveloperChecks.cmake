@@ -4,6 +4,7 @@ file(GLOB_RECURSE cupid_check_sources CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.inc"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.hpp")
 if(CUPID_CLANG_FORMAT)
   add_custom_target(format-check

@@ -10,11 +10,13 @@ CTest registers separate CPU, memory/core, disc, device, remote, remote-speaker,
 
 The authored guest video suite executes its display, graphics, controller and input-dependent redraw operations through PowerPC instructions on both console modes. See [guest video](guest-video.md) for the fixture and checked output. It uses no private console assets.
 
+The hardware renderer suite compares exact EFB pixels, depth and counters with the CPU path. The separate `guest_video_hardware` suite drives GPU draws, EFB texture copies and clears, texture sampling, XFB output and controller-driven redraw through actual guest instructions on both consoles. These suites skip an unavailable context by default; `CUPID_REQUIRE_HARDWARE_TESTS=ON` makes that condition fail. Shader and backend failures always fail. See [hardware rendering](hardware-rendering.md) for coverage, fallback and driver scope.
+
 The input replay suite checks script parsing, field and instruction ordering, input ranges, and controller changes observed by authored guest SI polling instructions on both console modes.
 
 The service discovery transport suite checks IPC scheduling, USB endpoints, L2CAP channel negotiation and SDP continuation through ACL packets. A queued HCI event keeps bulk input pending until the event is consumed; the test checks this ordering through the public interfaces.
 
-The framebuffer access suite clears EFB data through the graphics FIFO and reads it through authored guest CPU loads on both consoles. It checks address aliases, alpha read modes, depth, format reinterpretation and locked-cache DMA.
+The framebuffer access suite clears EFB data through the graphics FIFO and reads it through authored guest CPU loads on both consoles. Guest stores also poke color and depth, including ordered binary64 stores. It checks address aliases, narrow stores, alpha read modes, depth, format reinterpretation, out-of-range pixels, independent write masks and locked-cache DMA.
 
 The same suite executes a cached RAM display list through guest stores to a FIFO page alias and checks its visible framebuffer clear. Core tests check gathering across the whole port page, byte order, adjacent unmapped addresses, and the memory-error callback. Runtime tests check that callback's PI cause, masking, acknowledgement, and unchanged error-detail registers on both consoles.
 
@@ -230,3 +232,21 @@ This snapshot adds byte-granular instruction reads and corrects the tested cache
 Windows and GCC each passed 5,632 additional cases using the unchanged instruction tables and selected integer and branch dispatch. These include rejected cache fills, warm and cold byte reads, strict backing-memory reads, and aligned and odd instruction addresses. GCC also compares the ordered backing-memory calls through forwarding linker wrappers. Windows checks the authored transfer order and all value, CPU-state and cache-state cases; it does not claim interception of the comparison implementation's calls. The new dispatch comparison excludes scheduler timing, device behavior and other instruction families.
 
 Both complete sanitizer runs passed the unchanged guest follower assertions within their 180-second budget: 148.51 seconds on GCC and 121.88 seconds on Clang. Clang-format 18 passed, including test adapter includes. Clang 18 static analysis checked all 39 product translation units with no project diagnostics. All 141 captured source, header, test and build input hashes remained unchanged through the final checks.
+
+## Integrated hardware snapshot after `563d1a8853a3`
+
+The October 4 sealed working snapshot adds OpenGL fragment rendering, CPU EFB pokes, carry corrections, cache acceleration, queued card-DMA completion and replay/DSP deadline paths. Its executables use the explicit label `integrated-runtime-private-20261004`; that label identifies a development build, not a Git commit. The retained receipt records all 203 source, header, test, build and documentation inputs with SHA256 manifest `15474d0e1a8f2cc4f414f902ccc9762aac653e3a927fa96a2fff357b99b84852`.
+
+| Configuration | Public tests passed | Direct comparisons passed | Declared skips |
+| --- | ---: | ---: | ---: |
+| Windows MSVC Release, RTX 3060 | 40 | 16 | 1 |
+| Linux GCC Release, Mesa/Xvfb | 40 | 16 | 1 |
+| Linux Clang 18 Release, Mesa/Xvfb | 40 | 0 | 17 |
+| Linux GCC ASan + UBSan, headless | 35 | 0 | 22 |
+| Linux Clang 18 ASan + UBSan, headless | 35 | 0 | 22 |
+
+All listed configurations use strict floating-point flags and treat project warnings as errors. Both OpenGL suites actually run in every Release row. Each pixel suite checks 1,799 dispatches and 2,789,052 fragments; the guest hardware fixture checks two frames and 768 GPU fragments per console. Missing hardware is configured to fail. The private disc CTest remains skipped; commercial comparisons run separately with private copies of storage.
+
+Clang-format 18, the 256 generated audio coefficients and Clang 18 static analysis of all 40 product translation units pass. Static analysis includes the SDL/OpenGL branches. The sealed inputs retain their hashes through the Clang and GCC sanitizer checks. The guest follower passes in 174.36 seconds on GCC and 118.19 seconds on Clang within its unchanged 180-second budget. Extracted Windows and Linux GCC packages pass help, version and synthetic execution checks.
+
+Separate matched native software/OpenGL commercial runs reach three billion Sunshine and one billion Galaxy step attempts. Every reported state field except the three hardware counters matches, including CPU/RAM, frame and PCM hashes; final PPM bytes and persistent storage bytes match too. See [hardware rendering](hardware-rendering.md) for counters, image scope, source provenance and shared-host timing limits. These runs do not establish gameplay or full speed. Build logs, binary hashes, test reports and source receipts remain in the ignored local artifact directories.

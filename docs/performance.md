@@ -30,8 +30,38 @@ Both frozen complete runtimes also passed the device, IOS, runtime, graphics, SD
 
 Future gameplay measurements should record guest video/audio rates, compiler and flags, output driver, host workload, run bounds and accepted controls. Keep profiles and commercial-game traces local. A throughput improvement without rendered, controllable gameplay does not establish playability.
 
+## Retained native continuation timing
+
+Live Windows process handles and immutable field snapshots supply a separate October 4 measurement of the older software-rendering continuations. Both use MSVC Release, headless output, disabled host audio and copied private storage. Source and executable provenance are recorded in [compatibility](compatibility.md).
+
+| Run | Retained field interval | Wall seconds | Accumulated VI fields per second |
+| --- | --- | ---: | ---: |
+| Galaxy, saved-slot menu | 300 to 1,470 | 2,415.710 | 0.484330 |
+| Sunshine, startup/title | 300 to 2,070 | 1,985.711 | 0.891368 |
+
+These rates use actual process start times and capture timestamps. Both continuations, compilation, tests and separate CPU/GPU checks shared the host. They measure accumulated guest fields in those retained intervals, with no isolated-host or gameplay claim. They also predate the integrated GPU and CPU changes. Exact capture timestamps, verified executable paths and competing-process inventory remain in `local-artifacts/native-game-retained-timing.json`.
+
+## Replay scheduling
+
+The retained three-billion-step Sunshine startup profile attributed 4.57 percent of self samples to input-replay processing. The runtime now checks the next instruction and field deadlines before entering that path. It still installs initial and replaced input, preserves source-line ordering across the counters, and supports reset and events at `UINT64_MAX`.
+
+Two frozen GCC Release runtimes based on the preserved `563d1a8853a351184d35f0f0e35d6b4f0a13392a` source differ only in replay scheduling and its Machine caller. Six runs alternate earlier/deadline/deadline/earlier/earlier/deadline, using the same copied storage seed, supplied Sunshine RVZ, USA fonts, ordinary input replay, software graphics, headless output and disabled host audio. Each reaches 100 million step attempts. Every final JSON field matches. No graphics commands, video fields or audio samples occur in this startup span.
+
+| Replay processing | Elapsed times, seconds | Median, seconds |
+| --- | --- | --- |
+| Earlier | 7.556359, 10.930437, 7.899015 | 7.899015 |
+| Deadline | 7.226713, 9.521131, 7.262314 | 7.262314 |
+
+The median ratio is 1.088. Other builds and game probes shared the i9-10900F host, and the spread limits that timing estimate. Exact arguments, final states, executable hashes and frozen source pairs are retained in `local-artifacts/input-replay-deadline-20261004`. This is startup evidence, with no gameplay speed claim. The replay, follower and authored USB/HID guest suites passed on the frozen deadline runtime; the deadline fixture also covers empty and exhausted streams, counter jumps, reset and largest-counter events.
+
 The same initial profile attributed 7.70 percent of sampled CPU time to `DSP::Engine::advance`. Its period accumulator now adds short instruction intervals directly and uses modulo only when crossing an update boundary. Total cycle overflow checks, update phase, mailbox interrupts and audio updates retain their prior behavior. The full existing DSP suite passed against both the preserved and corrected implementations under strict GCC and Clang 18 ASan/UBSan.
 
 A separate component measurement ran twenty million varying advances for ROM and CARD tasks on both consoles, three times each. Earlier runs took 0.215 through 0.234 seconds; corrected runs took 0.030 through 0.033 seconds. Program hashes, mailbox values, control registers and interrupt counts matched in all twelve pairs. This measures the scheduling call, with no audio rendering or guest CPU execution.
 
 Six integrated 100-million-instruction startup runs replaced only the DSP object against the same preserved runtime checkpoint `6f33d49f6e73248093e8a9533719e37e37b6b5d1`. Every final JSON field matched. Median elapsed times were 8.322 seconds before and 8.634 seconds after. Package builds and two longer game probes were active and host load changed during the measurements; these results establish no integrated speedup. They are retained separately from the component result.
+
+## Current CPU and DSP paths
+
+The October 4 instruction-cache change preserves replacement state while accelerating aligned and repeated same-line reads. A frozen three-billion-step Sunshine pair takes 211.680 seconds before and 185.991 seconds after, with every emitted final JSON field equal. A separate authored comparison matches 8,192 complete CPU states, ordered bus records and final RAM images byte for byte. [CPU behavior mappings](cpu-reference.md) record the exact source isolation, repeated startup measurements and their limits.
+
+The DSP countdown now returns inline before the next update boundary. Three interleaved 200-million-call repetitions per mode and console show 30.0 to 41.3 percent less elapsed time in the component workload. Original and current full DSP traces match across 2,912 checkpoints and 119,768,032 bytes, including audio, RAM and callbacks. [DSP mappings](dsp-reference.md) retain the modes, compiler, input hashes and narrower caller comparison. The component ratio does not establish a whole-game improvement.

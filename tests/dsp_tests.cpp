@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -152,6 +153,60 @@ void mmio_tests() {
   CHECK((devices.read(0x0c00500a, 2) & 0x80) != 0);
   devices.write(0x0c00500a, 0x180, 2);
   CHECK((devices.read(0x0c00500a, 2) & 0x80) == 0);
+}
+
+void advance_timing_tests(Console console) {
+  Memory memory(console);
+  dsp::Engine engine(memory, console);
+  const u64 period = console == Console::Wii ? 729000 : 486000;
+  engine.write16(0x0a, 0x800);
+  CHECK(receive(engine) == 0x8071feed);
+  engine.advance(period - 1);
+  memory.copy_in(0x2000, synthetic_hash_fixture(0x65d6cc6f));
+  parameter(engine, 0x80f3a001, 0x2000);
+  parameter(engine, 0x80f3a002, 32);
+  parameter(engine, 0x80f3d001, 0);
+  unsigned interrupts = 0;
+  engine.interrupt = [&] { ++interrupts; };
+  engine.advance(0);
+  CHECK(interrupts == 0);
+  engine.advance(1);
+  CHECK(interrupts == 1);
+  engine.advance(3 * period + period / 2);
+  CHECK(interrupts == 2);
+  engine.advance(period / 2 - 1);
+  CHECK(interrupts == 2);
+  engine.advance(1);
+  CHECK(interrupts == 3);
+
+  // A callback failure consumes the elapsed time and retains the next boundary.
+  engine.interrupt = [&] {
+    ++interrupts;
+    CHECK(engine.read16(0x0a) == 0x800);
+    throw std::runtime_error("Authored interrupt callback failure");
+  };
+  CHECK_THROWS(engine.advance(period));
+  CHECK(interrupts == 4);
+  engine.interrupt = [&] { ++interrupts; };
+  engine.advance(period - 1);
+  CHECK(interrupts == 4);
+  engine.advance(1);
+  CHECK(interrupts == 5);
+  CHECK(receive(engine) == 0xdcd10000);
+  engine.advance(period);
+  CHECK(interrupts == 5);
+
+  engine.write16(0x0a, 0);
+  engine.advance(1559);
+  CHECK((engine.read16(0x0a) & 0x400) != 0);
+  engine.advance(1);
+  CHECK((engine.read16(0x0a) & 0x400) == 0);
+  engine.advance(std::numeric_limits<u64>::max() - (8 * period + 1560));
+  CHECK(engine.program_hash() == 1 && engine.read16(0x0a) == 0);
+  CHECK_THROWS(engine.advance(1));
+  CHECK(engine.program_hash() == 1 && engine.read16(0x0a) == 0 && interrupts == 5);
+  engine.advance(0);
+  CHECK(interrupts == 5);
 }
 
 struct AudioFixture {
@@ -727,6 +782,8 @@ int main() {
     upload_tests(Console::GameCube);
     upload_tests(Console::Wii);
     mmio_tests();
+    advance_timing_tests(Console::GameCube);
+    advance_timing_tests(Console::Wii);
     audio_constant_tests(Console::GameCube);
     audio_constant_tests(Console::Wii);
     audio_pcm_tests(Console::GameCube, false);

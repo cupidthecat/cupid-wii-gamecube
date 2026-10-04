@@ -4,6 +4,7 @@
 #include "cupid/core/memory.hpp"
 #include <deque>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -66,7 +67,18 @@ public:
 
   u16 read16(u32 offset);
   void write16(u32 offset, u16 value);
-  void advance(u64 cpu_cycles);
+
+  void advance(u64 cpu_cycles) {
+    if (cpu_cycles > std::numeric_limits<u64>::max() - cycles_)
+      throw std::overflow_error("DSP cycle counter overflow");
+    cycles_ += cpu_cycles;
+    if (cpu_cycles < update_remaining_) {
+      update_remaining_ -= cpu_cycles;
+      return;
+    }
+    advance_update(cpu_cycles);
+  }
+
   u32 program_hash() const;
   const BootDescriptor &boot_descriptor() const;
 
@@ -87,13 +99,14 @@ private:
   BootDescriptor boot_;
   u64 cycles_ = 0;
   u64 init_clear_time_ = 0;
-  u64 update_cycles_ = 0;
+  u64 update_remaining_;
   u64 update_interval_ = 0;
 
   void select_program(u32 hash);
   void swap_program(u32 hash);
   void handle_mail(u32 value);
   void request_interrupt();
+  void advance_update(u64 cpu_cycles);
 };
 
 } // namespace cupid::dsp

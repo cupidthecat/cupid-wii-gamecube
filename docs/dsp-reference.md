@@ -5,7 +5,7 @@ The behavioral reference is pinned at `562875dd60fd0ff50b65dbbb611a2096802cd1b9`
 | Implemented behavior | Source files and functions read |
 | --- | --- |
 | Mail readiness, consumption, halting and interrupt ordering | `Source/Core/Core/HW/DSPHLE/MailHandler.{h,cpp}`, `PushMail`, `ReadDSPMailboxHigh`, `ReadDSPMailboxLow` |
-| DSP register dispatch and update timing | `Source/Core/Core/HW/DSPHLE/DSPHLE.{h,cpp}`, mailbox/control methods, `DSP_UpdateRate`; `Source/Core/Core/HW/DSP.cpp` callers |
+| DSP register dispatch and update timing | `Source/Core/Core/HW/DSPHLE/DSPHLE.{h,cpp}`, mailbox/control methods, `DSP_Update`, `DSP_UpdateRate`; `Source/Core/Core/HW/DSP.cpp`, mailbox callers and `UpdateDSPSlice`; `Source/Core/Core/HW/SystemTimers.cpp`, `DSPCallback`; `UCodes/{ROM,INIT,AX,Zelda,GBA,CARD}.cpp`, update handlers |
 | ROM uploads, initialization and CARD | `Source/Core/Core/HW/DSPHLE/UCodes/{ROM,INIT,CARD}.{h,cpp}`, initialization/mail/update handlers |
 | Task hashes, switching and resume packets | `Source/Core/Core/HW/DSPHLE/UCodes/UCodes.{h,cpp}`, `UCodeFactory`, `PrepareBootUCode`, `NeedsResumeMail`; `DSPHLE.cpp`, `SetUCode`, `SwapUCode`; `Source/Core/Common/Hash.cpp`, `HashEctor` |
 | DAC profiles, command packets and synchronization | `Source/Core/Core/HW/DSPHLE/UCodes/Zelda.{h,cpp}`, profile table, `HandleMailDefault`, `HandleMailLight`, `RunPendingCommands`, `SendCommandAck`, `RenderAudio` |
@@ -148,6 +148,14 @@ written, reads the exact reply, verifies unchanged RAM and executes another
 command. Unrelated light-protocol command rejection remains checked.
 
 ## Public tests and limits
+
+The DSP advance fast path updates the total cycle count and a countdown inline. Task callbacks remain outside that path and run at the existing one-millisecond update boundary. The countdown carries its phase through uploads, resets and task suspension. Bulk advances retain the existing one-update dispatch rule. An overflowing cycle addition leaves state untouched; an exception from a task callback retains the time and phase already consumed.
+
+A private comparison executed the complete preceding and updated engines with their ordinary audio, handheld and mailbox implementations. Both consoles rendered eight frames per case, suspended and resumed audio through the handheld task, then rendered again. Cases also exercised initialization, unsupported uploads, callback failures and unsigned cycle-counter limits. All 2,912 checkpoints produced identical 119,768,032-byte traces, including mutable guest RAM, PCM, ARAM, register observations and callback order. SHA256 of each trace was `92bbf93e94a174a1e1ce74c4ec573358dd7e025596e2e11ca558ff7414c736a8`.
+
+The complete unchanged register and task-switch caller comparison was rerun with the new fast path. It retained the earlier 422,912 checkpoints, 54,132,736 compared RAM bytes and SHA-1 `1aa8fd44ed6ccda1b137a90c70f02489550b9913`. Its clock adapter and absence of rendered frames have the same limits described above. The public DSP and handheld suites passed strict MSVC and GCC, plus Clang with AddressSanitizer and UndefinedBehaviorSanitizer.
+
+On an Intel Core i9-10900F, three interleaved GCC release measurements ran 200 million small advances each for ROM, audio and pending handheld tasks on both consoles. Median elapsed time decreased by 30 through 41 percent. These Linux measurements ran under WSL and measure DSP advance calls, not whole-game speed.
 
 Public tests check known PCM/AFC sample values, decoder history, loop positions, smaller parameter blocks, deferred commands, skipped voices, reverb/filter state, task suspension/resume and invalid requests. The guest DMA regression executes an original PowerPC interleaving loop and register writes before checking the device's delivered audio samples. These are synthetic software tests, not commercial-game audio or real-hardware validation.
 

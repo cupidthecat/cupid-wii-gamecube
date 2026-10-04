@@ -76,7 +76,8 @@ UnsupportedMicrocode::UnsupportedMicrocode(u32 value, const BootDescriptor &info
 
 Engine::Engine(Memory &memory, Console console)
     : memory_(memory), console_(console),
-      update_interval_(console == Console::Wii ? 729000 : 486000) {
+      update_remaining_(console == Console::Wii ? 729000 : 486000),
+      update_interval_(update_remaining_) {
   mails_.interrupt = [this] { request_interrupt(); };
   select_program(0);
   mails_.halt(true);
@@ -284,15 +285,8 @@ void Engine::write16(u32 offset, u16 value) {
   }
 }
 
-void Engine::advance(u64 cpu_cycles) {
-  if (cpu_cycles > std::numeric_limits<u64>::max() - cycles_)
-    throw std::overflow_error("DSP cycle counter overflow");
-  cycles_ += cpu_cycles;
-  if (cpu_cycles < update_interval_ - update_cycles_) {
-    update_cycles_ += cpu_cycles;
-    return;
-  }
-  update_cycles_ = (update_cycles_ + cpu_cycles % update_interval_) % update_interval_;
+void Engine::advance_update(u64 cpu_cycles) {
+  update_remaining_ = update_interval_ - (cpu_cycles - update_remaining_) % update_interval_;
   if (program_ == Program::Card && mails_.pending())
     request_interrupt();
   if (audio_)

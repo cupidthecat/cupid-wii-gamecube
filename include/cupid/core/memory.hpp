@@ -30,6 +30,7 @@ public:
   void memory_access_error() override;
   u32 instruction_cache_key(u32 physical) const override;
   bool read_instruction_words(u32 physical, std::span<u32> words) override;
+  bool read_instruction_bytes(u32 physical, std::span<u8> bytes) override;
   u64 read_cpu_data(u32 physical, unsigned byte_count) override;
   void write_cpu_data(u32 physical, u32 value, unsigned byte_count) override;
   bool write_page_table32(u32 physical, u32 value) override;

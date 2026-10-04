@@ -614,8 +614,6 @@ u32 Interpreter::step() {
   }
   bool fetched = false;
   try {
-    if (state_.pc & 3)
-      alignment(state_.pc);
     if (state_.msr & msr::le)
       unsupported("Little-endian instruction mode is not implemented");
     cycles = 0;

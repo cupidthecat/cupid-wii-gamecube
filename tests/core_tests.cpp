@@ -248,6 +248,73 @@ void instruction_backing_reads(cupid::Console console) {
   CHECK(memory.read_instruction_words(0x1000, line));
   CHECK(std::all_of(line.begin(), line.end(), [](u32 word) { return word == 0; }));
 }
+
+void instruction_byte_reads(cupid::Console console) {
+  using namespace cupid;
+  Memory memory(console);
+  unsigned signals = 0, device_reads = 0;
+  memory.memory_error = [&] { ++signals; };
+  memory.mmio_handles = [](u32 address) { return address >= 0x08000000; };
+  memory.mmio_read = [&](u32, unsigned) {
+    ++device_reads;
+    return 0xdeadbeefu;
+  };
+  std::array<u8, 32> source{};
+  for (unsigned n = 0; n < source.size(); ++n)
+    source[n] = static_cast<u8>(0x31 + 7 * n);
+  memory.copy_in(0x101, source);
+  memory.copy_in(Memory::mem1_size - 32, source);
+  if (console == Console::Wii) {
+    memory.copy_in(0x10000101, source);
+    memory.copy_in(0x10000000 + Memory::mem2_size - 32, source);
+  }
+  u64 rejected = 0;
+  for (unsigned width = 1; width <= 32; ++width) {
+    std::array<u8, 40> guarded;
+    const auto check = [&](u32 address, bool accepted, unsigned source_offset = 0) {
+      guarded.fill(0x5a);
+      const auto retained = guarded;
+      const auto output = std::span(guarded).subspan(4, width);
+      CHECK(memory.read_instruction_bytes(address, output) == accepted);
+      if (accepted) {
+        CHECK(std::equal(output.begin(), output.end(), source.begin() + source_offset));
+        CHECK(std::all_of(guarded.begin(), guarded.begin() + 4,
+                          [](u8 byte) { return byte == 0x5a; }));
+        CHECK(std::all_of(guarded.begin() + 4 + width, guarded.end(),
+                          [](u8 byte) { return byte == 0x5a; }));
+      } else {
+        ++rejected;
+        CHECK(guarded == retained);
+      }
+      CHECK(memory.instruction_backing_read_errors() == rejected);
+      CHECK(signals == 0 && device_reads == 0 && memory.page_table_write_errors() == 0);
+    };
+    for (u32 alias : {0u, 0x40000000u, 0x80000000u, 0xc0000000u}) {
+      check(alias | 0x101, true);
+      check(alias | (Memory::mem1_size - width), true, 32 - width);
+      check(alias | (Memory::mem1_size - width + 1), false);
+      check(alias | 0x10000101, console == Console::Wii);
+      check(alias | (0x10000000 + Memory::mem2_size - width), console == Console::Wii, 32 - width);
+      check(alias | (0x10000000 + Memory::mem2_size - width + 1), false);
+    }
+    for (u32 address : {0x01800000u, 0x02000101u, 0x04000101u, 0x08000000u, 0x0c003000u,
+                        0xe0000000u, 0x60000101u, 0xfffffff0u})
+      check(address, false);
+    CHECK(std::equal(source.begin(), source.end(), memory.range(0x101, source.size()).begin()));
+  }
+  std::array<u8, 33> invalid;
+  invalid.fill(0x7c);
+  const auto retained = invalid;
+  CHECK_THROWS(memory.read_instruction_bytes(0, std::span<u8>{}));
+  CHECK_THROWS(memory.read_instruction_bytes(0, invalid));
+  CHECK(invalid == retained && memory.instruction_backing_read_errors() == rejected);
+  CHECK(signals == 0 && device_reads == 0);
+  memory.clear();
+  CHECK(memory.instruction_backing_read_errors() == 0);
+  CHECK(memory.read_instruction_bytes(0, std::span(invalid).first(32)));
+  CHECK(std::all_of(invalid.begin(), invalid.begin() + 32, [](u8 byte) { return byte == 0; }));
+  CHECK(invalid.back() == 0x7c);
+}
 } // namespace
 
 int main() {
@@ -264,6 +331,8 @@ int main() {
     strict_page_table_writes(cupid::Console::Wii);
     instruction_backing_reads(cupid::Console::GameCube);
     instruction_backing_reads(cupid::Console::Wii);
+    instruction_byte_reads(cupid::Console::GameCube);
+    instruction_byte_reads(cupid::Console::Wii);
     cupid::Memory gc(cupid::Console::GameCube);
     gc.write32(8, 0x12345678);
     CHECK(gc.read8(8) == 0x12);

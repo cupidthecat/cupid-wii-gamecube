@@ -303,6 +303,54 @@ if(CUPID_BUILD_TESTS)
       endif()
       add_test(NAME cpu_step_reference_checks COMMAND cupid_cpu_step_reference_checks)
       set_tests_properties(cpu_step_reference_checks PROPERTIES TIMEOUT 120 LABELS "private;differential")
+      set(cupid_dispatch_references ${cupid_step_references}
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/PowerPC/Interpreter/Interpreter_Tables.cpp"
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/PowerPC/Interpreter/Interpreter_Integer.cpp"
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/PowerPC/Interpreter/Interpreter_Branch.cpp"
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/PowerPC/Interpreter/Interpreter_SystemRegisters.cpp"
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/PowerPC/Interpreter/Interpreter_FloatingPoint.cpp"
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/PowerPC/Interpreter/Interpreter_Paired.cpp"
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/PowerPC/Interpreter/Interpreter_LoadStore.cpp"
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/PowerPC/Interpreter/Interpreter_LoadStorePaired.cpp"
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Common/FloatUtils.cpp"
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/PowerPC/ConditionRegister.cpp"
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Common/x64CPUDetect.cpp"
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Common/StringUtil.cpp")
+      foreach(reference IN LISTS cupid_dispatch_references)
+        if(NOT EXISTS "${reference}")
+          message(FATAL_ERROR "Required behavioral target file is absent: ${reference}")
+        endif()
+      endforeach()
+      add_executable(cupid_cpu_dispatch_reference_checks tests/cpu_dispatch_reference_checks.cpp
+        ${cupid_dispatch_references})
+      set_source_files_properties(${cupid_dispatch_references} PROPERTIES
+        COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->;$<$<CXX_COMPILER_ID:GNU>:-O1>;$<$<CXX_COMPILER_ID:GNU>:-Wno-error=unused-parameter>")
+      set_property(SOURCE "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/PowerPC/PowerPC.cpp"
+        APPEND PROPERTY COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:GNU>:-Wno-error=extra>")
+      set_target_properties(cupid_cpu_dispatch_reference_checks PROPERTIES CXX_STANDARD 23)
+      target_include_directories(cupid_cpu_dispatch_reference_checks SYSTEM PRIVATE
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core"
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Externals/picojson")
+      target_compile_definitions(cupid_cpu_dispatch_reference_checks PRIVATE _M_X86_64)
+      target_link_libraries(cupid_cpu_dispatch_reference_checks PRIVATE cupid_core fmt::fmt)
+      if(WIN32)
+        target_compile_definitions(cupid_cpu_dispatch_reference_checks PRIVATE UNICODE _UNICODE)
+      endif()
+      if(MSVC)
+        target_compile_options(cupid_cpu_dispatch_reference_checks PRIVATE /Gy /Gw)
+        target_link_options(cupid_cpu_dispatch_reference_checks PRIVATE /OPT:REF)
+      else()
+        target_compile_options(cupid_cpu_dispatch_reference_checks PRIVATE -ffunction-sections -fdata-sections)
+        target_link_options(cupid_cpu_dispatch_reference_checks PRIVATE -Wl,--gc-sections)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+          target_compile_definitions(cupid_cpu_dispatch_reference_checks PRIVATE CUPID_OBSERVE_REFERENCE_COPY)
+          target_link_options(cupid_cpu_dispatch_reference_checks PRIVATE
+            "-Wl,--wrap=_ZNK6Memory13MemoryManager11CopyFromEmuEPvjm"
+            "-Wl,--wrap=_ZNK6Memory13MemoryManager8Read_U32Ej")
+        endif()
+      endif()
+      add_test(NAME cpu_dispatch_reference_checks COMMAND cupid_cpu_dispatch_reference_checks)
+      set_tests_properties(cpu_dispatch_reference_checks PROPERTIES TIMEOUT 120 LABELS "private;differential")
     else()
       add_test(NAME physical_memory_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
         "SKIP: optional physical memory comparisons require an x86_64 behavioral target")
@@ -311,6 +359,10 @@ if(CUPID_BUILD_TESTS)
       add_test(NAME cpu_step_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
         "SKIP: optional CPU stepping comparisons require an x86_64 behavioral target")
       set_tests_properties(cpu_step_reference_checks PROPERTIES
+        SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;differential")
+      add_test(NAME cpu_dispatch_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
+        "SKIP: optional CPU dispatch comparisons require an x86_64 behavioral target")
+      set_tests_properties(cpu_dispatch_reference_checks PROPERTIES
         SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;differential")
     endif()
     set(cupid_vertex_reference
@@ -435,6 +487,10 @@ if(CUPID_BUILD_TESTS)
     add_test(NAME cpu_step_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
       "SKIP: optional CPU stepping comparisons require CUPID_BEHAVIOR_REFERENCE_ROOT and x86_64")
     set_tests_properties(cpu_step_reference_checks PROPERTIES
+      SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;differential")
+    add_test(NAME cpu_dispatch_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
+      "SKIP: optional CPU dispatch comparisons require CUPID_BEHAVIOR_REFERENCE_ROOT and x86_64")
+    set_tests_properties(cpu_dispatch_reference_checks PROPERTIES
       SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;differential")
     add_test(NAME vertex_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
       "SKIP: optional vertex comparisons require CUPID_BEHAVIOR_REFERENCE_ROOT and C++23")

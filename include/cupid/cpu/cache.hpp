@@ -17,6 +17,8 @@ private:
     bool valid = false;
   };
 
+  Line *obtain(Bus &bus, u32 physical, bool locked);
+
   std::array<std::array<Line, 8>, 128> sets_{};
   std::array<u8, 128> replacement_{};
 };

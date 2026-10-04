@@ -29,10 +29,11 @@ void trace_fetch_status(cupid::Console console) {
   using namespace cupid;
   TraceFile temporary;
   u32 initial_opcode = 0;
+  constexpr u32 unaligned_load = 0x7c602028; // lwarx r3,r0,r4
   {
     runtime::Machine machine(console);
     machine.load_executable(runtime::self_test_dol());
-    machine.set_trace(temporary.path, 7);
+    machine.set_trace(temporary.path, 8);
     auto &state = machine.cpu().state();
     initial_opcode = machine.memory().read32(0x4000);
     machine.memory().write32(0x5004, 1);
@@ -52,16 +53,27 @@ void trace_fetch_status(cupid::Console console) {
     machine.step();
     CHECK(state.pc == 0x500 && state.last_opcode == 1);
     machine.memory().write32(0x0c003000, 1);
-    state.pc = 0x80005005;
+    state.pc = 0x80006001;
     machine.step();
-    CHECK(state.pc == 0x600 && state.last_opcode == 1);
+    CHECK(state.pc == 0x80006005 && state.last_opcode == 0);
+    CHECK(machine.cpu().last_step_fetched_instruction());
+
+    // Data alignment faults occur after obtaining and decoding the instruction.
+    machine.memory().write32(0x7000, unaligned_load);
+    state.pc = 0x80007000;
+    state.gpr[4] = 1;
+    machine.step();
+    CHECK(state.pc == 0x600 && state.last_opcode == unaligned_load);
+    CHECK(state.spr[cpu::spr::dar] == 1);
+    CHECK(machine.cpu().last_step_fetched_instruction());
 
     state.pc = 0x40005000;
     state.msr = cpu::msr::ir;
     state.sr[4] = 1u << 28;
     const auto cycles = state.cycles;
     machine.step();
-    CHECK(state.pc == 0x400 && state.last_opcode == 1 && state.cycles == cycles);
+    CHECK(state.pc == 0x400 && state.last_opcode == unaligned_load && state.cycles == cycles);
+    CHECK(state.spr[cpu::spr::dar] == 1);
     CHECK(state.instructions == 1);
 
     machine.load_executable(runtime::self_test_dol());
@@ -72,12 +84,14 @@ void trace_fetch_status(cupid::Console console) {
 
   std::ifstream trace(temporary.path);
   CHECK(trace);
-  constexpr std::array<bool, 7> fetched{true, true, true, false, false, false, true};
-  const std::array<u32, 7> opcodes{initial_opcode, 0, 1, 1, 1, 1, initial_opcode};
-  constexpr std::array<u32, 7> before{0x80004000, 0x80005000, 0x80005004, 0x80005004,
-                                      0x80005005, 0x40005000, 0x80004000};
-  constexpr std::array<u32, 7> after{0x80004004, 0x80005004, 0x700,     0x500,
-                                     0x600,      0x400,      0x80004004};
+  constexpr std::array<bool, 8> fetched{true, true, true, false, true, true, false, true};
+  const std::array<u32, 8> opcodes{initial_opcode, 0, 1, 1, 0, unaligned_load, unaligned_load,
+                                   initial_opcode};
+  constexpr std::array<u32, 8> before{0x80004000, 0x80005000, 0x80005004, 0x80005004,
+                                      0x80006001, 0x80007000, 0x40005000, 0x80004000};
+  constexpr std::array<u32, 8> after{0x80004004, 0x80005004, 0x700, 0x500,
+                                     0x80006005, 0x600,      0x400, 0x80004004};
+  constexpr std::array<u32, 8> data_addresses{0, 0, 0, 0, 0, 1, 1, 0};
   std::string record;
   for (std::size_t index = 0; index < fetched.size(); ++index) {
     CHECK(std::getline(trace, record));
@@ -86,7 +100,9 @@ void trace_fetch_status(cupid::Console console) {
     CHECK(record.find("\"opcode\":" + std::to_string(opcodes[index]) + ",") != std::string::npos);
     CHECK(record.find("\"pc_before\":" + std::to_string(before[index]) + ",") != std::string::npos);
     CHECK(record.find("\"pc_after\":" + std::to_string(after[index]) + ",") != std::string::npos);
-    CHECK(record.find("\"attempt\":" + std::to_string(index == 6 ? 1 : index + 1) + ",") !=
+    CHECK(record.find("\"dar\":" + std::to_string(data_addresses[index]) + ",") !=
+          std::string::npos);
+    CHECK(record.find("\"attempt\":" + std::to_string(index == 7 ? 1 : index + 1) + ",") !=
           std::string::npos);
     CHECK(record.find("\"step\":1,") != std::string::npos);
   }

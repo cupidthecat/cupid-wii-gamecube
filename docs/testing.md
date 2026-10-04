@@ -91,7 +91,7 @@ Unused parameters in the unmodified framebuffer-copy and memory comparison sourc
 
 The stepping target's unmodified CPU metadata source also retains its enum conditional warnings on GCC.
 
-The default public run marks all fifteen comparison tests as skipped because the external checkout is not a dependency of the product build. Keep the comparison checkout's revision with the test results. These comparisons cover the named helpers, memory transactions, graphics stages, pointer projection, service records and mixer paths; they do not compare complete CPU execution or prove hardware accuracy.
+The default public run marks all sixteen comparison tests as skipped because the external checkout is not a dependency of the product build. Keep the comparison checkout's revision with the test results. These comparisons cover the named helpers, selected CPU dispatch, memory transactions, graphics stages, pointer projection, service records and mixer paths; they do not compare complete CPU execution or prove hardware accuracy.
 
 ## Package checks
 
@@ -214,3 +214,19 @@ Windows and GCC each passed 48 zero-dispatch and 288 translated instruction-faul
 The first sanitizer runs exceeded the guest follower test's inherited 60-second budget. The unchanged binaries completed every assertion in 136.53 seconds on GCC and 109.86 seconds on Clang. Taking full CPU snapshots only at the declared 4,096-attempt poll boundaries reduced separate instrumented runs to 98.97 and 81.45 seconds. The fixture also checks callback cadence. Its 28 guest instructions, device-cycle bounds, three-second update waits, report checks and full-state assertions remain unchanged. With a scoped 180-second budget, the corrected full sanitizer runs passed this test in 140.65 and 112.22 seconds.
 
 Separate authored CLI checks passed on Windows and GCC in both console modes: valid follow input ran exactly 16 CPU steps, and invalid initial input was rejected before boot. Clang-format 18 passed, including test adapter includes. Clang 18 static analysis checked all 39 product translation units with no project diagnostics. All 140 captured source, header, test and build input hashes remained unchanged through the corrected checks.
+
+## Checked snapshot after `5632c6a1df64`
+
+This snapshot adds byte-granular instruction reads and corrects the tested cache and odd-address dispatch behavior. The previous runtime trace fixture failed because it assumed an odd instruction address caused an alignment fault before fetching. The revised fixture checks odd-address fetches separately from a decoded data-alignment fault, an interrupt without a fetch, and a translated instruction fault without a fetch. The original failure is retained.
+
+| Configuration | Public tests passed | Direct comparisons passed | Declared skips |
+| --- | ---: | ---: | ---: |
+| Windows MSVC Release | 38 | 16 | 1 |
+| Linux GCC Release | 38 | 16 | 1 |
+| Linux Clang Release | 38 | 0 | 17 |
+| Linux GCC ASan + UBSan, headless | 35 | 0 | 20 |
+| Linux Clang ASan + UBSan, headless | 35 | 0 | 20 |
+
+Windows and GCC each passed 5,632 additional cases using the unchanged instruction tables and selected integer and branch dispatch. These include rejected cache fills, warm and cold byte reads, strict backing-memory reads, and aligned and odd instruction addresses. GCC also compares the ordered backing-memory calls through forwarding linker wrappers. Windows checks the authored transfer order and all value, CPU-state and cache-state cases; it does not claim interception of the comparison implementation's calls. The new dispatch comparison excludes scheduler timing, device behavior and other instruction families.
+
+Both complete sanitizer runs passed the unchanged guest follower assertions within their 180-second budget: 148.51 seconds on GCC and 121.88 seconds on Clang. Clang-format 18 passed, including test adapter includes. Clang 18 static analysis checked all 39 product translation units with no project diagnostics. All 141 captured source, header, test and build input hashes remained unchanged through the final checks.

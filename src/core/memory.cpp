@@ -107,6 +107,20 @@ bool Memory::read_instruction_words(u32 physical, std::span<u32> words) {
   return true;
 }
 
+bool Memory::read_instruction_bytes(u32 physical, std::span<u8> bytes) {
+  if (bytes.empty() || bytes.size() > 32)
+    throw std::invalid_argument("Instruction byte reads require 1 through 32 bytes");
+  std::span<const u8> source;
+  try {
+    source = range(physical & 0x3fffffff, bytes.size());
+  } catch (const BusFault &) {
+    ++instruction_backing_read_errors_;
+    return false;
+  }
+  std::memmove(bytes.data(), source.data(), bytes.size());
+  return true;
+}
+
 u64 Memory::instruction_backing_read_errors() const {
   return instruction_backing_read_errors_;
 }

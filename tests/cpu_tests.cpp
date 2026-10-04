@@ -2691,9 +2691,9 @@ void translated_fetch_fault_tests() {
   {
     Fixture aligned_control;
     aligned_control.s.pc = 0x1001;
-    CHECK(aligned_control.cpu.step() == 1);
-    CHECK(aligned_control.s.pc == 0x600 && aligned_control.s.cycles == 1);
-    CHECK(aligned_control.s.spr[spr::srr0] == 0x1001);
+    CHECK(aligned_control.cpu.step() == 0);
+    CHECK(aligned_control.s.pc == 0x1005 && aligned_control.s.cycles == 0);
+    CHECK(aligned_control.s.spr[spr::srr0] == 0);
   }
   {
     Fixture unfinished;
@@ -2756,6 +2756,112 @@ void translated_fetch_fault_tests() {
   CHECK(f.s.timebase == 1 && f.s.spr[spr::dec] == 100);
 }
 
+void instruction_byte_bus_tests() {
+  class ByteBus final : public Bus {
+  public:
+    u32 fault_address = 0xffffffffu;
+    unsigned reads = 0;
+
+    u8 read8(u32 address) override {
+      ++reads;
+      if (address == fault_address)
+        throw BusFault(address, false, "Authored byte backing fault");
+      return static_cast<u8>(address * 3u + 7u);
+    }
+
+    void write8(u32, u8) override {
+      CHECK(false);
+    }
+  } backing;
+
+  for (unsigned width = 1; width <= 32; ++width) {
+    std::array<u8, 64> bytes;
+    bytes.fill(0xa5);
+    backing.reads = 0;
+    backing.fault_address = 0xffffffffu;
+    CHECK(backing.read_instruction_bytes(0x1000, std::span(bytes).subspan(16, width)));
+    CHECK(backing.reads == width);
+    for (unsigned n = 0; n < bytes.size(); ++n) {
+      const u8 expected = n >= 16 && n < 16 + width ? static_cast<u8>((0x1000 + n - 16) * 3u + 7u)
+                                                    : static_cast<u8>(0xa5);
+      CHECK(bytes[n] == expected);
+    }
+    for (unsigned failed = 0; failed < width; ++failed) {
+      bytes.fill(0xa5);
+      backing.fault_address = 0x1000u + failed;
+      bool rejected = false;
+      try {
+        backing.read_instruction_bytes(0x1000, std::span(bytes).subspan(16, width));
+      } catch (const BusFault &error) {
+        rejected = true;
+        CHECK(error.address == backing.fault_address && !error.write && !error.unsupported_reason);
+      }
+      CHECK(rejected && std::ranges::all_of(bytes, [](u8 byte) { return byte == 0xa5; }));
+    }
+  }
+  for (unsigned width : {0u, 33u}) {
+    std::array<u8, 64> bytes;
+    bytes.fill(0xa5);
+    const auto reads = backing.reads;
+    bool invalid = false;
+    try {
+      backing.read_instruction_bytes(0x1000, std::span(bytes).first(width));
+    } catch (const std::invalid_argument &) {
+      invalid = true;
+    }
+    CHECK(invalid && backing.reads == reads);
+    CHECK(std::ranges::all_of(bytes, [](u8 byte) { return byte == 0xa5; }));
+  }
+}
+
+void odd_instruction_tests() {
+  const std::array<u32, 8> program{0u,
+                                   0x60000000u,
+                                   imm(14, 3, 0, 7),
+                                   imm(14, 3, 3, 0xfffb),
+                                   imm(15, 3, 3, 1),
+                                   imm(27, 3, 3, 0xa5a5),
+                                   0x48000008u,
+                                   0x48000009u};
+  unsigned cases = 0;
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    cupid::Memory backing(console);
+    Interpreter cpu(backing, console);
+    unsigned pi = 0;
+    backing.memory_error = [&] { ++pi; };
+    for (bool cached : {false, true})
+      for (u32 base : {0x2000u, 0x201cu})
+        for (unsigned offset = 0; offset < 4; ++offset)
+          for (unsigned operation = 0; operation < program.size(); ++operation) {
+            const u32 address = base + offset, opcode = program[operation];
+            std::ranges::fill(backing.range(address & ~31u, 64), 0);
+            backing.write32(address, opcode);
+            cpu.reset();
+            auto &s = cpu.state();
+            s.pc = address;
+            s.spr[spr::hid0] = cached ? 0x8000u : 0u;
+            s.gpr[3] = 0x12345678;
+            s.cr = 0xa1b2c3d4;
+            s.spr[spr::lr] = 0xabcdef01;
+            s.spr[spr::srr0] = 0x12345678;
+            const std::array<u32, 8> expected{0x12345678u, 0x12345678u, 7u,          0x12345673u,
+                                              0x12355678u, 0xb7915678u, 0x12345678u, 0x12345678u};
+            CHECK(cpu.step() == (opcode == 0 ? 0u : 1u));
+            CHECK(cpu.last_step_fetched_instruction());
+            CHECK(s.last_pc == address && s.last_opcode == opcode);
+            CHECK(s.pc == address + (operation >= 6 ? 8u : 4u));
+            CHECK(s.gpr[3] == expected[operation] && s.cr == 0xa1b2c3d4);
+            CHECK(s.spr[spr::lr] == (operation == 7 ? address + 4u : 0xabcdef01u));
+            CHECK(s.spr[spr::srr0] == 0x12345678 && s.msr == 0);
+            CHECK(s.instructions == (opcode == 0 ? 0u : 1u));
+            CHECK(s.cycles == (opcode == 0 ? 0u : 1u));
+            CHECK(s.timebase == 0 && pi == 0 && backing.instruction_backing_read_errors() == 0);
+            ++cases;
+          }
+  }
+  CHECK(cases == 256);
+}
+
 void fetch_diagnostic_tests() {
   Fixture initial;
   CHECK(!initial.cpu.last_step_fetched_instruction());
@@ -2779,12 +2885,13 @@ void fetch_diagnostic_tests() {
     Fixture rejected;
     const u32 opcode = imm(14, 3, 0, 7);
     rejected.run(opcode);
-    rejected.s.pc = translated ? 0x80342000u : 0x1001u;
+    rejected.s.pc = translated ? 0x80342000u : 0x3001u;
     rejected.s.msr = translated ? msr::ir : 0;
     rejected.cpu.step();
-    CHECK(!rejected.cpu.last_step_fetched_instruction());
-    CHECK(rejected.s.pc == (translated ? 0x400u : 0x600u));
-    CHECK(rejected.s.last_pc == 0x1000 && rejected.s.last_opcode == opcode);
+    CHECK(rejected.cpu.last_step_fetched_instruction() == !translated);
+    CHECK(rejected.s.pc == (translated ? 0x400u : 0x3005u));
+    CHECK(rejected.s.last_pc == (translated ? 0x1000u : 0x3001u));
+    CHECK(rejected.s.last_opcode == (translated ? opcode : 0u));
   }
 
   {
@@ -3001,6 +3108,8 @@ void instruction_fill_failure_tests() {
 
 int main() {
   return run_tests([] {
+    instruction_byte_bus_tests();
+    odd_instruction_tests();
     fetch_diagnostic_tests();
     translated_fetch_fault_tests();
     zero_dispatch_tests();

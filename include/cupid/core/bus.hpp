@@ -2,6 +2,8 @@
 #pragma once
 
 #include "cupid/core/types.hpp"
+#include <algorithm>
+#include <array>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -114,6 +116,23 @@ public:
 
   virtual bool write_page_table32(u32 physical, u32 value) {
     write32(physical, value);
+    return true;
+  }
+
+  // Stage bounded byte copies so a backing fault retains the whole destination.
+  virtual bool read_instruction_bytes(u32 physical, std::span<u8> bytes) {
+    if (bytes.empty() || bytes.size() > 32)
+      throw std::invalid_argument("Invalid instruction backing byte count");
+    std::array<u8, 32> incoming{};
+    if (bytes.size() == 4) {
+      const u32 value = read32(physical);
+      for (unsigned n = 0; n < 4; ++n)
+        incoming[n] = static_cast<u8>(value >> (24u - n * 8u));
+    } else {
+      for (std::size_t n = 0; n < bytes.size(); ++n)
+        incoming[n] = read8(physical + static_cast<u32>(n));
+    }
+    std::copy_n(incoming.begin(), bytes.size(), bytes.begin());
     return true;
   }
 };

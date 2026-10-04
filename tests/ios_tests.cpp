@@ -1161,6 +1161,132 @@ void usage() {
   CHECK(resolved.filename().string().starts_with("cupid-usage-check-"));
   std::filesystem::remove_all(resolved);
 }
+
+void stats() {
+  Fixture fixture;
+  const auto parent = std::filesystem::canonical(std::filesystem::temp_directory_path());
+  const auto root =
+      parent / ("cupid-stats-check-" +
+                std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  fixture.ipc.set_user_directory(root);
+  CHECK(fixture.open_fs() == 0);
+  CHECK(fixture.open_fs() == 1);
+  CHECK(fixture.open_fs() == 2);
+  const auto directory = root / "wii" / "tmp" / "usage";
+  std::filesystem::create_directory(directory);
+  write_file(directory / "empty.bin", 0);
+  write_file(directory / "one.bin", 1);
+  write_file(directory / "exact.bin", 16384);
+  write_file(directory / "over.bin", 16385);
+  fixture.prepare_usage("/");
+  CHECK(fixture.complete() == 0);
+  CHECK(fixture.memory.read32(clusters_buffer) == 5);
+  CHECK(fixture.memory.read32(inodes_buffer) == 17);
+  const auto prepare = [&](u32 output_size) {
+    auto command = fixture.memory.range(request, 64);
+    std::fill(command.begin(), command.end(), u8(0));
+    fixture.memory.write32(request, 6);
+    fixture.memory.write32(request + 8, 2);
+    fixture.memory.write32(request + 12, 2);
+    fixture.memory.write32(request + 24, clusters_buffer);
+    fixture.memory.write32(request + 28, output_size);
+    auto output = fixture.memory.range(clusters_buffer, 64);
+    std::fill(output.begin(), output.end(), u8(0x5a));
+  };
+  prepare(40);
+  fixture.devices.write(0x0d000000, request, 4);
+  fixture.devices.write(0x0d000004, 0x31, 4);
+  fixture.ipc.advance(6000);
+  CHECK(fixture.memory.read32(request) == 8);
+  CHECK((fixture.devices.read(0x0d000004, 4) & 4) == 0);
+  fixture.devices.write(0x0d000004, 0x32, 4);
+  fixture.devices.write(0x0d000030, 0x40000000, 4);
+  fixture.ipc.advance(47999);
+  CHECK(fixture.memory.read32(request) == 8);
+  CHECK((fixture.devices.read(0x0d000004, 4) & 4) == 0);
+  fixture.ipc.advance(1);
+  CHECK((fixture.devices.read(0x0d000004, 4) & 4) != 0);
+  CHECK(fixture.devices.read(0x0d000008, 4) == request);
+  CHECK(fixture.memory.read32(request) == 8 && fixture.memory.read32(request + 4) == 0);
+  fixture.devices.write(0x0d000004, 0x34, 4);
+  fixture.devices.write(0x0d000030, 0x40000000, 4);
+  constexpr std::array<u32, 7> expected{0x4000, 0x7bbb, 5, 0, 0x300, 0x17ee, 17};
+  for (unsigned i = 0; i < expected.size(); ++i)
+    CHECK(fixture.memory.read32(clusters_buffer + i * 4) == expected[i]);
+  CHECK(std::all_of(fixture.memory.range(clusters_buffer + 28, 36).begin(),
+                    fixture.memory.range(clusters_buffer + 28, 36).end(),
+                    [](u8 byte) { return byte == 0x5a; }));
+  for (u32 size : {0u, 1u, 27u}) {
+    prepare(size);
+    CHECK(fixture.complete() == -101);
+    CHECK(std::all_of(fixture.memory.range(clusters_buffer, 64).begin(),
+                      fixture.memory.range(clusters_buffer, 64).end(),
+                      [](u8 byte) { return byte == 0x5a; }));
+  }
+  prepare(27);
+  fixture.devices.write(0x0d000000, request, 4);
+  fixture.devices.write(0x0d000004, 0x31, 4);
+  fixture.ipc.advance(6000);
+  CHECK(s32(fixture.memory.read32(request + 4)) == -101);
+  fixture.devices.write(0x0d000004, 0x32, 4);
+  fixture.devices.write(0x0d000030, 0x40000000, 4);
+  fixture.ipc.advance(32399);
+  CHECK((fixture.devices.read(0x0d000004, 4) & 4) == 0);
+  fixture.ipc.advance(1);
+  CHECK((fixture.devices.read(0x0d000004, 4) & 4) != 0);
+  fixture.devices.write(0x0d000004, 0x34, 4);
+  fixture.devices.write(0x0d000030, 0x40000000, 4);
+  prepare(28);
+  CHECK(fixture.complete() == 0);
+  for (unsigned i = 0; i < expected.size(); ++i)
+    CHECK(fixture.memory.read32(clusters_buffer + i * 4) == expected[i]);
+  // Ordinary paths and /dev/fs share the same filesystem descriptor service.
+  std::fill(fixture.memory.range(request, 64).begin(), fixture.memory.range(request, 64).end(),
+            u8(0));
+  fixture.memory.write32(request, 1);
+  fixture.text("/tmp/usage/one.bin");
+  fixture.memory.write32(request + 12, path_buffer);
+  fixture.memory.write32(request + 16, 1);
+  const s32 file_descriptor = fixture.complete();
+  CHECK(file_descriptor == 3);
+  prepare(28);
+  fixture.memory.write32(request + 8, u32(file_descriptor));
+  CHECK(fixture.complete() == 0);
+  for (unsigned i = 0; i < expected.size(); ++i)
+    CHECK(fixture.memory.read32(clusters_buffer + i * 4) == expected[i]);
+  fixture.prepare_usage("/tmp/usage");
+  fixture.memory.write32(request + 8, u32(file_descriptor));
+  CHECK(fixture.complete() == 0);
+  CHECK(fixture.memory.read32(clusters_buffer) == 4);
+  CHECK(fixture.memory.read32(inodes_buffer) == 5);
+  fixture.memory.write32(request, 3);
+  fixture.memory.write32(request + 8, u32(file_descriptor));
+  fixture.memory.write32(request + 12, 0x16000);
+  fixture.memory.write32(request + 16, 1);
+  CHECK(fixture.complete() == 1);
+  CHECK(fixture.memory.read8(0x16000) == u8('x'));
+  fixture.memory.write32(request, 2);
+  fixture.memory.write32(request + 8, u32(file_descriptor));
+  CHECK(fixture.complete() == 0);
+  prepare(28);
+  fixture.memory.write32(request + 8, u32(file_descriptor));
+  CHECK(fixture.complete() == -4);
+  CHECK(std::all_of(fixture.memory.range(clusters_buffer, 64).begin(),
+                    fixture.memory.range(clusters_buffer, 64).end(),
+                    [](u8 byte) { return byte == 0x5a; }));
+  write_file(directory / "limit.bin", (u64(0x7bc0) + 20) * 16384);
+  for (unsigned i = 0; i < 0x1800; ++i)
+    write_file(directory / ("n" + std::to_string(i)), 0);
+  prepare(28);
+  CHECK(fixture.complete() == 0);
+  constexpr std::array<u32, 7> full{0x4000, 0, 0x7bc0, 0, 0x300, 0, 0x17ff};
+  for (unsigned i = 0; i < full.size(); ++i)
+    CHECK(fixture.memory.read32(clusters_buffer + i * 4) == full[i]);
+  const auto resolved = std::filesystem::canonical(root);
+  CHECK(resolved.parent_path() == parent);
+  CHECK(resolved.filename().string().starts_with("cupid-stats-check-"));
+  std::filesystem::remove_all(resolved);
+}
 } // namespace usage_profile
 
 void filesystem() {
@@ -1662,6 +1788,7 @@ int main(int argc, char **argv) {
     bluetooth_remote_transport();
     filesystem();
     usage_profile::usage();
+    usage_profile::stats();
     disc_service();
     unfinished_service();
     title_metadata();

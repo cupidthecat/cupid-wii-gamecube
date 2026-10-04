@@ -83,8 +83,10 @@ set(cupid_sources
   src/runtime/elf.cpp
   src/runtime/fonts.cpp
   src/audio/remote_speaker.cpp
+  src/audio/host_mixer.cpp
   src/dsp/engine.cpp
   src/dsp/audio.cpp
+  src/dsp/handheld.cpp
   src/runtime/machine.cpp
   src/platform/output.cpp
   src/platform/input_replay.cpp)
@@ -97,7 +99,7 @@ include(cmake/DeveloperChecks.cmake)
 
 if(CUPID_BUILD_TESTS)
   enable_testing()
-  foreach(suite IN ITEMS cpu core disc device remote remote_speaker extension_cipher sdp sdp_transport runtime elf fonts dsp ios network sysconf gfx vertex texture fragment rasterizer efb_copy xfb_copy efb_access guest_video input_replay audio_stats)
+  foreach(suite IN ITEMS cpu core disc device remote remote_speaker host_mixer extension_cipher sdp sdp_transport runtime elf fonts dsp handheld ios network sysconf gfx vertex texture fragment rasterizer efb_copy xfb_copy efb_access guest_video input_replay audio_stats)
     add_executable(cupid_${suite}_tests tests/${suite}_tests.cpp)
     target_include_directories(cupid_${suite}_tests PRIVATE tests)
     target_link_libraries(cupid_${suite}_tests PRIVATE cupid_core)
@@ -125,6 +127,12 @@ if(CUPID_BUILD_TESTS)
     add_test(NAME input COMMAND cupid_input_tests)
     set_tests_properties(input PROPERTIES TIMEOUT 60 LABELS "public;backend;input"
       ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
+    add_executable(cupid_host_audio_tests tests/host_audio_tests.cpp)
+    target_include_directories(cupid_host_audio_tests PRIVATE tests)
+    target_link_libraries(cupid_host_audio_tests PRIVATE cupid_core)
+    add_test(NAME host_audio COMMAND cupid_host_audio_tests)
+    set_tests_properties(host_audio PROPERTIES TIMEOUT 60 LABELS "public;backend;audio"
+      ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
   else()
     add_test(NAME output COMMAND "${CMAKE_COMMAND}" -E echo
       "SKIP: host video/audio backend is excluded from this headless build")
@@ -132,6 +140,9 @@ if(CUPID_BUILD_TESTS)
     add_test(NAME input COMMAND "${CMAKE_COMMAND}" -E echo
       "SKIP: host input backend is excluded from this headless build")
     set_tests_properties(input PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "public;backend;input")
+    add_test(NAME host_audio COMMAND "${CMAKE_COMMAND}" -E echo
+      "SKIP: host audio backend is excluded from this headless build")
+    set_tests_properties(host_audio PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "public;backend;audio")
   endif()
   if(CUPID_BEHAVIOR_REFERENCE_ROOT)
     set(cupid_float_reference "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Common/FloatUtils.cpp")
@@ -258,7 +269,9 @@ if(CUPID_BUILD_TESTS)
       "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/VideoBackends/Software/TextureEncoder.cpp")
     set(cupid_xfb_copy_reference
       "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/VideoBackends/Software/SWEfbInterface.cpp")
-    foreach(reference IN LISTS cupid_rasterizer_references cupid_texture_reference cupid_fragment_reference cupid_sdp_reference cupid_efb_copy_reference cupid_xfb_copy_reference)
+    set(cupid_host_audio_reference
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/AudioCommon/Mixer.cpp")
+    foreach(reference IN LISTS cupid_rasterizer_references cupid_texture_reference cupid_fragment_reference cupid_sdp_reference cupid_efb_copy_reference cupid_xfb_copy_reference cupid_host_audio_reference)
       if(NOT EXISTS "${reference}")
         message(FATAL_ERROR "Required behavioral target file is absent: ${reference}")
       endif()
@@ -280,13 +293,15 @@ if(CUPID_BUILD_TESTS)
       "${cupid_efb_copy_reference}")
     add_executable(cupid_xfb_copy_reference_checks tests/xfb_copy_reference_checks.cpp
       "${cupid_xfb_copy_reference}")
-    set_source_files_properties(${cupid_rasterizer_references} ${cupid_texture_reference} ${cupid_fragment_reference} "${cupid_sdp_reference}" "${cupid_efb_copy_reference}" "${cupid_xfb_copy_reference}"
+    add_executable(cupid_host_audio_reference_checks tests/host_audio_reference_checks.cpp
+      "${cupid_host_audio_reference}")
+    set_source_files_properties(${cupid_rasterizer_references} ${cupid_texture_reference} ${cupid_fragment_reference} "${cupid_sdp_reference}" "${cupid_efb_copy_reference}" "${cupid_xfb_copy_reference}" "${cupid_host_audio_reference}"
       PROPERTIES COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->;$<$<CXX_COMPILER_ID:GNU>:-O1>")
     set_property(SOURCE "${cupid_efb_copy_reference}" APPEND PROPERTY COMPILE_OPTIONS
       "$<$<CXX_COMPILER_ID:GNU>:-Wno-error=unused-parameter>")
     set_property(SOURCE "${cupid_xfb_copy_reference}" APPEND PROPERTY COMPILE_OPTIONS
       "$<$<CXX_COMPILER_ID:GNU>:-Wno-error=unused-parameter>")
-    foreach(comparison IN ITEMS rasterizer texture fragment sdp efb_copy xfb_copy)
+    foreach(comparison IN ITEMS rasterizer texture fragment sdp efb_copy xfb_copy host_audio)
       set(target cupid_${comparison}_reference_checks)
       set_target_properties(${target} PROPERTIES CXX_STANDARD 23)
       target_include_directories(${target} SYSTEM PRIVATE
@@ -330,7 +345,7 @@ if(CUPID_BUILD_TESTS)
       "SKIP: optional vertex comparisons require CUPID_BEHAVIOR_REFERENCE_ROOT and C++23")
     set_tests_properties(vertex_reference_checks PROPERTIES
       SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;differential")
-    foreach(comparison IN ITEMS rasterizer texture fragment sdp efb_copy xfb_copy)
+    foreach(comparison IN ITEMS rasterizer texture fragment sdp efb_copy xfb_copy host_audio)
       add_test(NAME ${comparison}_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
         "SKIP: optional ${comparison} comparisons require CUPID_BEHAVIOR_REFERENCE_ROOT and C++23")
       set_tests_properties(${comparison}_reference_checks PROPERTIES

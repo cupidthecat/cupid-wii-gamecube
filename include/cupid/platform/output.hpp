@@ -26,6 +26,12 @@ struct OutputOptions {
   std::filesystem::path frame_dump;
   std::filesystem::path input_config;
   DisplayAspect display_aspect = DisplayAspect::Standard;
+  bool remote_speakers = false;
+};
+
+struct HostAudioStats {
+  u64 mixed_frames = 0, nonzero_samples = 0;
+  u64 left_nonzero = 0, right_nonzero = 0, dropped_granules = 0;
 };
 
 class Output {
@@ -39,6 +45,9 @@ public:
   bool rumble(unsigned port, bool enabled);
   void present(const Memory &memory, const hw::Xfb &xfb);
   void audio(std::span<const s16> samples, u32 sample_rate);
+  void remote_speaker(unsigned port, const audio::RemoteSpeakerPacket &packet);
+  bool remote_speaker_processing() const;
+  HostAudioStats host_audio_stats() const;
   u64 presented_frames() const;
   u64 last_frame_hash() const;
   u64 audio_samples() const;

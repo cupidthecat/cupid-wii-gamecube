@@ -385,7 +385,7 @@ u32 Interpreter::translate_access(u32 effective, bool instruction, bool write, b
   if (!(state_.msr & (instruction ? msr::ir : msr::dr)))
     return effective;
   // Higher numbered overlapping BATs win, including the extended bank when enabled.
-  const unsigned count = (state_.spr[spr::hid4] & 0x02000000) ? 8 : 4;
+  const unsigned count = console_ == Console::Wii && (state_.spr[spr::hid4] & 0x02000000) ? 8 : 4;
   for (unsigned n = count; n-- > 0;) {
     const unsigned base =
         n < 4 ? (instruction ? 528 : 536) + n * 2 : (instruction ? 560 : 568) + (n - 4) * 2;
@@ -393,7 +393,8 @@ u32 Interpreter::translate_access(u32 effective, bool instruction, bool write, b
     if (!(upper & 3))
       continue;
     const u32 mask = ((upper & 0x1ffc) << 15) | 0x1ffff;
-    if ((effective & ~mask) == (upper & 0xfffe0000)) {
+    const u32 matching_mask = mask & ~(upper & 0xfffe0000);
+    if ((effective & ~matching_mask) == (upper & 0xfffe0000)) {
       uncached = (lower & 0x60) != 0;
       return (lower & 0xfffe0000) | (effective & mask);
     }

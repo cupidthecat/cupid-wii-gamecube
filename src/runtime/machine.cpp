@@ -78,6 +78,10 @@ Machine::Machine(Console console)
   devices_.ipc_read = [this](u32 a) { return ios_.read(a); };
   devices_.ipc_write = [this](u32 a, u32 v) { ios_.write(a, v); };
   ios_.set_shutdown_handler([this] { shutdown_requested_ = true; });
+  ios_.set_remote_speaker_handler([this](unsigned port, const audio::RemoteSpeakerPacket &packet) {
+    if (output_)
+      output_->remote_speaker(port, packet);
+  });
   devices_.dma_write = [this](u32 a, std::span<const u8> bytes) { memory_.copy_in(a, bytes); };
   devices_.dma_read = [this](u32 a, std::span<u8> bytes) { memory_.copy_out(a, bytes); };
   devices_.disc_read = [this](u64 offset, std::span<u8> bytes) {
@@ -111,6 +115,8 @@ Machine::Machine(Console console)
 
 void Machine::set_output(platform::Output *output) {
   output_ = output;
+  for (unsigned port = 0; port < 4; ++port)
+    ios_.set_remote_speaker_processing(port, output && output->remote_speaker_processing());
 }
 
 void Machine::set_limits(const RunLimits &limits) {
@@ -290,6 +296,7 @@ void Machine::persist() {
 
 void Machine::write_state(std::ostream &out, const std::string &outcome) const {
   const auto &state = cpu_.state();
+  const auto host_audio = output_ ? output_->host_audio_stats() : platform::HostAudioStats{};
   out << "{\"version\":\"" << build::version << "\",\"commit\":\"" << build::commit
       << "\",\"console\":\"" << (console_ == Console::Wii ? "wii" : "gamecube")
       << "\",\"outcome\":\"" << outcome << "\",\"stage\":\"" << boot_.stage
@@ -301,6 +308,9 @@ void Machine::write_state(std::ostream &out, const std::string &outcome) const {
       << ",\"audio_nonzero_samples\":" << (output_ ? output_->audio_nonzero_samples() : 0)
       << ",\"audio_peak\":" << (output_ ? output_->audio_peak() : 0)
       << ",\"audio_hash\":" << (output_ ? output_->audio_hash() : 0)
+      << ",\"host_audio_frames\":" << host_audio.mixed_frames
+      << ",\"host_audio_nonzero_samples\":" << host_audio.nonzero_samples
+      << ",\"host_audio_dropped_granules\":" << host_audio.dropped_granules
       << ",\"gx_commands\":" << graphics_.command_count()
       << ",\"gx_fragments\":" << graphics_.fragment_count()
       << ",\"loaded_sections\":" << boot_.loaded_sections

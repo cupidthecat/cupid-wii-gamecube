@@ -18,7 +18,7 @@ Wii boot selects the disc's requested IOS memory profile and establishes the tit
 
 CPU write-gather bytes enter the PI/CP FIFO ring. Graphics commands load CP, XF, and BP state, decode vertices, transform them, assemble and clip primitives, rasterize covered pixels, and run TEV and pixel operations. EFB copies write guest RAM. VI presentation reads guest YUYV framebuffer data; the SDL backend displays those bytes after color conversion.
 
-DSP program protocols produce planar PCM in guest RAM. Guest code can interleave it and configure audio DMA. The host backend queues samples read by the audio device. The runtime does not synthesize a soundtrack when the guest has not supplied samples.
+DSP program protocols produce planar PCM in guest RAM. Guest code can interleave it and configure audio DMA. The [host audio backend](host-audio.md) resamples main DMA and optional decoded Remote speaker packets into a fixed-rate SDL callback. Separate guest and host diagnostics retain the origin of the samples.
 
 ## Input and storage
 

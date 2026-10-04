@@ -11,7 +11,7 @@ cupid-wii-gamecube --game "/path/to/program.dol" --console gamecube \
 
 `--game` accepts DOL, ELF, RVZ, ISO, or GCM files. Disc metadata selects the console in `auto` mode. Executables default to GameCube mode; select `--console wii` when required. A disc's console must agree with an explicit selection.
 
-`--graphics software` selects the CPU rendering path. SDL displays a minimal game-output window. `--headless` disables that window. `--audio sdl` queues guest PCM; `--audio none` leaves host audio disabled. A headless-only build excludes the SDL output backend.
+`--graphics software` selects the CPU rendering path. SDL displays a minimal game-output window. `--headless` disables that window. `--audio sdl` resamples and mixes guest PCM into a 48 kHz stereo stream; `--audio none` leaves host audio disabled. `--remote-speakers on` includes decoded Remote packets and requires SDL audio; the default is `off`. Headless runs can enable audio. A headless-only build excludes the SDL output backend. See [host audio](host-audio.md) for buffering and verified scope.
 
 `--display-aspect standard` uses the VI active-area ratio for a standard television signal. `widescreen` expands that ratio by four thirds; `pixels` uses the raw framebuffer dimensions. The default is `standard`. The window centers the image with black bars when needed, and mouse pointing follows that displayed area. Frame dumps retain the original guest framebuffer dimensions.
 
@@ -37,6 +37,8 @@ cupid-wii-gamecube --game "/path/to/program.dol" --console gamecube \
 The runtime prints final state to stdout even when `--dump-state` is absent. Traces contain register state after each instruction, together with its previous PC and fetched opcode. Instruction and time bounds also apply during boot.
 
 Audio diagnostics count individual signed 16-bit sample values, so two values form one stereo frame. `audio_nonzero_samples` counts values with nonzero amplitude; `audio_peak` is the largest absolute value, including 32768 for the negative limit. `audio_hash` is FNV-1a over canonical big-endian sample bytes in arrival order. These measurements include headless runs with host audio disabled. A nonzero value establishes signal data in the tested span; it does not verify correct mixing or audible playback.
+
+Those fields retain the main DMA values before host mixing. Remote output leaves them unchanged. `host_audio_frames`, `host_audio_nonzero_samples` and `host_audio_dropped_granules` separately count host callback frames, signal values and queue overflow. Their wall-clock timing makes them unsuitable for deterministic guest-state comparisons.
 
 ```sh
 cupid-wii-gamecube --game "/path/to/game.rvz" --headless --audio none \

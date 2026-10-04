@@ -23,7 +23,7 @@ struct Options {
   std::filesystem::path ipl_fonts;
   std::filesystem::path input_replay;
   std::string console = "auto", graphics = "software", audio = "none";
-  std::string display_aspect = "standard";
+  std::string display_aspect = "standard", remote_speakers = "off";
   std::string extract_file;
   runtime::RunLimits limits;
   u64 trace_count = 1000, trace_start = 0, offset = 0, length = 0;
@@ -122,6 +122,8 @@ Options parse(int argc, char **argv) {
       o.display_aspect = value();
     else if (arg == "--audio")
       o.audio = value();
+    else if (arg == "--remote-speakers")
+      o.remote_speakers = value();
     else if (arg == "--max-instructions")
       o.limits.instructions = integer(value());
     else if (arg == "--max-frames")
@@ -144,6 +146,10 @@ Options parse(int argc, char **argv) {
     throw UsageError("Display aspect must be standard, widescreen or pixels");
   if (o.audio != "none" && o.audio != "sdl")
     throw UsageError("Audio backend must be none or sdl");
+  if (o.remote_speakers != "on" && o.remote_speakers != "off")
+    throw UsageError("Remote speakers must be on or off");
+  if (o.remote_speakers == "on" && o.audio != "sdl")
+    throw UsageError("Remote speakers require --audio sdl");
   if (o.read_disc && o.read_game)
     throw UsageError("Select one disc-read address space");
   const unsigned commands = unsigned(o.inspect) + unsigned(o.validate_bios) +
@@ -177,6 +183,7 @@ Usage: cupid-wii-gamecube --game PATH [options]
   --graphics software         CPU rendering and SDL presentation
   --display-aspect MODE       standard (VI), widescreen or pixels; default standard
   --audio none|sdl             Select guest PCM output (default none)
+  --remote-speakers on|off     Mix decoded Remote speakers (default off; requires SDL audio)
   --input-config PATH         Keyboard action=key mappings
   --input-replay PATH         Deterministic guest input events, including headless
   --user-dir PATH             Explicit persistent-data directory (userdata)
@@ -407,7 +414,7 @@ int main(int argc, char **argv) {
             : (options.display_aspect == "pixels" ? platform::DisplayAspect::Pixels
                                                   : platform::DisplayAspect::Standard);
     platform::Output output({options.headless, options.audio == "sdl", options.frame_dump,
-                             options.input, display_aspect});
+                             options.input, display_aspect, options.remote_speakers == "on"});
     runtime::Machine machine(console);
     machine.set_output(&output);
     machine.set_limits(options.limits);

@@ -173,6 +173,80 @@ struct TransactionFixture {
   }
 };
 
+void bat_mapping_boundary_tests() {
+  struct Mapping {
+    u32 mask, effective_base, physical_base;
+    std::array<u32, 8> physical;
+  };
+
+  constexpr u32 missing = 0xffffffff;
+  constexpr std::array<Mapping, 4> mappings{{
+      {0, 0, 0, {0, missing, missing, missing, missing, missing, missing, missing}},
+      {1, 1, 0, {missing, 1, missing, missing, missing, missing, missing, missing}},
+      {5, 1, 2, {missing, 3, missing, missing, missing, 7, missing, missing}},
+      {5, 0, 1, {1, 1, missing, missing, 5, 5, missing, missing}},
+  }};
+  unsigned cases = 0;
+  for (Console console : {Console::GameCube, Console::Wii})
+    for (bool extended : {false, true})
+      for (unsigned bank = 0; bank < 8; ++bank)
+        for (unsigned validity = 0; validity < 4; ++validity)
+          for (bool user : {false, true})
+            for (bool instruction : {false, true})
+              for (const auto &mapping : mappings)
+                for (unsigned index = 0; index < 8; ++index) {
+                  ++cases;
+                  Memory memory;
+                  Interpreter cpu(memory, console);
+                  auto &state = cpu.state();
+                  const u32 address = 0x40000020 | (index << 17);
+                  const unsigned first = instruction ? 528 : 536;
+                  const unsigned second = instruction ? 560 : 568;
+                  const unsigned bat = bank < 4 ? first + bank * 2 : second + (bank - 4) * 2;
+                  state.spr[bat] =
+                      0x40000000 | (mapping.effective_base << 17) | (mapping.mask << 2) | validity;
+                  state.spr[bat + 1] = (mapping.physical_base << 17) | 2;
+                  state.spr[spr::hid4] = extended ? 0x02000000 : 0;
+                  state.spr[spr::dar] = 0x13579bdf;
+                  state.spr[spr::dsisr] = 0x2468ace0;
+                  state.sr.fill(0x321);
+                  state.msr = (instruction ? msr::ir : msr::dr) | (user ? msr::pr : 0);
+                  state.pc = instruction ? address : 0x1000;
+                  state.gpr[7] = address;
+                  state.gpr[9] = 0x91827364;
+                  state.cr = 0x12345678;
+                  for (unsigned physical = 0; physical < 8; ++physical)
+                    if (instruction)
+                      memory.write32((physical << 17) | 0x20,
+                                     imm(14, 9, 0, static_cast<u16>(0x80 + physical)));
+                    else
+                      memory.write8((physical << 17) | 0x20, static_cast<u8>(0x80 + physical));
+                  if (!instruction)
+                    memory.write32(0x1000, imm(34, 9, 7, 0));
+                  const bool enabled = bank < 4 || (console == Console::Wii && extended);
+                  const bool translated = enabled && validity && mapping.physical[index] != missing;
+                  cpu.step();
+                  CHECK(state.gpr[7] == address && state.cr == 0x12345678);
+                  if (translated) {
+                    CHECK(state.pc == (instruction ? address : 0x1000u) + 4);
+                    CHECK(state.gpr[9] == 0x80u + mapping.physical[index]);
+                    CHECK(state.spr[spr::dar] == 0x13579bdf && state.spr[spr::dsisr] == 0x2468ace0);
+                  } else {
+                    CHECK(state.pc == (instruction ? 0x400u : 0x300u));
+                    CHECK(state.gpr[9] == 0x91827364);
+                    CHECK(state.spr[spr::srr0] == (instruction ? address : 0x1000u));
+                    if (instruction) {
+                      CHECK((state.spr[spr::srr1] & 0x40000000) != 0);
+                      CHECK(state.spr[spr::dar] == 0x13579bdf &&
+                            state.spr[spr::dsisr] == 0x2468ace0);
+                    } else {
+                      CHECK(state.spr[spr::dar] == address && state.spr[spr::dsisr] == 0x40000000);
+                    }
+                  }
+                }
+  CHECK(cases == 16384u);
+}
+
 void integer_tests() {
   Fixture f;
   CHECK(f.s.spr[spr::pvr] == 0x00083214);
@@ -2325,6 +2399,7 @@ int main() {
     decrementer_tests();
     performance_monitor_tests();
     mmu_tests();
+    bat_mapping_boundary_tests();
     floating_tests();
     paired_tests();
     cache_tests();

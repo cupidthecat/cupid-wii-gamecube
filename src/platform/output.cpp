@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cupid/platform/output.hpp"
+#include "cupid/audio/host_mixer.hpp"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
+#include <exception>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <stdexcept>
 #if CUPID_HAS_SDL2
 #define SDL_MAIN_HANDLED
@@ -67,7 +71,59 @@ struct Output::Impl {
   SDL_Renderer *renderer = nullptr;
   SDL_Texture *texture = nullptr;
   SDL_AudioDeviceID audio = 0;
-  u32 audio_rate = 0;
+  std::mutex audio_mutex;
+  std::exception_ptr audio_error;
+  std::atomic<bool> audio_lock_failure{false};
+  std::unique_ptr<audio::SampleFifo> dma;
+  std::array<std::unique_ptr<audio::SampleFifo>, 4> speakers;
+  HostAudioStats host_stats;
+
+  void check_audio_error_locked() const {
+    if (audio_lock_failure.load())
+      throw std::runtime_error("Cannot synchronize host audio callback");
+    if (audio_error)
+      std::rethrow_exception(audio_error);
+  }
+
+  void check_audio_error() {
+    const std::lock_guard lock(audio_mutex);
+    check_audio_error_locked();
+  }
+
+  static void SDLCALL render_audio(void *userdata, Uint8 *bytes, int length) noexcept {
+    auto &self = *static_cast<Impl *>(userdata);
+    if (length > 0)
+      std::fill_n(bytes, static_cast<std::size_t>(length), Uint8{0});
+    std::unique_lock<std::mutex> lock;
+    try {
+      lock = std::unique_lock(self.audio_mutex);
+      self.check_audio_error_locked();
+      if (length < 0 || (length & 3))
+        throw std::runtime_error("Host audio callback has an incomplete stereo frame");
+      std::span<s16> destination{reinterpret_cast<s16 *>(bytes),
+                                 static_cast<std::size_t>(length) / sizeof(s16)};
+      const audio::MixerOptions mixing;
+      self.dma->mix(destination, mixing);
+      for (auto &speaker : self.speakers)
+        speaker->mix(destination, mixing);
+      self.host_stats.mixed_frames += destination.size() / 2;
+      for (std::size_t n = 0; n < destination.size(); n += 2) {
+        self.host_stats.left_nonzero += destination[n] != 0;
+        self.host_stats.right_nonzero += destination[n + 1] != 0;
+        self.host_stats.nonzero_samples += (destination[n] != 0) + (destination[n + 1] != 0);
+      }
+    } catch (...) {
+      if (lock.owns_lock()) {
+        if (!self.audio_error)
+          self.audio_error = std::current_exception();
+      } else {
+        self.audio_lock_failure.store(true);
+      }
+      if (length > 0)
+        std::fill_n(bytes, static_cast<std::size_t>(length), Uint8{0});
+    }
+  }
+
   float display_aspect = 4.0f / 3.0f;
   std::array<SDL_GameController *, 4> controllers{};
   std::map<std::string, SDL_Scancode> keys{{"a", SDL_SCANCODE_Z},
@@ -138,11 +194,11 @@ struct Output::Impl {
   }
 
   ~Impl() {
+    if (audio)
+      SDL_CloseAudioDevice(audio);
     for (auto *controller : controllers)
       if (controller)
         SDL_GameControllerClose(controller);
-    if (audio)
-      SDL_CloseAudioDevice(audio);
     if (texture)
       SDL_DestroyTexture(texture);
     if (renderer)
@@ -155,6 +211,8 @@ struct Output::Impl {
 };
 
 Output::Output(const OutputOptions &options) : impl_(std::make_unique<Impl>()) {
+  if (options.remote_speakers && !options.audio)
+    throw std::invalid_argument("Remote speakers require host audio output");
   impl_->options = options;
 #if CUPID_HAS_SDL2
   SDL_SetMainReady();
@@ -195,6 +253,24 @@ Output::Output(const OutputOptions &options) : impl_(std::make_unique<Impl>()) {
       impl_->keys[action] = key;
     }
   }
+  if (options.audio) {
+    impl_->dma = std::make_unique<audio::SampleFifo>();
+    for (auto &speaker : impl_->speakers)
+      speaker = std::make_unique<audio::SampleFifo>(36000);
+    SDL_AudioSpec desired{}, obtained{};
+    desired.freq = 48000;
+    desired.format = AUDIO_S16SYS;
+    desired.channels = 2;
+    desired.samples = 1024;
+    desired.callback = &Impl::render_audio;
+    desired.userdata = impl_.get();
+    impl_->audio = SDL_OpenAudioDevice(nullptr, 0, &desired, &obtained, 0);
+    if (!impl_->audio)
+      throw std::runtime_error(std::string("Cannot open audio output: ") + SDL_GetError());
+    if (obtained.freq != 48000 || obtained.format != AUDIO_S16SYS || obtained.channels != 2)
+      throw std::runtime_error("Host audio did not retain the requested stereo format");
+    SDL_PauseAudioDevice(impl_->audio, 0);
+  }
 #else
   if (!options.headless || options.audio || !options.input_config.empty())
     throw std::runtime_error(
@@ -206,6 +282,7 @@ Output::~Output() = default;
 
 bool Output::poll(hw::Devices &devices, bool sample_input) {
 #if CUPID_HAS_SDL2
+  impl_->check_audio_error();
   if (impl_->options.headless)
     return true;
   SDL_Event event;
@@ -469,26 +546,61 @@ void Output::audio(std::span<const s16> samples, u32 sample_rate) {
 #if CUPID_HAS_SDL2
   if (!impl_->options.audio)
     return;
-  if (!impl_->audio || impl_->audio_rate != sample_rate) {
-    if (impl_->audio)
-      SDL_CloseAudioDevice(impl_->audio);
-    SDL_AudioSpec desired{};
-    desired.freq = static_cast<int>(sample_rate);
-    desired.format = AUDIO_S16SYS;
-    desired.channels = 2;
-    desired.samples = 1024;
-    impl_->audio = SDL_OpenAudioDevice(nullptr, 0, &desired, nullptr, 0);
-    if (!impl_->audio)
-      throw std::runtime_error(std::string("Cannot open audio output: ") + SDL_GetError());
-    impl_->audio_rate = sample_rate;
-    SDL_PauseAudioDevice(impl_->audio, 0);
+  const u32 divisor = sample_rate == 32000   ? 3375u
+                      : sample_rate == 48000 ? 2250u
+                      : sample_rate == 32028 ? 3372u
+                                             : 2248u;
+  const std::lock_guard lock(impl_->audio_mutex);
+  impl_->check_audio_error_locked();
+  impl_->dma->set_rate_divisor(divisor);
+  // Device DMA values are already host endian, in the guest's right/left order.
+  std::array<s16, 256> ordered{};
+  while (!samples.empty()) {
+    const auto count = std::min(samples.size(), ordered.size());
+    for (std::size_t n = 0; n < count; n += 2) {
+      ordered[n] = samples[n + 1];
+      ordered[n + 1] = samples[n];
+    }
+    impl_->dma->push_stereo(std::span<const s16>(ordered).first(count));
+    samples = samples.subspan(count);
   }
-  if (samples.size_bytes() > 0xffffffff)
-    throw std::runtime_error("Audio buffer is too large");
-  if (SDL_QueueAudio(impl_->audio, samples.data(), static_cast<Uint32>(samples.size_bytes())) != 0)
-    throw std::runtime_error(std::string("Cannot queue guest audio: ") + SDL_GetError());
 #else
   (void)sample_rate;
+#endif
+}
+
+void Output::remote_speaker(unsigned port, const audio::RemoteSpeakerPacket &packet) {
+  if (port >= 4 || !impl_->options.remote_speakers || !packet.count)
+    return;
+  if (packet.count > packet.mono.size() || !packet.rate_divisor)
+    throw std::invalid_argument("Invalid Remote speaker packet");
+#if CUPID_HAS_SDL2
+  const std::lock_guard lock(impl_->audio_mutex);
+  impl_->check_audio_error_locked();
+  auto &speaker = *impl_->speakers[port];
+  speaker.set_rate_divisor(packet.rate_divisor);
+  speaker.set_volume(packet.left_volume, packet.right_volume);
+  speaker.push_mono(std::span<const s16>(packet.mono).first(packet.count));
+#endif
+}
+
+bool Output::remote_speaker_processing() const {
+  return impl_->options.remote_speakers;
+}
+
+HostAudioStats Output::host_audio_stats() const {
+#if CUPID_HAS_SDL2
+  const std::lock_guard lock(impl_->audio_mutex);
+  impl_->check_audio_error_locked();
+  auto stats = impl_->host_stats;
+  if (impl_->dma) {
+    stats.dropped_granules = impl_->dma->dropped_granules();
+    for (const auto &speaker : impl_->speakers)
+      stats.dropped_granules += speaker->dropped_granules();
+  }
+  return stats;
+#else
+  return {};
 #endif
 }
 

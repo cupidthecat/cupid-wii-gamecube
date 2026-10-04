@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cupid/dsp/audio.hpp"
+#include "cupid/dsp/handheld.hpp"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -25,6 +26,7 @@ struct Profile {
   bool combined = false;
   bool main_ram_audio = false;
   bool special_command_12 = false;
+  bool joyboot_command = false;
 };
 
 std::optional<Profile> profile_for(u32 hash) {
@@ -39,6 +41,8 @@ std::optional<Profile> profile_for(u32 hash) {
     break;
   case 0xdf059f68:
   case 0x4be6a5cb:
+    profile.light = profile.no_command_13 = profile.joyboot_command = true;
+    break;
   case 0x42f64ac4:
     profile.light = profile.no_command_13 = profile.special_command_12 = true;
     break;
@@ -307,7 +311,7 @@ void Mixer::reverb(bool store) {
 
 void Mixer::pcm(Voice &voice, std::span<s16> raw, bool sixteen_bit) {
   if (voice[1]) {
-    std::fill(raw.begin(), raw.end(), 0);
+    std::fill(raw.begin(), raw.end(), s16(0));
     return;
   }
   const unsigned width = sixteen_bit ? 2 : 1;
@@ -322,7 +326,7 @@ void Mixer::pcm(Voice &voice, std::span<s16> raw, bool sixteen_bit) {
   while (done < raw.size()) {
     if (!voice.pair(0x3a)) {
       if (!voice[0x81]) {
-        std::fill(raw.begin() + done, raw.end(), 0);
+        std::fill(raw.begin() + done, raw.end(), s16(0));
         voice[1] = 1;
         break;
       }
@@ -385,7 +389,7 @@ void Mixer::afc(Voice &voice, std::span<s16> raw) {
     voice.pair(0x38, voice.pair(0x8c));
   }
   if (voice[1]) {
-    std::fill(raw.begin(), raw.end(), 0);
+    std::fill(raw.begin(), raw.end(), s16(0));
     return;
   }
   if (voice[0x32] > 16)
@@ -404,7 +408,7 @@ void Mixer::afc(Voice &voice, std::span<s16> raw) {
     const u32 remaining = voice.pair(0x3a);
     if (!remaining) {
       if (!voice[0x81]) {
-        std::fill(raw.begin() + done, raw.end(), 0);
+        std::fill(raw.begin() + done, raw.end(), s16(0));
         voice[1] = 1;
         break;
       }
@@ -432,7 +436,7 @@ void Mixer::afc(Voice &voice, std::span<s16> raw) {
     done += wanted;
     if (requested > remaining && !voice[0x81]) {
       voice[1] = 1;
-      std::fill(raw.begin() + done, raw.end(), 0);
+      std::fill(raw.begin() + done, raw.end(), s16(0));
       break;
     }
     const unsigned consumed = std::min<u32>(blocks * 16, remaining);
@@ -610,7 +614,7 @@ void Mixer::voice(u16 index) {
     voice[i] = (u16(bytes[2 * i]) << 8) | bytes[2 * i + 1];
   if (profile_.small_voice) {
     const auto saved = voice.words;
-    std::fill(voice.words.begin() + 0x18, voice.words.begin() + 0x80, 0);
+    std::fill(voice.words.begin() + 0x18, voice.words.begin() + 0x80, u16(0));
     std::copy_n(saved.begin() + 0x40, 0x40, voice.words.begin() + 0x80);
     std::copy_n(saved.begin() + 0x30, 16, voice.words.begin() + 0x58);
     std::copy_n(saved.begin() + 0x18, 0x18, voice.words.begin() + 0x30);
@@ -817,6 +821,8 @@ struct AudioProgram::Impl {
       case 12:
         if (profile.special_command_12)
           throw std::runtime_error("DSP audio command 12 variant is not implemented");
+        if (profile.joyboot_command)
+          process_joyboot_request(memory, pop());
         acknowledge(sync);
         break;
       case 13:
@@ -904,7 +910,7 @@ struct AudioProgram::Impl {
       if (id != 0 && id != 1 && id != 2 && id != 12)
         throw std::runtime_error("DSP light audio command is not implemented");
       append(value);
-      expected = id == 1 ? 4 : id == 2 ? 2 : 0;
+      expected = id == 1 ? 4 : id == 2 ? 2 : id == 12 && profile.joyboot_command ? 1 : 0;
       if (id == 12 && profile.special_command_12)
         throw std::runtime_error("DSP light audio command 12 variant is not implemented");
       if (expected) {

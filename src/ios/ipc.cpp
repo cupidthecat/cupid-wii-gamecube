@@ -766,8 +766,21 @@ struct Ipc::Impl {
       memory.write32(output + 4, handles[fd]->offset);
       return {0, fs_overhead};
     }
-    if (handles[fd]->device != Device::Filesystem)
+    if (handles[fd]->device != Device::Filesystem && handles[fd]->device != Device::File)
       return {fs_invalid, fs_overhead};
+    if (operation == 2) {
+      if (output_size < 28)
+        return {fs_invalid, fs_overhead};
+      memory.range(output, 28);
+      const auto usage = directory_usage("/");
+      if (usage.error != 0)
+        return {usage.error};
+      const std::array<u32, 7> fields{16384, 0x7bc0 - usage.clusters, usage.clusters, 0,
+                                      0x300, 0x17ff - usage.inodes,   usage.inodes};
+      for (unsigned i = 0; i < fields.size(); ++i)
+        memory.write32(output + i * 4, fields[i]);
+      return {0};
+    }
     const auto &handle = *handles[fd];
     if (operation == 5 || operation == 6) {
       if ((operation == 5 && input_size < 74) ||
@@ -978,41 +991,37 @@ struct Ipc::Impl {
     }
   }
 
-  Reply fs_usage(const Vectors &buffers) {
-    if (!buffers.count(1, 2) || buffers.input[0].size != 64 || buffers.output[0].size != 4 ||
-        buffers.output[1].size != 4)
-      return {fs_invalid, fs_overhead};
-    std::string path;
-    try {
-      path = string(buffers.input[0].address, 64);
-    } catch (const std::invalid_argument &) {
-      return {fs_invalid, fs_overhead};
-    }
+  struct DirectoryUsage {
+    s32 error = 0;
+    u32 clusters = 0, inodes = 0;
+  };
+
+  DirectoryUsage directory_usage(const std::string &path) {
     const auto target = host_path(path);
     if (!target)
-      return {fs_invalid, fs_overhead};
+      return {fs_invalid};
     std::error_code error;
     const bool exists = std::filesystem::exists(*target, error);
     if (error)
-      return {fs_access, fs_overhead};
+      return {fs_access};
     if (!exists)
-      return {fs_missing, fs_overhead};
+      return {fs_missing};
     const bool directory = std::filesystem::is_directory(*target, error);
     if (error)
-      return {fs_access, fs_overhead};
+      return {fs_access};
     if (!directory)
-      return {fs_invalid, fs_overhead};
+      return {fs_invalid};
     // Each ordinary file owns its rounded-up clusters; directories own only inodes.
     // Root-only host files and entries outside the guarded guest namespace are hidden.
     constexpr u64 cluster_limit = 0x7bc0, inode_limit = 0x17ff, cluster_size = 16384;
     u64 clusters = 0, inodes = 1;
     std::filesystem::recursive_directory_iterator cursor(*target, error), end;
     if (error)
-      return {fs_access, fs_overhead};
+      return {fs_access};
     while (cursor != end) {
       const auto status = cursor->symlink_status(error);
       if (error)
-        return {fs_access, fs_overhead};
+        return {fs_access};
       const bool child_directory = std::filesystem::is_directory(status);
       const bool ordinary = child_directory || std::filesystem::is_regular_file(status);
       const auto name = cursor->path().filename().string();
@@ -1026,22 +1035,38 @@ struct Ipc::Impl {
         if (!child_directory) {
           const auto size = cursor->file_size(error);
           if (error)
-            return {fs_access, fs_overhead};
+            return {fs_access};
           const u64 count = size / cluster_size + (size % cluster_size != 0 ? 1 : 0);
           clusters = std::min(cluster_limit, clusters + std::min(cluster_limit, count));
         }
       }
       cursor.increment(error);
       if (error)
-        return {fs_access, fs_overhead};
+        return {fs_access};
     }
-    memory.write32(buffers.output[0].address, u32(clusters));
-    memory.write32(buffers.output[1].address, u32(inodes));
+    return {0, u32(clusters), u32(inodes)};
+  }
+
+  Reply fs_usage(const Vectors &buffers) {
+    if (!buffers.count(1, 2) || buffers.input[0].size != 64 || buffers.output[0].size != 4 ||
+        buffers.output[1].size != 4)
+      return {fs_invalid, fs_overhead};
+    std::string path;
+    try {
+      path = string(buffers.input[0].address, 64);
+    } catch (const std::invalid_argument &) {
+      return {fs_invalid, fs_overhead};
+    }
+    const auto usage = directory_usage(path);
+    if (usage.error != 0)
+      return {usage.error, fs_overhead};
+    memory.write32(buffers.output[0].address, usage.clusters);
+    memory.write32(buffers.output[1].address, usage.inodes);
     return {0, fs_overhead};
   }
 
   Reply fs_ioctlv(unsigned fd, u32 address) {
-    if (handles[fd]->device != Device::Filesystem)
+    if (handles[fd]->device != Device::Filesystem && handles[fd]->device != Device::File)
       return {fs_invalid, fs_overhead};
     const auto parsed = vectors(address);
     if (!parsed)

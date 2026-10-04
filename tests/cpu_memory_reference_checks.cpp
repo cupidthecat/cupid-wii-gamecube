@@ -36,7 +36,7 @@
 // The actual MMU and instruction callers are linked unchanged into this test.
 // These adapters construct ordinary service objects around an authored RAM
 // fixture. They never cast raw storage into objects or synthesize expected data.
-// Any service outside the selected RAM-load paths fails explicitly.
+// Any service outside the selected memory comparison paths fails explicitly.
 namespace {
 [[noreturn]] void unused(std::source_location call = std::source_location::current()) {
   throw std::logic_error(call.function_name());
@@ -45,6 +45,8 @@ namespace {
 std::vector<u8> physical_memory(1024 * 1024);
 std::unique_ptr<MMIO::Mapping> unused_mmio;
 unsigned reference_pi_requests = 0;
+unsigned reference_warning_calls = 0;
+std::vector<std::string> reference_warning_samples;
 unsigned guest_pi_requests = 0;
 std::vector<std::array<u8, 32>> reference_pi_snapshots;
 std::vector<std::array<u8, 32>> guest_pi_snapshots;
@@ -132,9 +134,13 @@ bool MsgAlertFmtImpl(bool, MsgType, Log::LogType, const char *, int, fmt::string
 }
 
 namespace Log {
-void GenericLogFmtImpl(LogLevel, LogType, const char *, int, fmt::string_view,
-                       const fmt::format_args &) {
-  unused();
+void GenericLogFmtImpl(LogLevel level, LogType type, const char *, int, fmt::string_view format,
+                       const fmt::format_args &arguments) {
+  if (level != LogLevel::LWARNING || type != LogType::POWERPC)
+    unused();
+  ++reference_warning_calls;
+  if (reference_warning_samples.size() < 8)
+    reference_warning_samples.push_back(fmt::vformat(format, arguments));
 }
 } // namespace Log
 
@@ -1126,13 +1132,164 @@ unsigned compare_tlb_stores() {
   return comparisons;
 }
 
+unsigned compare_bat_load_boundaries() {
+  auto &system = Core::System::GetInstance();
+  unsigned comparisons = 0, divergences = 0;
+  for (unsigned console = 0; console < 2; ++console)
+    for (unsigned extended = 0; extended < 2; ++extended)
+      for (unsigned bank = 0; bank < 8; ++bank)
+        for (unsigned mask = 0; mask < 8; ++mask)
+          for (unsigned overlap = 0; overlap < 8; ++overlap)
+            for (unsigned index = 0; index < 8; ++index) {
+              ++comparisons;
+              std::fill(physical_memory.begin(), physical_memory.end(), 0);
+              for (unsigned page = 0; page < 8; ++page)
+                physical_memory[page * 0x20000 + 0x20] = static_cast<u8>(page + 0x80);
+              system.SetIsWii(console != 0);
+              Memory::MemoryManager memory(system);
+              PowerPC::PowerPCManager manager(system);
+              PowerPC::MMU mmu(system, memory, manager);
+              auto &reference = manager.GetPPCState();
+              Interpreter executor(system, reference, mmu, manager.GetBranchWatch(),
+                                   manager.GetSymbolDB());
+              const unsigned bat = bank < 4 ? SPR_DBAT0U + bank * 2 : SPR_DBAT4U + (bank - 4) * 2;
+              const u32 upper = 0x40000003 | (overlap << 17) | (mask << 2);
+              const u32 lower = 2;
+              reference.spr[bat] = upper;
+              reference.spr[bat + 1] = lower;
+              reference.spr[SPR_HID4] = extended ? 0x02000000 : 0;
+              reference.pc = 0x1000;
+              reference.msr.Hex = cupid::cpu::msr::dr;
+              reference.m_enable_dcache = false;
+              reference.pagetable_base = 0;
+              reference.pagetable_mask = 0xffff;
+              reference.sr[4] = 0x321;
+              reference.gpr[7] = 0x40000020 | (index << 17);
+              reference.gpr[9] = 0x13579bdf;
+              mmu.DBATUpdated();
+              const u32 opcode = (34u << 26) | (9u << 21) | (7u << 16);
+              UGeckoInstruction decoded;
+              decoded.hex = opcode;
+              Interpreter::lbz(executor, decoded);
+              GuestBus bus;
+              cupid::cpu::Interpreter guest(bus, console ? cupid::Console::Wii
+                                                         : cupid::Console::GameCube);
+              auto &state = guest.state();
+              state.pc = 0x1000;
+              state.msr = cupid::cpu::msr::dr;
+              state.sr[4] = 0x321;
+              state.spr[bat] = upper;
+              state.spr[bat + 1] = lower;
+              state.spr[cupid::cpu::spr::hid4] = extended ? 0x02000000 : 0;
+              state.gpr[7] = 0x40000020 | (index << 17);
+              state.gpr[9] = 0x13579bdf;
+              bus.write32(0x1000, opcode);
+              guest.step();
+              const bool expected_fault = (reference.Exceptions & EXCEPTION_DSI) != 0;
+              const bool actual_fault = state.pc == 0x300;
+              if (expected_fault != actual_fault || state.gpr[9] != reference.gpr[9]) {
+                ++divergences;
+                if (divergences < 17)
+                  std::cout << "case=" << comparisons << " console=" << console
+                            << " extended=" << extended << " bank=" << bank << " mask=" << mask
+                            << " overlap=" << overlap << " index=" << index
+                            << " expectedFault=" << expected_fault
+                            << " actualFault=" << actual_fault << " expected=" << std::hex
+                            << reference.gpr[9] << " actual=" << state.gpr[9] << std::dec << '\n';
+              }
+            }
+  require(divergences == 0, comparisons, "BAT load boundary divergence");
+  return comparisons;
+}
+
+unsigned compare_bat_translations() {
+  auto &system = Core::System::GetInstance();
+  unsigned comparisons = 0, divergences = 0;
+  u32 random = 0x136798df;
+  const auto next = [&] {
+    random ^= random << 13;
+    random ^= random >> 17;
+    random ^= random << 5;
+    return random;
+  };
+  for (unsigned console = 0; console < 2; ++console)
+    for (unsigned extended = 0; extended < 2; ++extended)
+      for (unsigned bank = 0; bank < 8; ++bank)
+        for (unsigned configuration = 0; configuration < 2304; ++configuration) {
+          const u32 mask = configuration < 2048 ? configuration : next() & 2047;
+          const u32 virtual_base = next() & 0xfffe0000;
+          const u32 physical_base = next() & 0xfffe0000;
+          const u32 upper = virtual_base | (mask << 2) | (configuration < 2048 ? 3u : next() & 3);
+          const u32 lower = physical_base | (next() & 0x7f);
+          system.SetIsWii(console != 0);
+          Memory::MemoryManager memory(system);
+          PowerPC::PowerPCManager manager(system);
+          PowerPC::MMU mmu(system, memory, manager);
+          auto &reference = manager.GetPPCState();
+          const unsigned bat = bank < 4 ? SPR_DBAT0U + bank * 2 : SPR_DBAT4U + (bank - 4) * 2;
+          reference.spr[bat] = upper;
+          reference.spr[bat + 1] = lower;
+          reference.spr[SPR_HID4] = extended ? 0x02000000 : 0;
+          for (auto &segment : reference.sr)
+            segment = 0x321;
+          reference.m_enable_dcache = false;
+          reference.pagetable_base = 0;
+          reference.pagetable_mask = 0xffff;
+          mmu.DBATUpdated();
+          GuestBus bus;
+          cupid::cpu::Interpreter guest(bus,
+                                        console ? cupid::Console::Wii : cupid::Console::GameCube);
+          auto &state = guest.state();
+          state.pc = 0x1000;
+          state.spr[bat] = upper;
+          state.spr[bat + 1] = lower;
+          state.spr[cupid::cpu::spr::hid4] = extended ? 0x02000000 : 0;
+          for (auto &segment : state.sr)
+            segment = 0x321;
+          for (unsigned query = 0; query < 8; ++query) {
+            ++comparisons;
+            u32 address = virtual_base | ((next() & mask) << 17) | (next() & 0x1ffff);
+            if (query & 1)
+              address ^= u32{1} << (17 + (next() % 15));
+            const auto expected = mmu.GetTranslatedAddress(address);
+            std::optional<u32> observed;
+            state.msr = cupid::cpu::msr::dr;
+            try {
+              observed = guest.translate(address);
+            } catch (const std::exception &) {
+              throw;
+            } catch (...) {
+              if (state.spr[cupid::cpu::spr::dar] != address ||
+                  state.spr[cupid::cpu::spr::dsisr] != 0x40000000)
+                throw std::runtime_error("Unexpected translation failure");
+            }
+            if (expected != observed) {
+              ++divergences;
+              if (divergences < 17)
+                std::cout << "case=" << comparisons << " console=" << console
+                          << " extended=" << extended << " bank=" << bank << " upper=" << std::hex
+                          << upper << " lower=" << lower << " address=" << address
+                          << " expected=" << expected.value_or(0xffffffff)
+                          << " observed=" << observed.value_or(0xffffffff) << std::dec << '\n';
+            }
+          }
+        }
+  require(divergences == 0, comparisons, "BAT address divergence");
+  return comparisons;
+}
+
 int main() {
   try {
     const auto loads = compare_loads();
     const auto stores =
         compare_stores() + compare_quantized_stores() + compare_bat_stores() + compare_tlb_stores();
+    const auto bat_loads = compare_bat_load_boundaries();
+    const auto bat_addresses = compare_bat_translations();
+    require(reference_warning_calls != 0 && !reference_warning_samples.empty(), bat_addresses,
+            "BAT warning adapter exercised");
     std::cout << loads << " direct source load comparisons and " << stores
-              << " store/BAT/TLB comparisons passed\n";
+              << " store/BAT/TLB comparisons, plus " << bat_loads << " BAT load cases and "
+              << bat_addresses << " BAT address cases passed\n";
     return 0;
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';

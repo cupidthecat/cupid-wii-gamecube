@@ -10,6 +10,7 @@ The behavioral reference is pinned at `562875dd60fd0ff50b65dbbb611a2096802cd1b9`
 | Task hashes, switching and resume packets | `Source/Core/Core/HW/DSPHLE/UCodes/UCodes.{h,cpp}`, `UCodeFactory`, `PrepareBootUCode`, `NeedsResumeMail`; `DSPHLE.cpp`, `SetUCode`, `SwapUCode`; `Source/Core/Common/Hash.cpp`, `HashEctor` |
 | DAC profiles, command packets and synchronization | `Source/Core/Core/HW/DSPHLE/UCodes/Zelda.{h,cpp}`, profile table, `HandleMailDefault`, `HandleMailLight`, `RunPendingCommands`, `SendCommandAck`, `RenderAudio` |
 | Voice blocks, decoding, resampling and mixing | `Zelda.cpp`, voice-block layout, `FetchVPB`, `StoreVPB`, `LoadInputSamples`, PCM/AFC/MRAM download methods, `DecodeAFC`, `Resample`, `AddVoice`, filter/reverb methods, `FinalizeFrame`; fixed-point helpers in `Zelda.h` |
+| JoyBoot authentication in light audio tasks | `Source/Core/Core/HW/DSPHLE/UCodes/GBA.{h,cpp}`, `ProcessGBACrypto`; `Zelda.cpp`, `SUPPORTS_GBA_CRYPTO` profiles, `HandleMailLight`, `RunPendingCommands`; `UCodes.cpp`, `UCodeFactory` callers |
 
 The selected hash profiles include `0x56d36052` with per-frame synchronization and `0xd643001f` with main-memory audio addressing and combined render packets. The other recognized DAC profiles use the same implemented family with their documented protocol and layout differences. Recognition is not a claim that every command used by each title is supported.
 
@@ -48,6 +49,22 @@ parameter followed by the ordinary acknowledgment, without an additional audio e
 Public regressions cover both forms, delayed acknowledgment, unchanged guest RAM and rejection
 of a missing required parameter. These compiled comparisons do not establish real-hardware
 FIR or command effects.
+
+The original JoyBoot authentication helper was compared with the complete unchanged `GBA.cpp`
+implementation. Its memory adapter supplied checked byte-order reads and writes; the calculation
+itself was compiled directly. All **1,769,472 cases** passed, comparing **226,492,416 RAM bytes**,
+with SHA-1 `aa7d151f6a37df2e2208a4c4779f1a822a99a0b5`. Cases cover all 65,536 packet-pair counts
+and eight alignment residues, all low-byte palette and signed-speed combinations at length
+boundaries, random full-width fields, unsigned length rollover, and cached/uncached RAM aliases.
+Each 128-byte comparison includes input words, both output words and untouched guard bytes.
+
+A separate comparison compiled the full unchanged `Zelda.cpp`, `GBA.cpp` and `MailHandler.cpp`
+caller path for profiles `0xdf059f68` and `0x4be6a5cb`. All **393,218 checkpoints** passed over
+**50,331,904 RAM bytes**, queued mailbox words and interrupt counts. SHA-1 over the RAM was
+`ac2077b16264e96bbd8976c66ef4daa5174a898a`. This covers initialization, 65,536 sequential requests
+per profile, parameter receipt, acknowledgments, update calls and address aliases. Upload switching
+and save-state adapters were outside these cases. The unknown command-12 variants remain explicit
+failures; this does not establish standalone task, JoyBus transfer or hardware behavior.
 
 A separate paired run held all input data constant and varied only the history request count. It compared each execution against the compiled renderer and compared flag-on RAM against its flag-off counterpart, excluding only the retained count itself. All 336 checkpoints passed over 8,257,536 RAM bytes; SHA-1 was `28b795bc017ff2106bbe0605bbe3f46994139f04`. Mailbox words and interrupt counts matched in each execution.
 

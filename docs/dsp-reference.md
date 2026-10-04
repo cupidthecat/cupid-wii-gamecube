@@ -11,6 +11,7 @@ The behavioral reference is pinned at `562875dd60fd0ff50b65dbbb611a2096802cd1b9`
 | DAC profiles, command packets and synchronization | `Source/Core/Core/HW/DSPHLE/UCodes/Zelda.{h,cpp}`, profile table, `HandleMailDefault`, `HandleMailLight`, `RunPendingCommands`, `SendCommandAck`, `RenderAudio` |
 | Voice blocks, decoding, resampling and mixing | `Zelda.cpp`, voice-block layout, `FetchVPB`, `StoreVPB`, `LoadInputSamples`, PCM/AFC/MRAM download methods, `DecodeAFC`, `Resample`, `AddVoice`, filter/reverb methods, `FinalizeFrame`; fixed-point helpers in `Zelda.h` |
 | JoyBoot authentication in light audio tasks | `Source/Core/Core/HW/DSPHLE/UCodes/GBA.{h,cpp}`, `ProcessGBACrypto`; `Zelda.cpp`, `SUPPORTS_GBA_CRYPTO` profiles, `HandleMailLight`, `RunPendingCommands`; `UCodes.cpp`, `UCodeFactory` callers |
+| Standalone handheld task, pending-mail IRQ and task controls | `GBA.{h,cpp}`, `Initialize`, `HandleMail`, `Update`; `UCodes.{h,cpp}`, `PrepareBootUCode`, task constants and hash mapping; `DSPHLE.cpp`, `SetUCode`, `SwapUCode`; `Source/Core/Common/Hash.cpp`, `HashEctor` |
 
 The selected hash profiles include `0x56d36052` with per-frame synchronization and `0xd643001f` with main-memory audio addressing and combined render packets. The other recognized DAC profiles use the same implemented family with their documented protocol and layout differences. Recognition is not a claim that every command used by each title is supported.
 
@@ -66,7 +67,48 @@ per profile, parameter receipt, acknowledgments, update calls and address aliase
 and save-state adapters were outside these cases. The unknown command-12 variants remain explicit
 failures; this does not establish standalone task, JoyBus transfer or hardware behavior.
 
+The standalone task was then compared with the full unchanged `GBA.cpp`, `UCodes.cpp`,
+`MailHandler.cpp` and `Hash.cpp` implementations. With seed `0x5441534b`, both console modes
+ran 16,384 cases each. All **939,336 checkpoints** passed over **120,235,008 RAM bytes**,
+mailbox readiness/read values, interrupt counts and task-transition hashes. SHA-1 over the
+RAM was `1be64361ed70247e26b946409d871b8d61d6510b`. Cases cover all upper address nibbles,
+pending, drained and halted queues, waiting-state controls, reset and ten-word uploads with
+size truncation and address aliases.
+
+The checked memory adapter supplied byte-order reads and writes. Task-selection adapters
+recorded reset/swap requests and cleared pending mail; the selected next task was outside
+this pure-task comparison. Dumping was disabled and logging discarded. The complete shared
+upload parser, authentication calculation and instruction-byte hash were compiled unchanged.
+Requested DSP data-memory transfers remain explicit failures in this project. Separate
+authored PowerPC tests exercise the real Engine/device register path, periodic IRQ boundaries
+and audio-to-task and task-to-audio return. These checks do not establish DSP instruction
+execution, save-state serialization, a physical handheld link or commercial-game use of
+the standalone task.
+
 A separate paired run held all input data constant and varied only the history request count. It compared each execution against the compiled renderer and compared flag-on RAM against its flag-off counterpart, excluding only the retained count itself. All 336 checkpoints passed over 8,257,536 RAM bytes; SHA-1 was `28b795bc017ff2106bbe0605bbe3f46994139f04`. Mailbox words and interrupt counts matched in each execution.
+
+A further comparison compiled the complete unchanged `DSPHLE.cpp` register and
+task-switch caller, together with `ROM.cpp`, `GBA.cpp`, `Zelda.cpp`, `UCodes.cpp`,
+`MailHandler.cpp` and `Hash.cpp`. Both consoles ran 4,096 cases with seed
+`0x50455253`. All 802,816 checkpoints passed over 102,760,448 RAM bytes, mailbox
+readiness and consumption, CPU mailbox values and interrupt counts. SHA-1 over
+the RAM was `f468e83687a15fd1e4b3b5fe444e650de14b3d98`.
+
+These cases boot through the ordinary ROM mailbox, alternate the initial task,
+compute authentication results, upload task descriptors and return to the
+suspended task. They check halted mailboxes, pending and drained updates, ignored
+control words, reset and all upper address nibbles. The audio profile in this
+caller comparison is `0x56d36052`; it checks task persistence and its deferred
+resume word without rendering an audio frame.
+
+The fixture supplied checked RAM, interrupt counters and a clock adapter that
+calls one update per modeled interval. Serialization, diagnostic logging and
+code dumping were excluded. Factory classes outside the tested ROM, handheld
+and audio profiles rejected construction. The tested register, upload, factory
+selection and suspension methods were compiled unchanged. The project DSP units
+were rebuilt together against a copied coherent core and matching headers;
+input hashes matched before and after execution. These checks cover software
+task transitions, not physical link transfers or scheduler timing on hardware.
 
 ## Public tests and limits
 

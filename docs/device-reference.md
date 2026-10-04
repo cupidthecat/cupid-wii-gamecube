@@ -2,6 +2,10 @@
 
 The device module uses physical addresses and big endian register values. It runs on the same CPU cycle counter as the interpreter. GameCube uses 486 MHz; Wii uses 729 MHz. Unsupported MMIO accesses raise a bus fault with the address and access direction.
 
+Device advances update the public cycle counter and timed level interrupts on every call. Calls strictly before the next timer deadline accumulate event-free elapsed time; MMIO access materializes it, and a write invalidates the deadline. Audio DMA, AI sample clocks, VI half-lines, disc completion, ARAM completion and both memory-card timers all participate. At a boundary, earlier elapsed time is applied before the current call so a throwing callback retains the original partial-update order. Reentrant register callbacks and zero-cycle interrupt reassertion are covered.
+
+A private comparison with the preceding device implementation checked 263,146 instruction advances and 1,112 complete state snapshots on both consoles, including DMA data, callback order and cycles, rate changes, card completion, reentrant access and thrown callbacks. Six alternating unprofiled GCC Release runs of the same 100-million-instruction headless startup produced identical complete state dumps. Their median times were 9.19 and 6.42 seconds under concurrent work; this is a bounded startup measurement, not a general game-speed estimate. Both complete runtime versions passed the device, IOS, runtime, graphics, SDP transport and EFB access suites.
+
 The behavioral reference is pinned to commit `562875dd60fd0ff50b65dbbb611a2096802cd1b9`. The implementation was written in this project's register and callback model. Paths below are relative to the behavioral reference checkout.
 
 | Implemented behavior | Reference files and functions | Local verification |
@@ -44,6 +48,8 @@ SRAM can be loaded and saved through a 68-byte image. RTC uses an explicit epoch
 UART and EUART collect the guest's original text bytes and deliver a line on carriage return. The callback receives the original encoding. These FIFOs report zero queued bytes because delivery is immediate. Initialization and unused offsets within the documented peripheral ranges retain their byte input. Accesses outside implemented peripheral ranges stop with the latched IPL address.
 
 EXI keeps the guest's DMA address register unchanged and removes its two alias bits when calling the RAM transfer callback. A regression first reproduced the rejected Wii transfer from `0x80650820`, then verified the 64 SRAM bytes arriving at physical address `0x00650820`. A separate check covers an uncached MEM2 alias and preserves the low address bits.
+
+DI retains Wii DMA address aliases in its register and transfer callback. The connected RAM span resolves the two top alias bits while keeping physical CPU accesses separate. A regression uses all four aliases for GameCube MEM1 and Wii MEM1/MEM2, verifies actual copied bytes and retained register advancement, and checks completion. The previous strict host span failed the six Wii aliases; normalization at the memory callback resolves them without changing DI register semantics.
 
 Wii MMIO at `0x0d80xxxx` mirrors `0x0d00xxxx`. These windows expose IPC, DI, SI, EXI and AI; other register blocks retain their original physical locations. A CPU-level regression reproduced the faulting load at `0xcd800180` before verifying the zero register value and normal instruction advancement. A separate regression reproduced a 32-byte Wii ARAM DMA from MEM1 address `0x01000000` to MEM2 offset zero before checking real bytes, register advancement and completion timing.
 

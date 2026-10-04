@@ -136,6 +136,7 @@ void Devices::reset_disc(bool spinup) {
 }
 
 u32 Devices::read(u32 address, unsigned width) {
+  flush_elapsed();
   if (console_ == Console::Wii && wii_window(address) && (address & 0xffff) < 0x200) {
     if (width != 4 || (address & 3) != 0)
       invalid(address, false, "Invalid IPC access size or alignment");
@@ -171,6 +172,8 @@ u32 Devices::read(u32 address, unsigned width) {
 }
 
 void Devices::write(u32 address, u32 value, unsigned width) {
+  flush_elapsed();
+  next_deadline_ = 0;
   if (console_ == Console::Wii && wii_window(address) && (address & 0xffff) < 0x200) {
     if (width != 4 || (address & 3) != 0)
       invalid(address, true, "Invalid IPC access size or alignment");
@@ -569,6 +572,9 @@ void Devices::update_interrupts(u32 devices) {
     set_interrupt(interrupt_exi, expansion);
   if (devices & interrupt_dsp)
     set_interrupt(interrupt_dsp, (((dsp_[5] >> 1) & dsp_[5] & 0xa8) != 0));
+  level_interrupts_ = ((ai_[0] & 12) == 12 ? interrupt_ai : 0) |
+                      (((dsp_[5] >> 1) & dsp_[5] & 0xa8) != 0 ? interrupt_dsp : 0) |
+                      (expansion ? interrupt_exi : 0);
 }
 
 u32 Devices::video_halflines(unsigned field) const {
@@ -658,6 +664,64 @@ void Devices::advance(u64 amount) {
   if (amount > std::numeric_limits<u64>::max() - cycles_)
     throw std::overflow_error("Device cycle counter overflow");
   cycles_ += amount;
+  if (amount < next_deadline_) {
+    next_deadline_ -= amount;
+    deferred_cycles_ += amount;
+    // Timed level causes must reassert even after the guest clears PI directly.
+    constexpr u32 timed_causes = interrupt_ai | interrupt_dsp | interrupt_exi;
+    pi_[0] = (pi_[0] & ~timed_causes) | level_interrupts_;
+    return;
+  }
+  const u64 earlier = deferred_cycles_;
+  deferred_cycles_ = 0;
+  next_deadline_ = 0;
+  // Materialize prior event-free calls first: a callback may throw before later
+  // counters consume this call, so combining both intervals changes failure state.
+  if (earlier)
+    advance_state(earlier);
+  advance_state(amount);
+  rebuild_deadline();
+}
+
+void Devices::flush_elapsed() {
+  if (!deferred_cycles_)
+    return;
+  const u64 elapsed = deferred_cycles_;
+  deferred_cycles_ = 0;
+  next_deadline_ = 0;
+  advance_state(elapsed);
+  rebuild_deadline();
+}
+
+void Devices::rebuild_deadline() {
+  const u64 dma_divisor =
+      (console_ == Console::Wii ? 2250u : 2248u) * ((ai_[0] & 64) ? 3u : 2u) / 2;
+  const u64 audio_period = clock_ * 8 * dma_divisor / 108000000;
+  const u64 vi_period = video_period();
+  const auto remaining = [](u64 period, u64 elapsed) {
+    return elapsed < period ? period - elapsed : 0;
+  };
+  next_deadline_ =
+      std::min(remaining(audio_period, audio_remainder_), remaining(vi_period, video_remainder_));
+  if (ai_[0] & 1) {
+    const u64 divisor = (console_ == Console::Wii ? 2250u : 2248u) * ((ai_[0] & 2) ? 2u : 3u) / 2;
+    const u64 sample_cycles = clock_ * divisor / 108000000;
+    next_deadline_ = std::min(next_deadline_, remaining(sample_cycles, ai_remainder_));
+  }
+  const auto countdown = [&](u64 value) {
+    if (value)
+      next_deadline_ = std::min(next_deadline_, value);
+  };
+  countdown(di_remaining_);
+  countdown(aram_remaining_);
+  countdown(audio_start_interrupt_);
+  for (const auto &card : cards_) {
+    countdown(card.command_remaining);
+    countdown(card.transfer_remaining);
+  }
+}
+
+void Devices::advance_state(u64 amount) {
   if (di_remaining_ != 0) {
     if (amount >= di_remaining_) {
       di_remaining_ = 0;
@@ -700,13 +764,13 @@ void Devices::advance(u64 amount) {
   const u64 dma_divisor =
       (console_ == Console::Wii ? 2250u : 2248u) * ((ai_[0] & 64) ? 3u : 2u) / 2;
   const u64 audio_period = clock_ * 8 * dma_divisor / 108000000;
-  u64 audio_packets = detail::elapsed_periods(amount, audio_period, audio_remainder_);
+  u64 audio_packets = cupid::hw::detail::elapsed_periods(amount, audio_period, audio_remainder_);
   while (audio_packets-- != 0)
     audio_dma_block();
   if (ai_[0] & 1) {
     const u64 divisor = (console_ == Console::Wii ? 2250u : 2248u) * ((ai_[0] & 2) ? 2u : 3u) / 2;
     const u64 sample_cycles = clock_ * divisor / 108000000;
-    const u64 samples = detail::elapsed_periods(amount, sample_cycles, ai_remainder_);
+    const u64 samples = cupid::hw::detail::elapsed_periods(amount, sample_cycles, ai_remainder_);
     if (samples != 0) {
       const u32 start = ai_[2] + 1;
       const u32 end = ai_[2] + u32(samples);
@@ -716,7 +780,7 @@ void Devices::advance(u64 amount) {
     }
   }
   const u64 period = video_period();
-  u64 halflines = detail::elapsed_periods(amount, period, video_remainder_);
+  u64 halflines = cupid::hw::detail::elapsed_periods(amount, period, video_remainder_);
   while (halflines-- != 0)
     video_halfline();
   update_interrupts(interrupt_ai | interrupt_dsp | interrupt_exi);

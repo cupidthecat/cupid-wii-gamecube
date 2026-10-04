@@ -787,16 +787,159 @@ void memory_cards() {
   CHECK_THROWS(devices.set_memory_card(2, image));
   CHECK_THROWS(devices.set_memory_card(0, std::span<const u8>(image).first(100)));
 }
+
+void timed_interrupt_boundaries() {
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    Devices devices(console);
+    const u64 sample =
+        devices.ticks_per_second() * (console == Console::Wii ? 2250u : 2248u) / 108000000;
+    devices.write(pi + 4, 32, 4);
+    devices.write(ai + 12, 1, 4);
+    devices.write(ai, 7, 4);
+    for (u64 tick = 0; tick < sample - 1; ++tick) {
+      devices.advance(1);
+      CHECK(!devices.external_interrupt_pending());
+    }
+    CHECK(devices.cycles() == sample - 1);
+    CHECK(devices.read(ai + 8, 4) == 0);
+    devices.advance(1);
+    CHECK(devices.read(ai + 8, 4) == 1);
+    CHECK(devices.external_interrupt_pending());
+    devices.write(pi, 32, 4);
+    CHECK(!devices.external_interrupt_pending());
+    devices.advance(0);
+    CHECK(devices.external_interrupt_pending());
+    devices.write(pi, 32, 4);
+    devices.advance(1);
+    CHECK(devices.external_interrupt_pending());
+    devices.write(ai, 15, 4);
+    CHECK(!devices.external_interrupt_pending());
+
+    devices.write(ai, 0x25, 4);
+    devices.advance(91);
+    devices.write(ai, 7, 4);
+    devices.advance(sample - 1);
+    CHECK(devices.read(ai + 8, 4) == 0);
+    devices.advance(1);
+    CHECK(devices.read(ai + 8, 4) == 1);
+    CHECK(devices.external_interrupt_pending());
+
+    devices.write(pi + 4, 64, 4);
+    devices.write(dsp + 10, 0x44, 2);
+    devices.dma_read = [](u32, std::span<u8> out) { std::fill(out.begin(), out.end(), u8(0x5a)); };
+    devices.dma_write = [](u32 address, std::span<const u8> in) {
+      CHECK(address == 0x10000000);
+      CHECK(in.size() == 32 && in.front() == 0x5a && in.back() == 0x5a);
+    };
+    devices.write(dsp + 0x20, 0, 4);
+    devices.write(dsp + 0x24, 0, 4);
+    devices.write(dsp + 0x28, 32, 4);
+    for (unsigned tick = 0; tick < 245; ++tick) {
+      devices.advance(1);
+      CHECK(!devices.external_interrupt_pending());
+    }
+    CHECK(devices.read(dsp + 10, 2) & 0x200);
+    devices.advance(1);
+    CHECK((devices.read(dsp + 10, 2) & 0x220) == 0x20);
+    CHECK(devices.external_interrupt_pending());
+    devices.write(pi, 64, 4);
+    CHECK(!devices.external_interrupt_pending());
+    devices.advance(0);
+    CHECK(devices.external_interrupt_pending());
+  }
+}
+
+void disc_dma_aliases() {
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    for (u32 physical : {0x00001000u, 0x10001000u}) {
+      if (console == Console::GameCube && physical >= 0x10000000)
+        continue;
+      for (u32 alias : {0u, 0x40000000u, 0x80000000u, 0xc0000000u}) {
+        Memory memory(console);
+        Devices devices(console);
+        const u32 retained = console == Console::Wii ? physical | alias : physical;
+        std::array<u8, 32> expected{};
+        for (unsigned i = 0; i < expected.size(); ++i)
+          expected[i] = u8(i ^ 0xa6);
+        unsigned writes = 0;
+        devices.dma_write = [&](u32 address, std::span<const u8> bytes) {
+          CHECK(address == retained && bytes.size() == expected.size());
+          memory.copy_in(address, bytes);
+          ++writes;
+        };
+        devices.disc_read = [&](u64 offset, std::span<u8> bytes) {
+          CHECK(offset == 0x200 && bytes.size() == expected.size());
+          std::copy(expected.begin(), expected.end(), bytes.begin());
+        };
+        devices.write(di + 8, 0xa8000000, 4);
+        devices.write(di + 12, 0x80, 4);
+        devices.write(di + 16, 32, 4);
+        devices.write(di + 20, physical | alias, 4);
+        devices.write(di + 24, 32, 4);
+        devices.write(di + 28, 3, 4);
+        CHECK(devices.read(di + 20, 4) == retained);
+        devices.advance(300 * (devices.ticks_per_second() / 1000000));
+        CHECK(writes == 1);
+        CHECK(devices.read(di + 20, 4) == retained + 32);
+        CHECK(devices.read(di + 24, 4) == 0);
+        CHECK(devices.read(di, 4) & 16);
+        CHECK(std::equal(expected.begin(), expected.end(), memory.range(physical, 32).begin()));
+      }
+    }
+  }
+}
+
+void timed_callback_failure() {
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    Devices devices(console);
+    const u64 delay = 300 * (devices.ticks_per_second() / 1000000);
+    const u64 sample =
+        devices.ticks_per_second() * (console == Console::Wii ? 2250u : 2248u) / 108000000;
+    devices.write(ai, 3, 4);
+    devices.write(ai + 12, 0xffffffff, 4);
+    unsigned callbacks = 0;
+    devices.dma_write = [&](u32 address, std::span<const u8> in) {
+      ++callbacks;
+      CHECK(address == 0x100 && in.size() == 12);
+      CHECK(devices.cycles() == delay + 1);
+      CHECK(devices.read(ai + 8, 4) == (delay - 1) / sample);
+      CHECK(devices.read(di + 0x1c, 4) & 1);
+      throw std::runtime_error("Authored DMA callback failure");
+    };
+    devices.write(di + 8, 0x12000000, 4);
+    devices.write(di + 0x14, 0x100, 4);
+    devices.write(di + 0x18, 32, 4);
+    devices.write(di + 0x1c, 3, 4);
+    for (u64 tick = 0; tick < delay - 1; ++tick)
+      devices.advance(1);
+    CHECK(callbacks == 0);
+    CHECK_THROWS(devices.advance(2));
+    CHECK(callbacks == 1);
+    CHECK(devices.read(ai + 8, 4) == (delay - 1) / sample);
+    CHECK(devices.read(di + 0x14, 4) == 0x100);
+    CHECK(devices.read(di + 0x18, 4) == 32);
+    CHECK(devices.read(di + 0x1c, 4) & 1);
+    devices.advance(1);
+    CHECK(callbacks == 1);
+    const u64 cycles = devices.cycles();
+    CHECK_THROWS(devices.advance(std::numeric_limits<u64>::max()));
+    CHECK(devices.cycles() == cycles);
+  }
+}
+
 } // namespace
 
 int main() {
   return run_tests([] {
     period_accounting();
+    timed_interrupt_boundaries();
+    timed_callback_failure();
     processor_interface();
     memory_interface();
     video_interface();
     video_aspect_ratio();
     disc_interface();
+    disc_dma_aliases();
     serial_interface();
     audio_and_aram();
     disconnected_aram_live_descriptor();

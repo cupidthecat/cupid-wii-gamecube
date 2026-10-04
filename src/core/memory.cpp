@@ -14,10 +14,12 @@ namespace {
 } // namespace
 
 Memory::Memory(Console console)
-    : mem1_(mem1_size), mem2_(console == Console::Wii ? mem2_size : 0), cache_(cache_size) {
+    : mem1_(mem1_allocated_size), mem2_(console == Console::Wii ? mem2_size : 0),
+      cache_(cache_size) {
 }
 
 void Memory::clear() {
+  page_table_write_errors_ = 0;
   for (auto *bytes : {&mem1_, &mem2_, &cache_})
     std::fill(bytes->begin(), bytes->end(), u8(0));
 }
@@ -37,16 +39,23 @@ u32 Memory::boot_physical(u32 address) {
 std::span<const u8> Memory::range(u32 address, std::size_t length) const {
   const std::vector<u8> *bytes = nullptr;
   u32 base = 0;
-  if (address < mem1_size)
-    bytes = &mem1_;
-  else if (address >= 0x10000000 && address < 0x10000000 + mem2_.size()) {
-    bytes = &mem2_;
-    base = 0x10000000;
-  } else if (address >= 0xe0000000 && address < 0xe0000000 + cache_size) {
+  std::size_t real_size = 0;
+  if (address >= 0xe0000000 && address < 0xe0000000 + cache_size) {
     bytes = &cache_;
     base = 0xe0000000;
+    real_size = cache_size;
+  } else {
+    address &= 0x3fffffff;
+    if (address < mem1_size) {
+      bytes = &mem1_;
+      real_size = mem1_size;
+    } else if (address >= 0x10000000 && address < 0x10000000 + mem2_.size()) {
+      bytes = &mem2_;
+      base = 0x10000000;
+      real_size = mem2_.size();
+    }
   }
-  if (!bytes || length > bytes->size() - (address - base))
+  if (!bytes || length > real_size - (address - base))
     bad_address(address, false);
   return std::span<const u8>(*bytes).subspan(address - base, length);
 }
@@ -68,6 +77,94 @@ void Memory::copy_in(u32 physical, std::span<const u8> data) {
 void Memory::copy_out(u32 physical, std::span<u8> data) const {
   auto source = range(physical, data.size());
   std::copy(source.begin(), source.end(), data.begin());
+}
+
+u32 Memory::instruction_cache_key(u32 physical) const {
+  if (physical & 0x20000000)
+    return 0x20000000 | (physical & (mem1_allocated_size - 1));
+  if (physical & 0x10000000)
+    return 0x10000000 | (physical & (mem2_size - 1));
+  return physical & (mem1_allocated_size - 1);
+}
+
+std::span<u8> Memory::cpu_range(u32 physical, unsigned byte_count) {
+  std::vector<u8> *bytes = nullptr;
+  u32 offset = 0;
+  if ((physical & 0xf8000000) == 0) {
+    bytes = &mem1_;
+    offset = physical & (mem1_allocated_size - 1);
+  } else if ((physical >> 28) == 1 && (physical & 0x0fffffff) < mem2_.size()) {
+    bytes = &mem2_;
+    offset = physical & 0x0fffffff;
+  } else if (physical >= 0xe0000000 && physical < 0xe0000000 + cache_size) {
+    bytes = &cache_;
+    offset = physical - 0xe0000000;
+  }
+  if (!bytes || byte_count > bytes->size() - offset)
+    return {};
+  return std::span<u8>(*bytes).subspan(offset, byte_count);
+}
+
+u64 Memory::read_cpu_data(u32 physical, unsigned byte_count) {
+  if (byte_count != 1 && byte_count != 2 && byte_count != 4 && byte_count != 8)
+    throw std::invalid_argument("Invalid CPU data read width");
+  if ((physical & 4095) + byte_count > 4096) {
+    u64 value = 0;
+    for (unsigned n = 0; n < byte_count; ++n)
+      value = (value << 8) | read_cpu_data(physical + n, 1);
+    return value;
+  }
+  if ((physical & 0xf8000000) == 0x08000000) {
+    const u64 value = read(physical, byte_count);
+    return byte_count == 8 ? value : value & ((u64(1) << (byte_count * 8)) - 1);
+  }
+  const auto bytes = cpu_range(physical, byte_count);
+  if (bytes.empty()) {
+    memory_access_error();
+    return 0;
+  }
+  u64 value = 0;
+  for (const u8 byte : bytes)
+    value = (value << 8) | byte;
+  return value;
+}
+
+void Memory::write_cpu_data(u32 physical, u32 value, unsigned byte_count) {
+  if (byte_count < 1 || byte_count > 4)
+    throw std::invalid_argument("Invalid CPU data write width");
+  if ((physical & 4095) + byte_count > 4096 ||
+      (byte_count == 3 && (physical & 0xf8000000) == 0x08000000)) {
+    for (unsigned n = 0; n < byte_count; ++n)
+      write_cpu_data(physical + n, (value >> ((byte_count - n - 1) * 8)) & 255, 1);
+    return;
+  }
+  if ((physical & 0xf8000000) == 0x08000000) {
+    write(physical, value, byte_count);
+    return;
+  }
+  const auto bytes = cpu_range(physical, byte_count);
+  if (bytes.empty()) {
+    memory_access_error();
+    return;
+  }
+  for (unsigned n = 0; n < byte_count; ++n)
+    bytes[n] = static_cast<u8>(value >> ((byte_count - n - 1) * 8));
+}
+
+bool Memory::write_page_table32(u32 physical, u32 value) {
+  try {
+    auto bytes = range(physical & 0x3fffffff, 4);
+    for (unsigned n = 0; n < 4; ++n)
+      bytes[n] = static_cast<u8>(value >> ((3 - n) * 8));
+    return true;
+  } catch (const BusFault &) {
+    ++page_table_write_errors_;
+    return false;
+  }
+}
+
+u64 Memory::page_table_write_errors() const {
+  return page_table_write_errors_;
 }
 
 void Memory::locked_cache_dma(u32 memory_address, u32 cache_address, u32 bytes, bool load) {

@@ -60,6 +60,138 @@ void memory_error_signal(cupid::Console console) {
   memory.memory_access_error();
   CHECK(signals == 2 && memory.read32(0x1000) == 0x12345678);
 }
+
+void cpu_device_read_widths(cupid::Console console) {
+  using namespace cupid;
+  Memory memory(console);
+  unsigned calls = 0, signals = 0;
+  u32 expected_address = 0;
+  unsigned expected_width = 0;
+  memory.memory_error = [&] { ++signals; };
+  memory.mmio_handles = [](u32 address) {
+    return (address >= 0x08000000 && address < 0x0c000000) || address == 0x0c003000;
+  };
+  memory.mmio_read = [&](u32 address, unsigned width) {
+    CHECK(address == expected_address && width == expected_width);
+    ++calls;
+    return 0x45102030u;
+  };
+  for (u32 address : {0x08000000u, 0x08000003u, 0x0c003000u})
+    for (unsigned width : {1u, 2u, 4u}) {
+      expected_address = address;
+      expected_width = width;
+      const auto before = calls;
+      const u64 expected = width == 1 ? 0x30 : width == 2 ? 0x2030 : 0x45102030;
+      CHECK(memory.read_cpu_data(address, width) == expected);
+      CHECK(calls == before + 1);
+    }
+  expected_address = 0x08000000;
+  expected_width = 8;
+  CHECK(memory.read_cpu_data(0x08000000, 8) == 0x0000000045102030ULL);
+  CHECK(calls == 10);
+  CHECK_THROWS(memory.read_cpu_data(0x0c003000, 8));
+  CHECK(calls == 10 && signals == 0);
+  memory.mmio_read = [&](u32 address, unsigned width) {
+    CHECK(width == 1 && address == 0x08000fff + (calls - 10));
+    ++calls;
+    return 0x45102030u ^ address;
+  };
+  CHECK(memory.read_cpu_data(0x08000fff, 2) == 0xcf30);
+  CHECK(calls == 12 && signals == 0);
+}
+
+void cpu_ram_and_host_bounds(cupid::Console console) {
+  using namespace cupid;
+  Memory memory(console);
+  unsigned signals = 0;
+  memory.memory_error = [&] { ++signals; };
+  // Real RAM is 24 MiB; CPU data also sees the allocated 32 MiB and its mirrors.
+  for (u32 mirror : {0u, 0x02000000u, 0x04000000u, 0x06000000u})
+    for (u32 offset : {0x20u, 0x017ffffcu, 0x01800000u, 0x01fffffcu}) {
+      const u32 address = mirror | offset;
+      memory.write_cpu_data(address, 0x89abcdef, 4);
+      CHECK(memory.read_cpu_data(address, 1) == 0x89);
+      CHECK(memory.read_cpu_data(address, 2) == 0x89ab);
+      CHECK(memory.read_cpu_data(address, 4) == 0x89abcdef);
+      CHECK(memory.read_cpu_data(offset, 4) == 0x89abcdef);
+      if (address < Memory::mem1_size)
+        CHECK(memory.read32(address) == 0x89abcdef);
+      else
+        CHECK_THROWS(memory.range(address, 4));
+    }
+  CHECK(signals == 0);
+
+  memory.write_cpu_data(0x01fffffc, 0x01234567, 4);
+  memory.write_cpu_data(0x02000000, 0x89abcdef, 4);
+  CHECK(memory.read_cpu_data(0x01fffffc, 8) == 0x0123456789abcdefULL);
+  memory.write_cpu_data(0x01fffffe, 0x123456, 3);
+  CHECK(memory.read_cpu_data(0x01fffffe, 2) == 0x1234);
+  CHECK(memory.read8(0) == 0x56 && signals == 0);
+  memory.write_cpu_data(0xe003ffff, 0xab, 1);
+  CHECK(memory.read_cpu_data(0xe003ffff, 2) == 0xab00);
+  CHECK(signals == 1);
+
+  memory.write32(0x20, 0x10203040);
+  for (u32 alias : {0x40000000u, 0x80000000u, 0xc0000000u}) {
+    CHECK(memory.read32(alias | 0x20) == 0x10203040);
+    CHECK(memory.range(alias | 0x20, 4).data() == memory.range(0x20, 4).data());
+    CHECK_THROWS(memory.range(alias | (Memory::mem1_size - 2), 4));
+    CHECK(memory.read_cpu_data(alias | 0x20, 4) == 0);
+    memory.write_cpu_data(alias | 0x20, 0xaabbccdd, 4);
+    CHECK(memory.read32(0x20) == 0x10203040);
+  }
+  CHECK(signals == 7);
+  CHECK_THROWS(memory.read32(Memory::mem1_size));
+  CHECK_THROWS(memory.copy_in(Memory::mem1_size, std::array<u8, 4>{1, 2, 3, 4}));
+  std::array<u8, 32> guarded;
+  guarded.fill(0x5a);
+  CHECK_THROWS(memory.copy_out(0x02000000, guarded));
+  CHECK(std::all_of(guarded.begin(), guarded.end(), [](u8 byte) { return byte == 0x5a; }));
+  memory.write32(0xe0001000, 0x11223344);
+  CHECK_THROWS(memory.locked_cache_dma(Memory::mem1_size, 0x1000, 32, true));
+  CHECK_THROWS(memory.locked_cache_dma(0x02000000, 0x1000, 32, true));
+  CHECK(memory.read32(0xe0001000) == 0x11223344 && signals == 7);
+
+  if (console == Console::Wii) {
+    memory.write_cpu_data(0x13fffffc, 0x55667788, 4);
+    CHECK(memory.read_cpu_data(0x13fffffc, 4) == 0x55667788);
+    CHECK(memory.read32(0x53fffffc) == 0x55667788);
+    CHECK_THROWS(memory.range(0x53fffffe, 4));
+    CHECK(memory.read_cpu_data(0x14000000, 4) == 0);
+  } else {
+    CHECK(memory.read_cpu_data(0x10000000, 4) == 0);
+  }
+  CHECK(signals == 8);
+  CHECK_THROWS(memory.read_cpu_data(0, 3));
+  CHECK_THROWS(memory.write_cpu_data(0, 1, 8));
+  CHECK(signals == 8);
+
+  CHECK(memory.instruction_cache_key(0xc6000040) == 0x40);
+  CHECK(memory.instruction_cache_key(0x54000040) == 0x10000040);
+  CHECK(memory.instruction_cache_key(0x30000040) == 0x20000040);
+}
+
+void strict_page_table_writes(cupid::Console console) {
+  using namespace cupid;
+  Memory memory(console);
+  unsigned signals = 0;
+  memory.memory_error = [&] { ++signals; };
+  CHECK(memory.write_page_table32(0x80000020, 0x12340180));
+  CHECK(memory.read32(0x20) == 0x12340180);
+  memory.write_cpu_data(0x01800004, 0x00002002, 4);
+  memory.write_cpu_data(0xe0000004, 0x10203040, 4);
+  CHECK(!memory.write_page_table32(0x01800004, 0x00002182));
+  CHECK(memory.read_cpu_data(0x01800004, 4) == 0x00002002);
+  CHECK(!memory.write_page_table32(0x02000020, 0x55667788));
+  CHECK(memory.read32(0x20) == 0x12340180);
+  CHECK(!memory.write_page_table32(0xe0000004, 0xaabbccdd));
+  CHECK(memory.read32(0xe0000004) == 0x10203040);
+  CHECK(!memory.write_page_table32(0x017ffffe, 0xffffffff));
+  CHECK(memory.page_table_write_errors() == 4 && signals == 0);
+  memory.clear();
+  CHECK(memory.page_table_write_errors() == 0);
+  CHECK(memory.read_cpu_data(0x01800004, 4) == 0 && signals == 0);
+}
 } // namespace
 
 int main() {
@@ -68,6 +200,12 @@ int main() {
     fifo_page(cupid::Console::Wii);
     memory_error_signal(cupid::Console::GameCube);
     memory_error_signal(cupid::Console::Wii);
+    cpu_device_read_widths(cupid::Console::GameCube);
+    cpu_device_read_widths(cupid::Console::Wii);
+    cpu_ram_and_host_bounds(cupid::Console::GameCube);
+    cpu_ram_and_host_bounds(cupid::Console::Wii);
+    strict_page_table_writes(cupid::Console::GameCube);
+    strict_page_table_writes(cupid::Console::Wii);
     cupid::Memory gc(cupid::Console::GameCube);
     gc.write32(8, 0x12345678);
     CHECK(gc.read8(8) == 0x12);

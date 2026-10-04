@@ -11,6 +11,7 @@
 namespace cupid::dsp {
 
 class AudioProgram;
+class HandheldTask;
 
 class MailQueue {
 public:
@@ -70,10 +71,12 @@ public:
   const BootDescriptor &boot_descriptor() const;
 
 private:
-  enum class Program { Rom, Initialization, Card, Audio };
+  enum class Program { Rom, Initialization, Card, Audio, Handheld };
   Memory &memory_;
   Console console_;
   std::unique_ptr<AudioProgram> audio_;
+  std::unique_ptr<HandheldTask> handheld_;
+  std::unique_ptr<HandheldTask> suspended_handheld_;
   std::unique_ptr<AudioProgram> suspended_audio_;
   MailQueue mails_;
   Program program_ = Program::Rom;

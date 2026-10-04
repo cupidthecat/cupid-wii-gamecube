@@ -17,7 +17,7 @@ void InstructionCache::invalidate(u32 effective) {
 u32 InstructionCache::read(Bus &bus, u32 physical, bool enabled, bool locked) {
   if (!enabled)
     return bus.read32(physical);
-  const u32 address = physical & ~31u;
+  const u32 address = bus.instruction_cache_key(physical) & ~31u;
   const unsigned set_index = (address >> 5) & 127;
   auto &set = sets_[set_index];
   unsigned way = 8;
@@ -46,7 +46,7 @@ u32 InstructionCache::read(Bus &bus, u32 physical, bool enabled, bool locked) {
     Line loaded;
     loaded.address = address;
     for (unsigned n = 0; n < 8; ++n)
-      loaded.words[n] = bus.read32(address + n * 4);
+      loaded.words[n] = bus.read32((physical & ~31u) + n * 4);
     loaded.valid = true;
     set[way] = loaded;
   }

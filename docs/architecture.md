@@ -4,7 +4,7 @@ The product executable links `cupid_core`, an integrated C++20 runtime. `runtime
 
 ## Execution and memory
 
-The interpreter fetches guest instructions through its instruction cache, translates effective addresses through BATs or hashed page tables, and reads or writes the physical bus. Memory owns 24 MiB of MEM1, Wii MEM2, and locked-cache storage. Checked RAM ranges and whole-width MMIO callbacks avoid splitting a register transaction into unrelated byte accesses. CPU storage faults enter guest exception vectors; explicitly unfinished device behavior produces a diagnostic.
+The interpreter fetches guest instructions through its instruction cache, translates effective addresses through BATs or hashed page tables, and reads or writes the physical bus. Memory owns 24 MiB of real MEM1 within a 32 MiB allocation, Wii MEM2, and locked-cache storage. [Memory operations](memory.md) distinguish CPU data mirrors from bounded host and DMA spans. Instruction-cache identity normalization leaves cold backing reads subject to those bounds. Translation faults enter guest exception vectors; unresolved physical data requests raise the PI memory-access cause. Explicitly unfinished device behavior produces a diagnostic.
 
 After every instruction, Machine advances graphics events, DSP work, IOS requests, and hardware devices by the returned cycle count. It checks external interrupt state before the next instruction. Host input and wall-clock bounds are polled every 4,096 instructions. This scheduling is observable and deterministic for the tested fixtures, but full hardware edge timing remains unverified.
 

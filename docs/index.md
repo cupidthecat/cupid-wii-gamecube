@@ -15,6 +15,7 @@
 - [Architecture](architecture.md): subsystem boundaries and runtime scheduling.
 - [Milestones](milestones.md): remaining work connected to executable programs and game behavior.
 - [CPU execution and mappings](cpu-reference.md).
+- [Memory access boundaries](memory.md): CPU mirrors, host and DMA spans, page-table updates and instruction-cache identity.
 - [Locked-cache DMA](locked-cache-dma.md).
 - [Memory, boot, and platform mappings](runtime-reference.md).
 - [Disc formats](disc-format.md) and [disc mappings](disc-reference.md).

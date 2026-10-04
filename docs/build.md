@@ -47,7 +47,7 @@ The MSVC build links the C/C++ runtime statically. A Visual Studio generator als
 | `CUPID_ENABLE_SANITIZERS` | `OFF` | Adds AddressSanitizer and UndefinedBehaviorSanitizer to project code on GCC or Clang. |
 | `CUPID_ENABLE_LOCAL_INTEGRATION` | `OFF` | Registers the private disc integration run. Requires `CUPID_LOCAL_GAME`. |
 | `CUPID_COMMIT` | current revision | Embeds a revision string. Use an explicit value when building an exported source tree. |
-| `CUPID_BEHAVIOR_REFERENCE_ROOT` | empty | Enables eleven CPU, graphics and service-record comparisons against a separately supplied, pinned behavioral checkout. The NI arithmetic test requires x86_64. |
+| `CUPID_BEHAVIOR_REFERENCE_ROOT` | empty | Enables thirteen CPU, memory, graphics, service-record and audio comparisons against a separately supplied, pinned behavioral checkout. The NI arithmetic and physical-memory tests require x86_64. |
 
 For a headless test build, use the `headless` preset. For instrumented Linux tests, use `sanitizers`. Sanitizers do not instrument dependency sources.
 
@@ -61,7 +61,7 @@ After a Release build:
 cmake -DBUILD_DIR=build/release -P tools/package-verify.cmake
 ```
 
-This creates a ZIP archive on Windows or a `.tar.gz` archive on Linux, extracts it into a new verification directory, and runs the packaged executable's `--help`, `--version` and `--self-test` commands. The archive includes the CLI, documentation and license notices. Private console assets and test executables are excluded.
+This creates a ZIP archive on Windows or a `.tar.gz` archive on Linux, extracts it into a new verification directory, and runs the packaged executable's `--help`, `--version` and `--self-test` commands. Verification requires the reported version and revision to match the package configuration. The archive includes the CLI, documentation and license notices. Private console assets and test executables are excluded.
 
 Linux packages use the host's system libraries for window, audio and graphics access. They require a compatible Linux distribution and its output drivers. They are not standalone system images. CI uploads build artifacts without publishing a release.
 
@@ -70,3 +70,5 @@ Linux packages use the host's system libraries for window, audio and graphics ac
 When `clang-format` is installed at configuration time, CMake provides a `format-check` target. When `clang-tidy` is installed and the generator provides a compilation database, it also provides `static-check`. Both targets require version 18 so local and CI checks use the same rules. CMake prefers `clang-format-18` and `clang-tidy-18`; set `CUPID_CLANG_FORMAT` or `CUPID_CLANG_TIDY` to an explicit executable path if needed. Run each with `cmake --build <directory> --target <target>`. These tools are not required for an ordinary build. CI runs both checks on Linux.
 
 The project uses header includes and disables [CMake module scanning](https://cmake.org/cmake/help/latest/variable/CMAKE_CXX_SCAN_FOR_MODULES.html). This keeps the compilation database usable by `clang-tidy` immediately after configuration, before object files are built.
+
+Run `python3 tools/generate-audio-window.py --check` to reproduce and verify the host-audio window coefficients. The script uses the Python standard library; on Windows, use `python` if that is the installed command. CI runs this check alongside formatting and static analysis.

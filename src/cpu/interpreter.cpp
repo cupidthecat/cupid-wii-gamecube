@@ -431,11 +431,12 @@ u32 Interpreter::translate_access(u32 effective, bool instruction, bool write, b
     const u32 match = 0x80000000 | (vsid << 7) | (secondary << 6) | ((effective >> 22) & 63);
     for (unsigned entry_index = 0; entry_index < 8; ++entry_index) {
       const u32 address = group + entry_index * 8;
-      if (bus_.read32(address) != match)
+      if (bus_.read_cpu_data(address, 4) != match)
         continue;
-      const u32 flags = bus_.read32(address + 4), updated = flags | 0x100 | (write ? 0x80 : 0);
+      const u32 flags = static_cast<u32>(bus_.read_cpu_data(address + 4, 4));
+      const u32 updated = flags | 0x100 | (write ? 0x80 : 0);
       if (flags != updated)
-        bus_.write32(address + 4, updated);
+        (void)bus_.write_page_table32(address + 4, updated);
       if (!updating_changed_bit) {
         const unsigned way = recent[set] == 0 && tlb[set * 2].valid ? 1 : 0;
         recent[set] = static_cast<u8>(way);
@@ -484,18 +485,7 @@ u64 Interpreter::load(u32 effective, unsigned bytes) {
   }
   try {
     const u32 physical = translate(effective);
-    switch (bytes) {
-    case 1:
-      return bus_.read8(physical);
-    case 2:
-      return bus_.read16(physical);
-    case 4:
-      return bus_.read32(physical);
-    case 8:
-      return bus_.read64(physical);
-    default:
-      throw std::logic_error("Invalid CPU load width");
-    }
+    return bus_.read_cpu_data(physical, bytes);
   } catch (const BusFault &fault) {
     if (fault.unsupported_reason)
       unsupported(fault.what());
@@ -567,28 +557,12 @@ void Interpreter::store_physical(u32 physical, u32 value, unsigned bytes, bool u
     const unsigned blocks = ((physical & 7) + bytes + 7) / 8;
     for (unsigned block = 0; block < blocks; ++block) {
       const u32 address = (physical & ~7u) + block * 8;
-      bus_.write32(address, word);
-      bus_.write32(address + 4, word);
+      bus_.write_cpu_data(address, word, 4);
+      bus_.write_cpu_data(address + 4, word, 4);
     }
     return;
   }
-  switch (bytes) {
-  case 1:
-    bus_.write8(physical, static_cast<u8>(value));
-    break;
-  case 2:
-    bus_.write16(physical, static_cast<u16>(value));
-    break;
-  case 4:
-    bus_.write32(physical, static_cast<u32>(value));
-    break;
-  case 3:
-    for (unsigned n = 0; n < bytes; ++n)
-      bus_.write8(physical + n, static_cast<u8>(value >> ((bytes - 1 - n) * 8)));
-    break;
-  default:
-    throw std::logic_error("Invalid CPU store width");
-  }
+  bus_.write_cpu_data(physical, value, bytes);
 }
 
 void Interpreter::clear_cache_line(u32 effective) {
@@ -599,7 +573,7 @@ void Interpreter::clear_cache_line(u32 effective) {
   try {
     const u32 physical = translate(effective, false, true);
     for (; offset < 32; offset += 4)
-      bus_.write32(physical + offset, 0);
+      bus_.write_cpu_data(physical + offset, 0, 4);
   } catch (const BusFault &fault) {
     if (fault.unsupported_reason)
       unsupported(fault.what());

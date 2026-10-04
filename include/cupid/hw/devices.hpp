@@ -96,6 +96,11 @@ public:
 
 private:
   u32 canonical(u32 address) const;
+  void flush_elapsed();
+  void rebuild_deadline();
+  void advance_state(u64 amount);
+  u64 next_deadline_ = 0, deferred_cycles_ = 0;
+  u32 level_interrupts_ = 0;
   u32 read_word(u32 address);
   void write_word(u32 address, u32 value);
   u16 read_half(u32 address);

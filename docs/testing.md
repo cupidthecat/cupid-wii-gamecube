@@ -71,6 +71,7 @@ The same option enables these C++23 comparisons and downloads pinned fmt 9.1.0:
 - `cpu_fused_reference_checks` compares single-precision fused arithmetic under four host rounding modes.
 - `cpu_ni_reference_checks` compares scalar guest arithmetic under all rounding modes with NI enabled and disabled, including tiny results at the normal-value boundary. It uses the actual SIMD rounding and flush controls on x86_64 and reports an architecture skip elsewhere.
 - `cpu_memory_reference_checks` compares page-crossing integer, binary64 and quantized loads, RAM stores, BAT updates and cached TLB attributes against the unchanged MMU, MMIO and interpreter implementations. It checks destination and update registers, both floating lanes, faults, DAR, DSISR, page-table words, write transactions and memory-error requests. See [CPU mappings](cpu-reference.md) for its selected attribute combinations and exclusions.
+- `physical_memory_reference_checks` compares physical memory aliases, ranges, locked-cache transfers, page-table access and instruction-cache behavior against the unchanged memory, MMU, cache and MMIO implementations. It requires x86_64.
 - `host_audio_reference_checks` compares the complete unchanged host mixer with independently implemented queues, including exact samples, gain/rate changes, overflow, buffering, initial speaker rates, early callbacks and four-speaker mixing. See [host audio](host-audio.md) for its 17,653 checkpoints and excluded streams.
 - `vertex_reference_checks` compares position, normal, lighting and texture-coordinate transforms.
 - `rasterizer_reference_checks` compares clipping, coverage and interpolated samples for triangle, line and point commands.
@@ -86,7 +87,7 @@ External graphics and memory comparison sources retain visible compiler warnings
 
 Unused parameters in the unmodified framebuffer-copy and memory comparison sources remain visible warnings on GCC.
 
-The default public run marks all twelve comparison tests as skipped because the external checkout is not a dependency of the product build. Keep the comparison checkout's revision with the test results. These comparisons cover the named helpers, memory transactions, graphics stages, service records and mixer paths; they do not compare complete CPU execution or prove hardware accuracy.
+The default public run marks all thirteen comparison tests as skipped because the external checkout is not a dependency of the product build. Keep the comparison checkout's revision with the test results. These comparisons cover the named helpers, memory transactions, graphics stages, service records and mixer paths; they do not compare complete CPU execution or prove hardware accuracy.
 
 ## Package checks
 
@@ -151,3 +152,19 @@ Windows and GCC each passed 651,392 memory comparisons and 17,653 complete-mixer
 Verification caught an incorrect initial speaker rate, which is now 3 kHz. It also reproduced a target queue case in which an immediate burst was dropped entirely after empty callbacks. The direct comparison and pure test retain that case. The Machine fixture now supplies its unchanged 8 kHz stream at 20 samples per 2.5 ms; its three-second deadline and positive output checks remain. It passed twenty consecutive runs on each of MSVC and GCC.
 
 Clang-format 18 passed, including test adapter includes. Clang 18 static analysis checked all 36 product translation units with no project diagnostics. All 128 captured source, header, test and build input hashes remained unchanged through the final checks. The coefficient generator reproduced the compiled window on both Windows and Linux.
+
+## Checked snapshot after `c4b1ed598f6a`
+
+This snapshot corrected CPU memory routing, physical aliases and instruction-cache identity, added device timing boundaries, and connected ROM-launched handheld tasks. The full matrix exposed an EFB byte-load regression: the new CPU callback returned a whole word. The repair narrows device results to the requested width. The original EFB assertions and new callback-width regressions passed on both consoles.
+
+| Configuration | Public tests passed | Direct comparisons passed | Declared skips |
+| --- | ---: | ---: | ---: |
+| Windows MSVC Release | 35 | 13 | 1 |
+| Linux GCC Release | 35 | 13 | 1 |
+| Linux Clang Release | 35 | 0 | 14 |
+| Linux GCC ASan + UBSan, headless | 32 | 0 | 17 |
+| Linux Clang ASan + UBSan, headless | 32 | 0 | 17 |
+
+Windows and GCC each passed the physical-memory comparison: 722 CPU RAM cases, 320 host-range cases, 32 DMA cases, 36 unresolved-memory error cases, padding page-table checks, and 526,736 mixed cache reads across 600,000 operations. The other twelve comparisons passed again.
+
+Clang-format 18 passed, including test adapter includes. Clang 18 static analysis checked all 37 product translation units with no project diagnostics. All 131 captured source, header, test and build input hashes remained unchanged through the corrected checks. Windows and Linux reproduced the audio coefficients. Separate package-verifier fixtures on both hosts accepted matching revision metadata and rejected deliberately mismatched metadata.

@@ -84,6 +84,14 @@ signals; it does not claim physical-speaker listening or commercial-game
 audibility. The loopback method uses the documented
 [Windows shared-mode API](https://learn.microsoft.com/en-us/windows/win32/coreaudio/loopback-recording).
 
+That endpoint check also passed against the coherently rebuilt memory/task
+runtime after `c4b1ed598f6a338e5b94bae5de5a77b71a3a4ec4`. Copied libraries and all
+public headers had matching captured hashes before and after the test. Each
+two-second source produced 96,000 captured stereo frames at 48 kHz and 191,216
+nonzero host values. DMA retained 192,000 guest values; Remote-only output
+retained zero. The independent channel tones satisfied the original spectral
+assertions with strict MSVC compilation.
+
 Linux's SDL dummy-backend tests pass. A live PulseAudio monitor attempt timed
 out during shutdown; the host sound server subsequently stopped answering
 `pactl info`. A successful real Linux endpoint check remains outstanding.

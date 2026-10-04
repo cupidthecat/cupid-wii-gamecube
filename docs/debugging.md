@@ -6,6 +6,8 @@ Use `--trace-after-boot` to avoid recording apploader execution when investigati
 
 Storage-fault investigations should compare `srr0`, `dar`, `dsisr`, and the effective address formed by the faulting instruction. Then reproduce the relevant CPU-to-memory-to-device transaction in a small synthetic test. Testing only a device's canonical register address can miss a CPU-translated alias fault.
 
+An unresolved physical data access can request the PI memory-access cause without a storage exception. A rejected page-table backing update instead increments `page_table_write_errors`, leaving its successful translation intact. Check those observations separately from DAR/DSISR and from invalid host-copy diagnostics; [memory boundaries](memory.md) explains their caller-specific address rules.
+
 For a suspected loop, examine whether registers or counters change and capture its first entry. Sunshine's startup cache loop was initially bounded before its return; its prologue and decrementing CTR were correct. A complete run showed the large sweep finishing. Raising a bound is useful evidence when the trace demonstrates progress, but does not repair a fault or prove game compatibility.
 
 Graphics failures should preserve the command stream before the first unsupported command or wrong pixel. Check command completeness, register masks, vertex layouts, transforms, clipping, TEV inputs, and pixel operations separately. Direct source comparisons use controlled inputs and preserve exact differences. Reference paths with undefined host operations need an explicit decision and a regression on defined inputs.

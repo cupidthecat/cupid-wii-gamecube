@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cupid/dsp/engine.hpp"
 #include "cupid/dsp/audio.hpp"
+#include "cupid/dsp/handheld_task.hpp"
 #include <bit>
 #include <iomanip>
 #include <limits>
@@ -97,6 +98,9 @@ void Engine::select_program(u32 hash) {
   case 1:
     next = Program::Initialization;
     break;
+  case 0xdd7e72d5:
+    next = Program::Handheld;
+    break;
   case 0x65d6cc6f:
     next = Program::Card;
     break;
@@ -112,6 +116,14 @@ void Engine::select_program(u32 hash) {
   parameter_ = 0;
   boot_ = {};
   audio_.reset();
+  handheld_.reset();
+  if (next == Program::Handheld) {
+    handheld_ = std::make_unique<HandheldTask>(
+        memory_, [this](u32 value) { mails_.push(value); }, [this] { return mails_.pending(); },
+        [this] { request_interrupt(); });
+    handheld_->initialize();
+    return;
+  }
   if (next == Program::Audio) {
     audio_ = std::make_unique<AudioProgram>(
         memory_, console_, hash, [this](u32 value, bool irq) { mails_.push(value, irq); },
@@ -130,8 +142,19 @@ void Engine::select_program(u32 hash) {
 }
 
 void Engine::swap_program(u32 hash) {
+  if (suspended_handheld_ && hash == 0xdd7e72d5) {
+    mails_.clear();
+    audio_.reset();
+    handheld_ = std::move(suspended_handheld_);
+    hash_ = hash;
+    program_ = Program::Handheld;
+    parameter_ = 0;
+    boot_ = {};
+    return;
+  }
   if (suspended_audio_ && suspended_audio_->hash() == hash) {
     mails_.clear();
+    handheld_.reset();
     audio_ = std::move(suspended_audio_);
     hash_ = hash;
     program_ = Program::Audio;
@@ -139,14 +162,29 @@ void Engine::swap_program(u32 hash) {
     boot_ = {};
     return;
   }
-  if (hash != 0 && hash != 1 && hash != 0x65d6cc6f && !AudioProgram::supports(hash))
+  if (hash != 0 && hash != 1 && hash != 0x65d6cc6f && hash != 0xdd7e72d5 &&
+      !AudioProgram::supports(hash))
     throw UnsupportedMicrocode(hash, boot_);
-  if (audio_ && !suspended_audio_)
-    suspended_audio_ = std::move(audio_);
+  if (!suspended_audio_ && !suspended_handheld_) {
+    if (audio_)
+      suspended_audio_ = std::move(audio_);
+    else if (handheld_)
+      suspended_handheld_ = std::move(handheld_);
+  }
   select_program(hash);
 }
 
 void Engine::handle_mail(u32 value) {
+  if (handheld_) {
+    if (const auto action = handheld_->handle_mail(value)) {
+      boot_ = action->boot;
+      if (action->preserve)
+        swap_program(action->hash);
+      else
+        select_program(action->hash);
+    }
+    return;
+  }
   if (program_ == Program::Audio) {
     if (const auto action = audio_->handle_mail(value)) {
       boot_ = action->boot;
@@ -259,6 +297,8 @@ void Engine::advance(u64 cpu_cycles) {
     request_interrupt();
   if (audio_)
     audio_->update();
+  if (handheld_)
+    handheld_->update();
 }
 
 u32 Engine::program_hash() const {

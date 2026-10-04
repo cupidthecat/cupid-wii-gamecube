@@ -173,6 +173,248 @@ struct TransactionFixture {
   }
 };
 
+class CpuPathMemory : public TransactionMemory {
+public:
+  std::vector<Access> data_accesses, page_updates;
+  bool reject_page_updates = false;
+
+  u64 read_cpu_data(u32 physical, unsigned byte_count) override {
+    data_accesses.push_back({physical, 0, byte_count, false});
+    return Bus::read_cpu_data(physical, byte_count);
+  }
+
+  void write_cpu_data(u32 physical, u32 value, unsigned byte_count) override {
+    data_accesses.push_back({physical, value, byte_count, true});
+    Bus::write_cpu_data(physical, value, byte_count);
+  }
+
+  bool write_page_table32(u32 physical, u32 value) override {
+    page_updates.push_back({physical, value, 4, true});
+    if (reject_page_updates)
+      return false;
+    return Bus::write_page_table32(physical, value);
+  }
+};
+
+void cpu_data_path_tests() {
+  CpuPathMemory memory;
+  Interpreter cpu(memory);
+  auto &state = cpu.state();
+  const auto run = [&](u32 opcode) {
+    state.pc = 0x1000;
+    memory.write32(0x1000, opcode);
+    memory.data_accesses.clear();
+    memory.page_updates.clear();
+    cpu.step();
+    CHECK(state.pc == 0x1004);
+  };
+  memory.write32(0x2000, 0x12345678);
+  state.gpr[7] = 0x2000;
+  run(imm(32, 9, 7, 0));
+  CHECK(state.gpr[9] == 0x12345678);
+  CHECK(memory.data_accesses == (std::vector<Access>{{0x2000, 0, 4, false}}));
+  run(imm(38, 9, 7, 0));
+  CHECK(memory.data_accesses == (std::vector<Access>{{0x2000, 0x12345678, 1, true}}));
+  CHECK(memory.read8(0x2000) == 0x78);
+
+  const u32 table = 0x20000 | (((0x123u ^ 3u) << 6) & 0xffff);
+  memory.write32(table, 0x80000000 | (0x123u << 7));
+  memory.write32(table + 4, 0x2003);
+  memory.write32(0x2000, 0x31415926);
+  memory.reject_page_updates = true;
+  state.sr[4] = 0x123;
+  state.spr[spr::sdr1] = 0x20000;
+  state.msr = msr::dr;
+  state.gpr[7] = 0x40003000;
+  run(imm(32, 9, 7, 0));
+  CHECK(state.gpr[9] == 0x31415926);
+  CHECK(
+      memory.data_accesses ==
+      (std::vector<Access>{{table, 0, 4, false}, {table + 4, 0, 4, false}, {0x2000, 0, 4, false}}));
+  CHECK(memory.page_updates == (std::vector<Access>{{table + 4, 0x2103, 4, true}}));
+  CHECK(memory.read32(table + 4) == 0x2003);
+  state.gpr[9] = 0xabcdef01;
+  run(imm(38, 9, 7, 0));
+  CHECK(memory.data_accesses == (std::vector<Access>{{table, 0, 4, false},
+                                                     {table + 4, 0, 4, false},
+                                                     {0x2000, 0xabcdef01, 1, true}}));
+  CHECK(memory.page_updates == (std::vector<Access>{{table + 4, 0x2183, 4, true}}));
+  CHECK(memory.read32(table + 4) == 0x2003 && memory.read8(0x2000) == 1);
+  run(imm(32, 9, 7, 0));
+  CHECK(memory.data_accesses == (std::vector<Access>{{0x2000, 0, 4, false}}));
+  CHECK(memory.page_updates.empty() && state.gpr[9] == 0x01415926);
+
+  state.msr = 0;
+  state.spr[spr::hid0] = 0x4000;
+  state.gpr[7] = 0x2003;
+  run(ext(1014, 0, 0, 7));
+  std::vector<Access> clearing;
+  for (unsigned word = 0; word < 8; ++word)
+    clearing.push_back({0x2000u + word * 4, 0, 4, true});
+  CHECK(memory.data_accesses == clearing);
+  CHECK(memory.page_updates.empty());
+}
+
+void physical_data_memory_tests() {
+  unsigned cases = 0;
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    cupid::Memory memory(console);
+    unsigned errors = 0;
+    memory.memory_error = [&] { ++errors; };
+    Interpreter cpu(memory, console);
+    auto &state = cpu.state();
+    const auto run = [&](u32 opcode) {
+      state.pc = 0x1000;
+      state.spr[spr::hid0] = 0;
+      memory.write32(0x1000, opcode);
+      cpu.step();
+      CHECK(state.pc == 0x1004);
+    };
+    state.msr = msr::fp;
+    state.spr[spr::dar] = 0x13579bdf;
+    state.spr[spr::dsisr] = 0x2468ace0;
+    constexpr std::array<u32, 6> boundaries{0x01800000, 0x02000000, 0x04000000,
+                                            0x06000000, 0x07800000, 0x08000000};
+    for (u32 boundary : boundaries)
+      for (int displacement = -8; displacement <= 8; ++displacement)
+        for (unsigned width : {1u, 2u, 4u, 8u}) {
+          const u32 address = boundary + static_cast<u32>(displacement);
+          if (u64(address) + width > 0x08000000 || (width == 8 && (address & 3)))
+            continue;
+          ++cases;
+          u64 expected = 0;
+          for (int offset = -4; offset < 16; ++offset)
+            memory.write_cpu_data((address + static_cast<u32>(offset)) & 0x01ffffff,
+                                  static_cast<u8>(0xa0 + offset), 1);
+          for (unsigned byte = 0; byte < width; ++byte)
+            expected = (expected << 8) | (0xa0 + byte);
+          state.gpr[7] = address;
+          const unsigned load_op = width == 1 ? 34 : width == 2 ? 40 : width == 4 ? 32 : 50;
+          const unsigned store_op = width == 1 ? 38 : width == 2 ? 44 : width == 4 ? 36 : 54;
+          run(imm(load_op, 9, 7, 0));
+          CHECK((width == 8 ? state.fpr[9].bits[0] : state.gpr[9]) == expected);
+          constexpr u64 payload = 0x123456789abcdef0ull;
+          state.gpr[9] = static_cast<u32>(payload);
+          state.fpr[9].bits[0] = payload;
+          run(imm(store_op, 9, 7, 0));
+          for (int offset = -4; offset < 16; ++offset) {
+            const u8 value =
+                offset >= 0 && static_cast<unsigned>(offset) < width
+                    ? static_cast<u8>(payload >> ((width - 1 - static_cast<unsigned>(offset)) * 8))
+                    : static_cast<u8>(0xa0 + offset);
+            CHECK(memory.read_cpu_data((address + static_cast<u32>(offset)) & 0x01ffffff, 1) ==
+                  value);
+          }
+          CHECK(errors == 0 && state.msr == msr::fp);
+          CHECK(state.spr[spr::dar] == 0x13579bdf && state.spr[spr::dsisr] == 0x2468ace0);
+        }
+    CHECK_THROWS(memory.range(0x01800000, 1));
+    CHECK_THROWS(memory.read32(0x01800000));
+    CHECK_THROWS(memory.locked_cache_dma(0x01800000, 0, 32, true));
+
+    for (u32 address : {0x10000000u, 0x14000000u, 0x40000020u, 0x80000020u, 0xc0000020u})
+      for (unsigned width : {1u, 2u, 4u, 8u}) {
+        if (console == Console::Wii && address == 0x10000000)
+          continue;
+        const unsigned before = errors;
+        state.gpr[7] = address;
+        state.gpr[9] = 0xabcdef01;
+        state.fpr[9].bits[0] = 0x123456789abcdef0ull;
+        run(imm(width == 1 ? 34 : width == 2 ? 40 : width == 4 ? 32 : 50, 9, 7, 0));
+        CHECK((width == 8 ? state.fpr[9].bits[0] : state.gpr[9]) == 0);
+        CHECK(errors == before + 1);
+        state.gpr[9] = 0xabcdef01;
+        state.fpr[9].bits[0] = 0x123456789abcdef0ull;
+        run(imm(width == 1 ? 38 : width == 2 ? 44 : width == 4 ? 36 : 54, 9, 7, 0));
+        CHECK(errors == before + 1 + (width == 8 ? 2u : 1u));
+        CHECK(state.msr == msr::fp && state.spr[spr::dar] == 0x13579bdf &&
+              state.spr[spr::dsisr] == 0x2468ace0);
+      }
+
+    // PTE reads use allocated data backing, but R/C updates use strict host bounds.
+    const u32 table = 0x01800000 | (((0x321u ^ 7u) << 6) & 0xffff);
+    memory.write_cpu_data(table, 0x80000000 | (0x321u << 7), 4);
+    memory.write_cpu_data(table + 4, 0x4003, 4);
+    memory.write32(0x4000, 0x31415926);
+    state.sr[4] = 0x321;
+    state.spr[spr::sdr1] = 0x01800000;
+    state.msr = msr::dr;
+    state.gpr[7] = 0x40007000;
+    const unsigned before = errors;
+    const u64 rejected_before = memory.page_table_write_errors();
+    run(imm(32, 9, 7, 0));
+    CHECK(state.gpr[9] == 0x31415926);
+    CHECK(memory.read_cpu_data(table + 4, 4) == 0x4003);
+    CHECK(memory.page_table_write_errors() == rejected_before + 1);
+    state.gpr[9] = 0xabcdef01;
+    run(imm(36, 9, 7, 0));
+    CHECK(memory.read32(0x4000) == 0xabcdef01);
+    CHECK(memory.read_cpu_data(table + 4, 4) == 0x4003 && errors == before);
+    CHECK(memory.page_table_write_errors() == rejected_before + 2);
+    run(imm(32, 9, 7, 0));
+    CHECK(state.gpr[9] == 0xabcdef01 && memory.page_table_write_errors() == rejected_before + 2);
+    CHECK(state.msr == msr::dr && state.spr[spr::dar] == 0x13579bdf &&
+          state.spr[spr::dsisr] == 0x2468ace0);
+  }
+  CHECK(cases == 602u);
+}
+
+void physical_cache_alias_tests() {
+  unsigned cases = 0;
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    cupid::Memory memory(console);
+    Interpreter cpu(memory, console);
+    auto &state = cpu.state();
+    unsigned errors = 0;
+    memory.memory_error = [&] { ++errors; };
+    for (bool extended : {false, true}) {
+      if (extended && console == Console::GameCube)
+        continue;
+      const std::array<u32, 6> aliases{extended ? 0x04000000u : 0x02000000u,
+                                       extended ? 0x08000000u : 0x04000000u,
+                                       extended ? 0x0c000000u : 0x06000000u,
+                                       0x40000000u,
+                                       0x80000000u,
+                                       0xc0000000u};
+      for (bool locked : {false, true})
+        for (unsigned set : {0u, 1u, 63u, 127u})
+          for (unsigned word = 0; word < 8; ++word)
+            for (u32 alias : aliases) {
+              ++cases;
+              cpu.reset();
+              const u32 physical =
+                  (extended ? 0x10120000u : 0x00120000u) | (set << 5) | (word << 2);
+              const u16 old_value = static_cast<u16>(0x80 + cases);
+              const u16 new_value = static_cast<u16>(0x4000 + cases);
+              memory.write32(physical, imm(14, 9, 0, old_value));
+              state.pc = physical;
+              state.spr[spr::hid0] = 0x8000;
+              cpu.step();
+              CHECK(state.pc == physical + 4 && state.gpr[9] == old_value);
+              memory.write32(physical, imm(14, 9, 0, new_value));
+              state.pc = physical | alias;
+              state.gpr[9] = 0x91827364;
+              state.spr[spr::hid0] = locked ? 0xa000 : 0x8000;
+              cpu.step();
+              CHECK(state.pc == (physical | alias) + 4 && state.gpr[9] == old_value);
+              CHECK(state.last_opcode == imm(14, 9, 0, old_value));
+              CHECK(state.instructions == 2 && errors == 0);
+
+              memory.write32(0x1000, ext(982, 0, 0, 7));
+              state.pc = 0x1000;
+              state.gpr[7] = physical | alias;
+              cpu.step();
+              CHECK(state.pc == 0x1004);
+              state.pc = physical;
+              state.gpr[9] = 0x91827364;
+              cpu.step();
+              CHECK(state.pc == physical + 4 && state.gpr[9] == new_value);
+            }
+    }
+  }
+  CHECK(cases == 1152u);
+}
+
 void bat_mapping_boundary_tests() {
   struct Mapping {
     u32 mask, effective_base, physical_base;
@@ -2328,6 +2570,36 @@ void cache_tests() {
   memory.write32(0x2000, 123);
   CHECK(cache.read(memory, 0x2000, true, false) == 123);
 
+  class GenericMirrorMemory final : public Memory {
+  public:
+    unsigned reads = 0;
+
+    u32 read32(u32 physical) override {
+      ++reads;
+      return Memory::read32(physical & 0xfffff);
+    }
+  };
+
+  GenericMirrorMemory generic;
+  for (u32 alias : {0x02000000u, 0x04000000u, 0x10000000u, 0x20000000u, 0x40000000u, 0x80000000u,
+                    0xc0000000u}) {
+    cache.reset();
+    const u32 physical = 0x2084, other = physical | alias;
+    CHECK(generic.instruction_cache_key(other) == other);
+    generic.write32(physical, 11);
+    CHECK(cache.read(generic, physical, true, false) == 11);
+    generic.write32(physical, 22);
+    unsigned before = generic.reads;
+    CHECK(cache.read(generic, other, true, true) == 22 && generic.reads == before + 1);
+    generic.write32(physical, 33);
+    before = generic.reads;
+    CHECK(cache.read(generic, other, true, false) == 33 && generic.reads == before + 8);
+    before = generic.reads;
+    CHECK(cache.read(generic, physical, true, true) == 11 && generic.reads == before);
+    generic.write32(physical, 44);
+    CHECK(cache.read(generic, other, false, false) == 44 && generic.reads == before + 1);
+  }
+
   Interpreter cpu(memory);
   auto &state = cpu.state();
   state.spr[spr::hid0] = 0x8000;
@@ -2377,6 +2649,9 @@ int main() {
     branch_tests();
     cache_range_loop_tests();
     memory_tests();
+    cpu_data_path_tests();
+    physical_data_memory_tests();
+    physical_cache_alias_tests();
     cache_zero_transaction_tests();
     string_store_transaction_tests();
     uncached_write_tests();

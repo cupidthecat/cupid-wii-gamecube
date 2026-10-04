@@ -61,5 +61,52 @@ public:
   virtual void memory_access_error() {
     throw BusFault(0, true, "This bus does not implement memory-access interrupts", true);
   }
+
+  // Cache identity can alias physical addresses without changing backing reads.
+  virtual u32 instruction_cache_key(u32 physical) const {
+    return physical;
+  }
+
+  // CPU data transactions can have different bounds from host and fetch access.
+  virtual u64 read_cpu_data(u32 physical, unsigned byte_count) {
+    switch (byte_count) {
+    case 1:
+      return read8(physical);
+    case 2:
+      return read16(physical);
+    case 4:
+      return read32(physical);
+    case 8:
+      return read64(physical);
+    default:
+      throw std::invalid_argument("Invalid CPU data read width");
+    }
+  }
+
+  virtual void write_cpu_data(u32 physical, u32 value, unsigned byte_count) {
+    switch (byte_count) {
+    case 1:
+      write8(physical, static_cast<u8>(value));
+      return;
+    case 2:
+      write16(physical, static_cast<u16>(value));
+      return;
+    case 3:
+      write8(physical, static_cast<u8>(value >> 16));
+      write8(physical + 1, static_cast<u8>(value >> 8));
+      write8(physical + 2, static_cast<u8>(value));
+      return;
+    case 4:
+      write32(physical, value);
+      return;
+    default:
+      throw std::invalid_argument("Invalid CPU data write width");
+    }
+  }
+
+  virtual bool write_page_table32(u32 physical, u32 value) {
+    write32(physical, value);
+    return true;
+  }
 };
 } // namespace cupid

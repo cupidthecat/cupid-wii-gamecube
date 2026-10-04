@@ -40,6 +40,8 @@ Audio diagnostics count individual signed 16-bit sample values, so two values fo
 
 Those fields retain the main DMA values before host mixing. Remote output leaves them unchanged. `host_audio_frames`, `host_audio_nonzero_samples` and `host_audio_dropped_granules` separately count host callback frames, signal values and queue overflow. Their wall-clock timing makes them unsuitable for deterministic guest-state comparisons.
 
+`page_table_write_errors` counts rejected backing writes when translation updates page-table reference/change bits. The translation and local TLB flags can remain valid even when a bounded host write rejects allocation padding. This counter is separate from PI interrupt requests and guest storage exceptions. See [memory boundaries](memory.md).
+
 ```sh
 cupid-wii-gamecube --game "/path/to/game.rvz" --headless --audio none \
   --user-dir "/path/to/test-data" --max-instructions 30000000 --run-seconds 60 \

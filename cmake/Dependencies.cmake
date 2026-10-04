@@ -61,8 +61,12 @@ else()
     set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(sdl2 SYSTEM EXCLUDE_FROM_ALL
       URL https://github.com/libsdl-org/SDL/archive/refs/tags/release-2.30.12.tar.gz
-      URL_HASH SHA256=560da2e54dd8af933e35bd08fb1b6cf80d4f6938c67710fecf13b7e9bdd6c47e)
+      URL_HASH SHA256=560da2e54dd8af933e35bd08fb1b6cf80d4f6938c67710fecf13b7e9bdd6c47e
+      SOURCE_SUBDIR cupid-populate-only)
     FetchContent_MakeAvailable(sdl2)
+    include(${CMAKE_CURRENT_LIST_DIR}/SDL2Audio.cmake)
+    cupid_prepare_sdl_audio("${sdl2_SOURCE_DIR}" cupid_sdl_source)
+    add_subdirectory("${cupid_sdl_source}" "${sdl2_BINARY_DIR}" EXCLUDE_FROM_ALL SYSTEM)
     target_link_libraries(cupid_dependencies INTERFACE SDL2::SDL2-static)
   endif()
   target_compile_definitions(cupid_dependencies INTERFACE CUPID_HAVE_SDL=1 CUPID_HAS_SDL2=1)

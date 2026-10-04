@@ -6,6 +6,12 @@ Project code builds with strict floating-point evaluation so guest rounding mode
 
 The default build downloads pinned source archives for Zstandard 1.5.7, bzip2 1.0.8, liblzma 5.8.1 and SDL2 2.30.12. CMake checks SHA-256 before extracting each archive. Dependencies build as static libraries. The first configuration needs network access; later builds reuse the downloaded files in the build directory. See [licensing](licensing.md) for dependency sources and notices.
 
+The pinned SDL source receives a checked audio shutdown patch in a separate
+build-owned copy. It wakes stalled Pulse waits before the worker is joined.
+Shared dependency source directories stay intact. System-dependency builds use
+their installed SDL unchanged. See [host audio](host-audio.md#pulse-shutdown) for
+the behavior and its owned-server regression.
+
 ## Linux
 
 On Ubuntu 24.04:
@@ -21,6 +27,9 @@ ctest --preset release
 ```
 
 The SDL development package supplies the host-window and audio build requirements. SDL2 itself still comes from the pinned archive. To select Clang, pass `-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++` on the first configuration in a fresh build directory.
+
+Install `pulseaudio` to run the optional owned-server audio shutdown regression.
+The fixture launches its own null sink and does not use a shared audio service.
 
 ## Windows
 

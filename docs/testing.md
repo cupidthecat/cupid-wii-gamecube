@@ -37,6 +37,12 @@ The output suite uses SDL's dummy video and audio drivers to create a renderer, 
 
 The pure host mixer suite checks sample queues, filtering, saturation, rate changes and overflow without SDL. The handheld suite checks authentication calculations, checked memory requests, an authored PowerPC command path, malformed buffers and unsupported variants.
 
+On Linux, `host_audio_shutdown` uses an owned Pulse server and null sink to check
+Output teardown while that server is stopped. It verifies worker completion and
+callback lifetime before resuming the server for cleanup. The optional fixture
+skips when the server executable is absent. See [host audio](host-audio.md#pulse-shutdown)
+for the unchanged-SDK failure and staged-SDK pass.
+
 The disc-stream suite checks ADPCM decoding, drive command state, callback
 timing and actual guest DI/AI writes on both consoles. An optional compiled
 comparison covers every decoder header pair and retained predictor history,

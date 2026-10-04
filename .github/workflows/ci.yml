@@ -27,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Install build and host-output requirements
-        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ clang libsdl2-dev libgl1-mesa-dri xvfb xauth
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ clang libsdl2-dev pulseaudio libgl1-mesa-dri xvfb xauth
       - name: Configure
         run: cmake -S . -B build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=${{ matrix.compiler == 'gcc' && 'gcc' || 'clang' }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler == 'gcc' && 'g++' || 'clang++' }} -DCUPID_ENABLE_LTO=${{ matrix.lto }} -DCUPID_WARNINGS_AS_ERRORS=ON -DCUPID_REQUIRE_HARDWARE_TESTS=ON -DCUPID_COMMIT=${GITHUB_SHA}
       - name: Build

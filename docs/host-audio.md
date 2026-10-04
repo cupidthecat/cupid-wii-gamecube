@@ -320,6 +320,42 @@ and Linux logs remain under `local-artifacts/remote-loop-20261004/`, with hashes
 in `completed.json`. Complete guarded trace comparisons remain under
 `local-artifacts/commercial-endpoint-20261004/replay-remote-off/`.
 
+## Pulse shutdown
+
+The pinned SDL dependency includes a build patch that wakes Pulse playback and
+capture waits before joining the audio worker. Close first pauses, disables and
+marks the device for shutdown. The wake takes the same Pulse lock as the wait
+predicate, so it cannot race past a worker entering its wait. Callback state,
+queues and mixer locks stay alive until that worker has joined. Other SDL drivers
+leave the new internal hook unset.
+
+`cmake/SDL2Audio.cmake` checks the three original source hashes and stages an
+altered copy inside the build directory. Shared source caches remain intact.
+Installed SDL selected through `CUPID_USE_SYSTEM_DEPS` does not receive this patch.
+The patch fixes close liveness for a stalled connection; it does not recover an
+unavailable endpoint or bound an arbitrary blocked callback.
+
+The public `host_audio_shutdown` test starts its own Pulse server and null sink,
+feeds nonzero samples through the actual Output, then stops only that server.
+It verifies stationary callback counters, close before server recovery, a shut
+down SDL audio subsystem and one remaining application thread. Its red path
+resumes the owned server before cleanup. The test requires an installed Pulse
+server and reports an explicit skip when that optional executable is absent.
+Linux output CI installs it. No commercial assets or shared audio services are
+used by this fixture.
+
+On October 4, 2026, the same fixture and integrated Output library were linked
+against the untouched SDK and the staged SDK. The untouched build failed the
+close-before-recovery assertion; the staged build passed while its server
+remained stopped. Both attempts resumed and reaped only their owned server.
+The strict GCC build, commands, source and library hashes, and both exit results
+are retained in
+`local-artifacts/pulse-audio-integrated-20261004/verification-1791148676023379195/`.
+The receipt has SHA-256
+`3dc90b1f140fbc190b21f825d943e8f0281c502b476da4c78400e844b0263862`.
+This checks shutdown liveness and lifetime; commercial endpoint playback remains
+outside that comparison.
+
 ## Behavior mapping
 
 | Behavior | Pinned files and functions | Product |
@@ -328,3 +364,4 @@ in `completed.json`. Complete guarded trace comparisons remain under
 | Granules, overlap, buffering, interpolation and gain | `Source/Core/AudioCommon/Mixer.h`: `MixerFifo`; `Mixer.cpp`: `Enqueue`, `Dequeue`, `Mix`, `SetVolume`, `RefreshConfig` | `src/audio/host_mixer.cpp`: `SampleFifo` |
 | Output order, initial speaker rate and default host rate | `Mixer.h`: `m_wiimote_speaker_mixers`; `Mixer.cpp`: `Mixer::Mix`; `Source/Core/AudioCommon/SoundStream.h`: `SoundStream` | `src/platform/output.cpp`: `Output`, `Impl::render_audio` |
 | Separate host speaker setting and decoded packet path | `Source/Core/Core/HW/WiimoteEmu/Speaker.cpp`: `SpeakerData`; `WiimoteEmu/WiimoteEmu.cpp`: `RefreshConfig`; `Source/Core/Core/Config/MainSettings.cpp`: `MAIN_WIIMOTE_ENABLE_SPEAKER` | `src/runtime/machine.cpp`: `set_output`; `src/ios/ipc.cpp`: speaker handler binding; [speaker decoder](remote-speaker.md) |
+| Host callback lifetime through stream destruction | `Source/Core/AudioCommon/CubebStream.cpp`: `CubebStream::~CubebStream`; `PulseAudioStream.cpp`: destructor and `PulseShutdown` | `src/platform/output.cpp`: `Impl` destructor; pinned SDL `close_audio_device`, `PULSEAUDIO_PrepareToClose`, playback and capture waits |

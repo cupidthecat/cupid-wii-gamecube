@@ -143,8 +143,8 @@ Options parse(int argc, char **argv) {
   }
   if (o.console != "auto" && o.console != "gamecube" && o.console != "wii")
     throw UsageError("Console must be auto, gamecube or wii");
-  if (o.graphics != "software")
-    throw UsageError("Graphics backend must be software");
+  if (o.graphics != "software" && o.graphics != "opengl")
+    throw UsageError("Graphics backend must be software or opengl");
   if (o.display_aspect != "standard" && o.display_aspect != "widescreen" &&
       o.display_aspect != "pixels")
     throw UsageError("Display aspect must be standard, widescreen or pixels");
@@ -186,7 +186,7 @@ Usage: cupid-wii-gamecube --game PATH [options]
   --validate-bios             Check --bios without running software
   --ipl-fonts PATH            Load separately validated IPL font blocks
   --validate-fonts            Check --ipl-fonts without running software
-  --graphics software         CPU rendering and SDL presentation
+  --graphics software|opengl  CPU rendering or OpenGL compute rendering
   --display-aspect MODE       standard (VI), widescreen or pixels; default standard
   --audio none|sdl             Select guest PCM output (default none)
   --remote-speakers on|off     Mix decoded Remote speakers (default off; requires SDL audio)
@@ -423,6 +423,10 @@ int main(int argc, char **argv) {
     platform::Output output({options.headless, options.audio == "sdl", options.frame_dump,
                              options.input, display_aspect, options.remote_speakers == "on"});
     runtime::Machine machine(console);
+    if (options.graphics == "opengl") {
+      machine.graphics().set_hardware_rendering(true);
+      message("OpenGL rendering device: " + machine.graphics().hardware_device());
+    }
     machine.set_output(&output);
     machine.set_limits(options.limits);
     machine.set_user_directory(options.user);

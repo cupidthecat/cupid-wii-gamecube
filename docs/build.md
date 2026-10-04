@@ -43,13 +43,16 @@ The MSVC build links the C/C++ runtime statically. A Visual Studio generator als
 | `CUPID_HEADLESS_ONLY` | `OFF` | Excludes SDL2 host output. The executable reports an error if interactive output is requested. |
 | `CUPID_USE_SYSTEM_DEPS` | `OFF` | Uses installed Zstandard, bzip2, liblzma and SDL2 development packages. Package versions come from the host; this mode does not provide archive pinning. |
 | `CUPID_BUILD_TESTS` | `ON` | Builds the public test executables and registers CTest cases. |
+| `CUPID_REQUIRE_HARDWARE_TESTS` | `OFF` | Makes a missing OpenGL 4.3 context fail the two hardware suites. Requires an SDL-enabled test build. Shader compilation and backend errors always fail. |
 | `CUPID_WARNINGS_AS_ERRORS` | `OFF` | Fails the build on project compiler warnings. CI enables it for Release and sanitizer builds. |
 | `CUPID_ENABLE_SANITIZERS` | `OFF` | Adds AddressSanitizer and UndefinedBehaviorSanitizer to project code on GCC or Clang. |
 | `CUPID_ENABLE_LOCAL_INTEGRATION` | `OFF` | Registers the private disc integration run. Requires `CUPID_LOCAL_GAME`. |
 | `CUPID_COMMIT` | current revision | Embeds a revision string. Use an explicit value when building an exported source tree. |
-| `CUPID_BEHAVIOR_REFERENCE_ROOT` | empty | Enables fifteen CPU, memory, graphics, pointer, service-record and audio comparisons against a separately supplied, pinned behavioral checkout. The NI arithmetic, physical-memory and CPU stepping tests require x86_64. |
+| `CUPID_BEHAVIOR_REFERENCE_ROOT` | empty | Enables sixteen CPU, memory, graphics, pointer, service-record and audio comparisons against a separately supplied, pinned behavioral checkout. The NI arithmetic, physical-memory, CPU stepping and dispatch tests require x86_64. |
 
 For a headless test build, use the `headless` preset. For instrumented Linux tests, use `sanitizers`. Sanitizers do not instrument dependency sources.
+
+The OpenGL renderer needs a host driver with compute-shader support. An SDL-enabled build can use it with headless output; a `CUPID_HEADLESS_ONLY` build cannot create its context. For Linux software-driver checks, install `libgl1-mesa-dri`, `xvfb` and `xauth`, configure with `-DCUPID_REQUIRE_HARDWARE_TESTS=ON`, and run `LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a ctest --test-dir <build> --output-on-failure`. This exercises shader correctness without claiming physical GPU acceleration.
 
 Version and revision strings come from a generated header used by the CLI and state writer. Updating `CUPID_COMMIT` rebuilds those two consumers without changing compiler definitions for the other modules.
 

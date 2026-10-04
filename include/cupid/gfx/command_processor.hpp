@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include "cupid/core/memory.hpp"
+#include "cupid/gfx/hardware_renderer.hpp"
 #include "cupid/gfx/rasterizer.hpp"
 #include "cupid/hw/devices.hpp"
 #include <array>
@@ -16,6 +17,11 @@ public:
   void reset_fifo();
   u32 read(u32 address, unsigned width);
   u32 read_efb(u32 address) const;
+  void write_efb(u32 address, u32 value);
+  void set_hardware_rendering(bool enabled);
+  std::string hardware_device() const;
+  HardwareStats hardware_stats() const;
+  std::string hardware_fallback_reason() const;
   void write(u32 address, u32 value, unsigned width);
   // Feeds already captured command bytes; useful for display lists and regression tests.
   void submit(std::span<const u8> data);
@@ -40,6 +46,7 @@ public:
   }
 
   u64 fragment_count() const {
+    synchronize_hardware();
     return fragment_count_;
   }
 
@@ -48,19 +55,22 @@ private:
   hw::Devices &devices_;
   Console console_;
   std::array<u16, 0x33> registers_{};
-  std::array<u16, 0x18> pixel_registers_{};
+  mutable std::array<u16, 0x18> pixel_registers_{};
   std::array<u32, 256> cp_state_{}, bp_state_{};
   std::array<u32, 0x1058> xf_state_{};
-  std::vector<u32> colors_, depths_;
+  mutable std::vector<u32> colors_, depths_;
+  std::unique_ptr<HardwareRenderer> hardware_;
+  bool hardware_upload_pending_ = true;
   TevRegisters tev_colors_{}, konst_colors_{};
   std::vector<u8> texture_memory_;
-  FragmentShader shader_;
+  mutable FragmentShader shader_;
   Rasterizer rasterizer_;
   std::array<u8, 32> pipe_{};
   unsigned pipe_size_ = 0;
   std::vector<u8> pending_;
   u64 command_count_ = 0, command_cycles_ = 0;
-  u64 fragment_count_ = 0;
+  mutable u64 fragment_count_ = 0;
+  mutable u64 hardware_fragment_count_ = 0;
   u64 event_remaining_ = 0;
   u16 token_pending_ = 0;
   bool token_irq_pending_ = false, finish_pending_ = false, token_irq_ = false, finish_irq_ = false;
@@ -78,5 +88,7 @@ private:
   void copy_efb(u32 control);
   void update_interrupts();
   void write_color(unsigned x, unsigned y, u32 color);
+  void synchronize_hardware() const;
+  void upload_hardware();
 };
 } // namespace cupid::gfx

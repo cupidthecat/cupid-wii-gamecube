@@ -11,7 +11,9 @@ cupid-wii-gamecube --game "/path/to/program.dol" --console gamecube \
 
 `--game` accepts DOL, ELF, RVZ, ISO, or GCM files. Disc metadata selects the console in `auto` mode. Executables default to GameCube mode; select `--console wii` when required. A disc's console must agree with an explicit selection.
 
-`--graphics software` selects the CPU rendering path. SDL displays a minimal game-output window. `--headless` disables that window. `--audio sdl` resamples and mixes guest PCM into a 48 kHz stereo stream; `--audio none` leaves host audio disabled. `--remote-speakers on` includes decoded Remote packets and requires SDL audio; the default is `off`. Headless runs can enable audio. A headless-only build excludes the SDL output backend. See [host audio](host-audio.md) for buffering and verified scope.
+`--graphics software` selects CPU rendering. `--graphics opengl` selects the OpenGL 4.3 compute path, with CPU execution for graphics states it cannot yet handle. A hidden context runs the graphics commands; `--headless` disables the separate game-output window. Both graphics and SDL output require a build with SDL support. A headless-only build supports software graphics. See [hardware rendering](hardware-rendering.md) for coverage and validation.
+
+`--audio sdl` resamples and mixes guest PCM into a 48 kHz stereo stream; `--audio none` leaves host audio disabled. `--remote-speakers on` includes decoded Remote packets and requires SDL audio; the default is `off`. Headless runs can enable audio. See [host audio](host-audio.md) for buffering and verified scope.
 
 `--display-aspect standard` uses the VI active-area ratio for a standard television signal. `widescreen` expands that ratio by four thirds; `pixels` uses the raw framebuffer dimensions. The default is `standard`. The window centers the image with black bars when needed, and mouse pointing follows that displayed area. Frame dumps retain the original guest framebuffer dimensions.
 

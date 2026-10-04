@@ -21,6 +21,11 @@ public:
   void validate() const;
   std::optional<Color> shade(const FragmentInputs &input, u32 *depth = nullptr);
 
+  void restore_texture_state(Color texture, Color raw) {
+    texture_ = texture;
+    raw_texture_ = raw;
+  }
+
 private:
   TextureSampler sampler_;
   std::span<const u32> bp_;

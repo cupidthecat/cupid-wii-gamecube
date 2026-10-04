@@ -1,6 +1,6 @@
 # Graphics
 
-The software backend executes GX commands and renders into a 640 by 528 EFB. Guest commands supply the geometry, textures, shader state, copy destinations, and VI configuration. The output window displays framebuffers read from guest RAM.
+GX commands render into a 640 by 528 EFB. The software backend provides the validated CPU path; an [OpenGL compute backend](hardware-rendering.md) executes supported pixel work through the host driver. Guest commands supply the geometry, textures, shader state, copy destinations, and VI configuration. The output window displays framebuffers read from guest RAM.
 
 ## Command and rendering path
 
@@ -20,7 +20,7 @@ TEV supports regular and comparison color/alpha operations, register destination
 
 The EFB stores 24 raw color bits per pixel. RGBA6 reads expand each six-bit component; switching formats reinterprets those same bits. The RGB565/Z16 path deliberately follows the pinned software behavior, which retains RGB8/Z24 precision. This is a compatibility choice, not a real-hardware precision claim.
 
-[CPU EFB reads](efb-access.md) use the physical framebuffer window, color/depth selectors, and PE alpha-read mode. Reads through the guest MMU and locked-cache DMA reach the current rendered pixels. CPU EFB writes and combined color/depth access remain unsupported.
+[CPU EFB access](efb-access.md) uses the physical framebuffer window, color/depth selectors, and PE alpha-read mode. Reads through the guest MMU and locked-cache DMA reach the current rendered pixels. CPU color and depth pokes work independently of GX write masks. Combined color/depth access remains unsupported.
 
 [Texture copies](efb-copy.md) encode tiled color, channel, intensity, and depth data into RAM, including half-scale filtering and block-row strides. Invalid footprints are rejected before destination writes. Copy-triggered clearing honors color, alpha, and depth update masks.
 

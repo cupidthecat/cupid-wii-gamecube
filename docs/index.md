@@ -30,6 +30,7 @@
 - [Host audio](host-audio.md): queueing, resampling, Remote routing and separate output diagnostics.
 - [Extension cipher](extension-cipher.md): first-party keys and phase-dependent Nunchuk register transfers.
 - [Graphics](graphics.md) and [graphics mappings](graphics-reference.md).
+- [Hardware rendering](hardware-rendering.md): OpenGL compute coverage and driver requirements.
 - [Vertex transforms](vertex-reference.md).
 - [Rasterization](rasterizer-reference.md).
 - [EFB texture copies](efb-copy.md).

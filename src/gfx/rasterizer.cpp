@@ -59,7 +59,7 @@ void Rasterizer::reset() {
   depth_ = {};
 }
 
-float Rasterizer::Plane::at(int x, int y) const {
+float RasterPlane::at(int x, int y) const {
   const float x_delta = x_offset + float(x - x_origin);
   const float y_delta = y_offset + float(y - y_origin);
   return value + dx * x_delta + dy * y_delta;
@@ -403,11 +403,7 @@ void Rasterizer::rasterize(const ScreenVertex &a, const ScreenVertex &b, const S
                                        b.vertex.texcoords[i][component] * inverse_w[1],
                                        c.vertex.texcoords[i][component] * inverse_w[2]);
 
-    struct Edge {
-      s64 dx, dy, constant;
-    };
-
-    std::array<Edge, 3> edges;
+    std::array<RasterWork::Edge, 3> edges;
     for (unsigned i = 0; i < 3; ++i) {
       const unsigned next = (i + 1) % 3;
       auto &edge = edges[i];
@@ -417,8 +413,11 @@ void Rasterizer::rasterize(const ScreenVertex &a, const ScreenVertex &b, const S
       if (edge.dy < 0 || (edge.dy == 0 && edge.dx > 0))
         ++edge.constant;
     }
+    if (hardware &&
+        hardware({min_x, min_y, max_x, max_y, edges, depth_, w_plane, colors, textures}))
+      continue;
     const auto covered = [&](int sample_x, int sample_y) {
-      return std::all_of(edges.begin(), edges.end(), [&](const Edge &edge) {
+      return std::all_of(edges.begin(), edges.end(), [&](const RasterWork::Edge &edge) {
         return edge.constant + edge.dx * (sample_y * 16) - edge.dy * (sample_x * 16) > 0;
       });
     };

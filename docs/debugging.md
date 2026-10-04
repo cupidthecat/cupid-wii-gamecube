@@ -2,6 +2,10 @@
 
 Begin with a bounded run, a dedicated user directory, and final JSON state. Keep the exact input and command unchanged while locating the first divergence. A guest can remain in an exception handler until a run bound, so an exit code of zero needs its outcome and state interpreted together.
 
+`cpu_state_hash` covers every public CPU-state field, including both floating lanes, all special and segment registers, and counters. `memory_state_hash` covers the lengths and bytes of MEM1 backing, MEM2, and locked cache. Both use FNV-1a with canonical big-endian integers. They help detect differences without writing private guest memory to a report. Matching hashes do not compare hidden CPU caches, device state or saved files, and do not replace an exact state comparison. Hashing memory occurs when a final state is written.
+
+OpenGL runs also report `hardware_dispatches`, `hardware_fragments` and `hardware_fallback_rectangles`. Nonzero dispatches establish compute execution through the selected driver. Check the logged device before interpreting this as physical GPU execution: a software OpenGL implementation can execute the same shaders. See [hardware rendering](hardware-rendering.md).
+
 Use `--trace-after-boot` to avoid recording apploader execution when investigating game startup. `--trace-start` and `--trace-count` capture a narrow instruction window. `pc_before` records the step's starting PC. Check `opcode_fetched` before attributing `opcode` to that PC: a false value marks an interrupt or failure before obtaining a word and retains the earlier opcode. A true value records the word actually obtained by the interpreter, including its instruction-cache state, zero words and decoded guest faults.
 
 Storage-fault investigations should compare `srr0`, `dar`, `dsisr`, and the effective address formed by the faulting instruction. Then reproduce the relevant CPU-to-memory-to-device transaction in a small synthetic test. Testing only a device's canonical register address can miss a CPU-translated alias fault.

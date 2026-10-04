@@ -43,6 +43,53 @@ CommandProcessor::CommandProcessor(Memory &memory, hw::Devices &devices, Console
   };
 }
 
+void CommandProcessor::set_hardware_rendering(bool enabled) {
+  synchronize_hardware();
+  rasterizer_.hardware = {};
+  hardware_.reset();
+  hardware_fragment_count_ = 0;
+  if (enabled) {
+    hardware_ = std::make_unique<HardwareRenderer>(memory_, texture_memory_);
+    hardware_upload_pending_ = true;
+  }
+}
+
+void CommandProcessor::synchronize_hardware() const {
+  if (!hardware_)
+    return;
+  const auto stats = hardware_->synchronize(colors_, depths_, &shader_);
+  fragment_count_ += stats.fragments;
+  hardware_fragment_count_ += stats.fragments;
+  if (stats.fragments) {
+    pixel_registers_[8] = std::min(pixel_registers_[8], static_cast<u16>(stats.left));
+    pixel_registers_[9] = std::max(pixel_registers_[9], static_cast<u16>(stats.right));
+    pixel_registers_[10] = std::min(pixel_registers_[10], static_cast<u16>(stats.top));
+    pixel_registers_[11] = std::max(pixel_registers_[11], static_cast<u16>(stats.bottom));
+  }
+}
+
+void CommandProcessor::upload_hardware() {
+  if (hardware_upload_pending_) {
+    hardware_->upload(colors_, depths_);
+    hardware_upload_pending_ = false;
+  }
+}
+
+std::string CommandProcessor::hardware_device() const {
+  return hardware_ ? hardware_->device() : std::string{};
+}
+
+HardwareStats CommandProcessor::hardware_stats() const {
+  synchronize_hardware();
+  auto result = hardware_ ? hardware_->synchronize(colors_, depths_) : HardwareStats{};
+  result.fragments = hardware_fragment_count_;
+  return result;
+}
+
+std::string CommandProcessor::hardware_fallback_reason() const {
+  return hardware_ ? hardware_->fallback_reason() : std::string{};
+}
+
 u32 CommandProcessor::fifo(unsigned offset) const {
   return registers_[offset / 2] | (u32(registers_[offset / 2 + 1]) << 16);
 }
@@ -321,6 +368,26 @@ void CommandProcessor::draw(u8 opcode, unsigned count, std::span<const u8> bytes
     vertices.emplace_back(
         decoded.skip ? std::nullopt : std::optional<TransformedVertex>(decoder.transform(decoded)));
   }
+  if (hardware_) {
+    const bool eligible = hardware_->begin(bp_state_, tev_colors_, konst_colors_);
+    if (!eligible) {
+      synchronize_hardware();
+      hardware_upload_pending_ = true;
+    }
+    rasterizer_.hardware = [this, eligible](const RasterWork &work) {
+      if (eligible)
+        upload_hardware();
+      if (hardware_->draw(work))
+        return true;
+      synchronize_hardware();
+      hardware_upload_pending_ = true;
+      return false;
+    };
+  } else {
+    rasterizer_.hardware = {};
+    synchronize_hardware();
+    hardware_upload_pending_ = true;
+  }
   rasterizer_.draw(opcode, vertices);
 }
 
@@ -418,6 +485,7 @@ void CommandProcessor::fragment(unsigned x, unsigned y, u32 z, const FragmentInp
 }
 
 u32 CommandProcessor::color(unsigned x, unsigned y) const {
+  synchronize_hardware();
   if (x >= width || y >= height)
     throw std::out_of_range("EFB color coordinates out of range");
   const u32 stored = colors_[y * width + x];
@@ -436,6 +504,7 @@ u32 CommandProcessor::color(unsigned x, unsigned y) const {
 }
 
 u32 CommandProcessor::depth(unsigned x, unsigned y) const {
+  synchronize_hardware();
   if (x >= width || y >= height)
     throw std::out_of_range("EFB depth coordinates out of range");
   return depths_[y * width + x];
@@ -465,7 +534,24 @@ u32 CommandProcessor::read_efb(u32 address) const {
   }
 }
 
+void CommandProcessor::write_efb(u32 address, u32 value) {
+  if (address < 0x08000000 || address >= 0x0c000000)
+    throw BusFault(address, true, "Address is outside the CPU EFB window");
+  if (address & 0x00800000)
+    unavailable(address, true, "Combined color/depth EFB writes are not implemented");
+  const unsigned x = (address & 0xfff) >> 2, y = (address >> 12) & 1023;
+  if (x >= width || y >= height)
+    return;
+  synchronize_hardware();
+  if (address & 0x00400000) {
+    depths_[y * width + x] = value & 0xffffff;
+    hardware_upload_pending_ = true;
+  } else
+    write_color(x, y, (value << 8) | (value >> 24));
+}
+
 void CommandProcessor::write_color(unsigned x, unsigned y, u32 value) {
+  hardware_upload_pending_ = true;
   if ((bp_state_[0x43] & 7) == 1) {
     u32 packed = 0;
     for (unsigned channel = 0; channel < 4; ++channel)
@@ -480,6 +566,7 @@ void CommandProcessor::write_color(unsigned x, unsigned y, u32 value) {
 }
 
 void CommandProcessor::copy_efb(u32 control) {
+  synchronize_hardware();
   unsigned x = bp_state_[0x49] & 1023, y = (bp_state_[0x49] >> 10) & 1023;
   unsigned w = (bp_state_[0x4a] & 1023) + 1, h = ((bp_state_[0x4a] >> 10) & 1023) + 1;
   if (x >= width || y >= height)
@@ -543,6 +630,8 @@ void CommandProcessor::update_interrupts() {
 }
 
 u16 CommandProcessor::read16(u32 address) {
+  if (address >= 0x0c001010 && address <= 0x0c001016)
+    synchronize_hardware();
   if (address < 0x0c001000) {
     const unsigned offset = address & 0xfff;
     if (offset == 0) {
@@ -569,6 +658,8 @@ u16 CommandProcessor::read16(u32 address) {
 }
 
 void CommandProcessor::write16(u32 address, u16 value) {
+  if (address >= 0x0c001010 && address <= 0x0c001016)
+    synchronize_hardware();
   if (address < 0x0c001000) {
     const unsigned offset = address & 0xfff;
     if (offset == 2) {

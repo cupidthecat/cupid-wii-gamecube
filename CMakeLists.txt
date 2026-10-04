@@ -12,6 +12,10 @@ set(CMAKE_VS_GLOBALS "VcpkgEnabled=false;VcpkgApplocalDeps=false")
 option(CUPID_HEADLESS_ONLY "Build without video, audio and host-controller output" OFF)
 option(CUPID_USE_SYSTEM_DEPS "Use installed dependency libraries instead of pinned sources" OFF)
 option(CUPID_BUILD_TESTS "Build public synthetic tests" ON)
+option(CUPID_REQUIRE_HARDWARE_TESTS "Fail hardware tests when OpenGL is unavailable" OFF)
+if(CUPID_BUILD_TESTS AND CUPID_REQUIRE_HARDWARE_TESTS AND CUPID_HEADLESS_ONLY)
+  message(FATAL_ERROR "Required hardware tests need SDL video support")
+endif()
 option(CUPID_ENABLE_SANITIZERS "Enable address and undefined-behavior sanitizers" OFF)
 option(CUPID_WARNINGS_AS_ERRORS "Treat project compiler warnings as errors" OFF)
 option(CUPID_ENABLE_LOCAL_INTEGRATION "Run tests requiring locally supplied private assets" OFF)
@@ -75,6 +79,7 @@ set(cupid_sources
   src/gfx/command_processor.cpp
   src/gfx/vertex.cpp
   src/gfx/rasterizer.cpp
+  src/gfx/hardware_renderer.cpp
   src/gfx/texture.cpp
   src/gfx/fragment.cpp
   src/gfx/efb_copy.cpp
@@ -120,6 +125,23 @@ if(CUPID_BUILD_TESTS)
     set_tests_properties(cli_${argument} PROPERTIES TIMEOUT 30 LABELS "public;cli")
   endforeach()
   if(NOT CUPID_HEADLESS_ONLY)
+    add_executable(cupid_hardware_renderer_tests tests/hardware_renderer_tests.cpp)
+    target_include_directories(cupid_hardware_renderer_tests PRIVATE tests)
+    target_link_libraries(cupid_hardware_renderer_tests PRIVATE cupid_core)
+    if(CUPID_REQUIRE_HARDWARE_TESTS)
+      add_test(NAME hardware_renderer COMMAND cupid_hardware_renderer_tests --require-device)
+    else()
+      add_test(NAME hardware_renderer COMMAND cupid_hardware_renderer_tests)
+    endif()
+    set_tests_properties(hardware_renderer PROPERTIES TIMEOUT 120 LABELS "public;backend;graphics"
+      SKIP_RETURN_CODE 77)
+    if(CUPID_REQUIRE_HARDWARE_TESTS)
+      add_test(NAME guest_video_hardware COMMAND cupid_guest_video_tests --hardware --require-device)
+    else()
+      add_test(NAME guest_video_hardware COMMAND cupid_guest_video_tests --hardware)
+    endif()
+    set_tests_properties(guest_video_hardware PROPERTIES TIMEOUT 180
+      LABELS "public;backend;guest;integration;graphics" SKIP_RETURN_CODE 77)
     add_executable(cupid_output_tests tests/output_tests.cpp)
     target_include_directories(cupid_output_tests PRIVATE tests)
     target_link_libraries(cupid_output_tests PRIVATE cupid_core)
@@ -139,6 +161,14 @@ if(CUPID_BUILD_TESTS)
     set_tests_properties(host_audio PROPERTIES TIMEOUT 60 LABELS "public;backend;audio"
       ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
   else()
+    add_test(NAME hardware_renderer COMMAND "${CMAKE_COMMAND}" -E echo
+      "SKIP: hardware rendering is excluded from this headless build")
+    set_tests_properties(hardware_renderer PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP:"
+      LABELS "public;backend;graphics")
+    add_test(NAME guest_video_hardware COMMAND "${CMAKE_COMMAND}" -E echo
+      "SKIP: hardware guest video is excluded from this headless build")
+    set_tests_properties(guest_video_hardware PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP:"
+      LABELS "public;backend;guest;integration;graphics")
     add_test(NAME output COMMAND "${CMAKE_COMMAND}" -E echo
       "SKIP: host video/audio backend is excluded from this headless build")
     set_tests_properties(output PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "public;backend")

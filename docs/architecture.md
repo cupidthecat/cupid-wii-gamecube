@@ -6,7 +6,7 @@ The product executable links `cupid_core`, an integrated C++20 runtime. `runtime
 
 The interpreter fetches guest instructions through its instruction cache, translates effective addresses through BATs or hashed page tables, and reads or writes the physical bus. Memory owns 24 MiB of real MEM1 within a 32 MiB allocation, Wii MEM2, and locked-cache storage. [Memory operations](memory.md) distinguish CPU data mirrors from bounded host and DMA spans. Instruction-cache identity normalization leaves cold backing reads subject to those bounds. Translation faults enter guest exception vectors; unresolved physical data requests raise the PI memory-access cause. Explicitly unfinished device behavior produces a diagnostic.
 
-After every instruction, Machine advances graphics events, DSP work, IOS requests, and hardware devices by the returned cycle count. It checks external interrupt state before the next instruction. Host input and wall-clock bounds are polled every 4,096 instructions. This scheduling is observable and deterministic for the tested fixtures, but full hardware edge timing remains unverified.
+After every instruction, Machine advances graphics events, DSP work, IOS requests, and hardware devices by the returned cycle count. It checks external interrupt state before the next instruction. Host input and wall-clock bounds are polled every 4,096 step attempts. Replay events use their next instruction and field deadlines. This scheduling is observable and deterministic for the tested fixtures, but full hardware edge timing remains unverified.
 
 ## Boot and discs
 
@@ -16,7 +16,7 @@ Wii boot selects the disc's requested IOS memory profile and establishes the tit
 
 ## Graphics and audio
 
-CPU write-gather bytes enter the PI/CP FIFO ring. Graphics commands load CP, XF, and BP state, decode vertices, transform them, assemble and clip primitives, rasterize covered pixels, and run TEV and pixel operations. EFB copies write guest RAM. VI presentation reads guest YUYV framebuffer data; the SDL backend displays those bytes after color conversion.
+CPU write-gather bytes enter the PI/CP FIFO ring. Graphics commands load CP, XF, and BP state, decode vertices, transform them, and assemble and clip primitives. The selected software or [OpenGL compute renderer](hardware-rendering.md) rasterizes covered pixels and runs TEV and pixel operations. The GPU path synchronizes raw EFB data for CPU pokes, reads, copies and checked software fallback. EFB copies write guest RAM. VI presentation reads guest YUYV framebuffer data; the SDL backend displays those bytes after color conversion.
 
 DSP program protocols produce planar PCM in guest RAM. Guest code can interleave it and configure audio DMA. The [host audio backend](host-audio.md) resamples main DMA and optional decoded Remote speaker packets into a fixed-rate SDL callback. Separate guest and host diagnostics retain the origin of the samples.
 

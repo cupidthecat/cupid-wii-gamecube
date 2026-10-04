@@ -3,6 +3,7 @@
 #include "test_support.hpp"
 #include <array>
 #include <bit>
+#include <cstring>
 #include <sstream>
 #include <vector>
 
@@ -244,9 +245,11 @@ std::vector<u8> authored_dol() {
   return guest.dol();
 }
 
-void guest_video(Console console) {
+void guest_video(Console console, bool hardware) {
   platform::Output output({true, false, {}, {}});
   runtime::Machine machine(console);
+  if (hardware)
+    machine.graphics().set_hardware_rendering(true);
   machine.set_output(&output);
   machine.set_limits({20000000, 0, 0});
   machine.load_executable(authored_dol());
@@ -311,12 +314,34 @@ void guest_video(Console console) {
   state.clear();
   machine.write_state(state, "authored-guest-input-redraw");
   CHECK(state.str().find("\"gx_fragments\":768") != std::string::npos);
+  if (hardware) {
+    const auto stats = machine.graphics().hardware_stats();
+    CHECK(stats.dispatches >= 12 && stats.fragments == 768);
+    CHECK(stats.fallback_rectangles == 0);
+    CHECK(machine.graphics().hardware_fallback_reason().empty());
+    std::cout << (console == Console::GameCube ? "GameCube" : "Wii")
+              << " CPU-to-VI hardware frames: 2, shader fragments: " << stats.fragments
+              << ", device: " << machine.graphics().hardware_device() << '\n';
+  }
 }
 } // namespace
 
-int main() {
-  return run_tests([] {
-    guest_video(Console::GameCube);
-    guest_video(Console::Wii);
-  });
+int main(int argc, char **argv) {
+  bool hardware = false, required = false;
+  for (int i = 1; i < argc; ++i) {
+    hardware |= std::strcmp(argv[i], "--hardware") == 0;
+    required |= std::strcmp(argv[i], "--require-device") == 0;
+  }
+  try {
+    guest_video(Console::GameCube, hardware);
+    guest_video(Console::Wii, hardware);
+    std::cout << "All checks passed\n";
+    return 0;
+  } catch (const gfx::HardwareUnavailable &error) {
+    std::cerr << "Hardware backend unavailable: " << error.what() << '\n';
+    return required ? 1 : 77;
+  } catch (const std::exception &error) {
+    std::cerr << error.what() << '\n';
+    return 1;
+  }
 }

@@ -82,6 +82,63 @@ void display_list_guest(Console console, bool invalid = false) {
   CHECK(after == list);
 }
 
+void efb_poke_guest(Console console) {
+  runtime::Machine machine(console);
+  machine.load_executable(runtime::self_test_dol());
+  auto &memory = machine.memory();
+  memory.write32(0x0c00300c, 0x10000);
+  memory.write32(0x0c003010, 0x11000);
+  memory.write32(0x0c003014, 0x10000);
+  for (unsigned offset : {0x20u, 0x34u, 0x38u})
+    fifo_pointer(memory, offset, 0x10000);
+  fifo_pointer(memory, 0x24, 0x11000);
+  memory.write16(0x0c000002, 17);
+  bp(memory, 0x43, 1);
+  bp(memory, 0x41, 0);
+  bp(memory, 0x40, 0);
+  memory.write16(0x0c001008, 2);
+
+  // Pokes use their own write controls even when GX color and depth writes are off.
+  memory.write32(0x08000000, 0xaa123456);
+  memory.write32(0x08400000, 0xfeabcdef);
+  CHECK(memory.read32(0x08000000) == 0xaa103455);
+  CHECK(memory.read32(0x08400000) == 0xabcdef);
+  for (u32 alias : {0x08000000u, 0x09000000u, 0x0a000000u, 0x0b000000u}) {
+    memory.write8(alias + 7, 0xff);
+    CHECK(memory.read32(alias + 4) == 0x000000ff);
+    memory.write16(alias + 10, 0xffff);
+    CHECK(memory.read32(alias + 8) == 0x0000ffff);
+  }
+  memory.write32(0x08000000 + 640 * 4, 0xdeadbeef);
+  memory.write32(0x08400000 + 528 * 4096, 0xdeadbeef);
+  CHECK(memory.read32(0x08000000) == 0xaa103455);
+  CHECK(memory.read32(0x08400000) == 0xabcdef);
+
+  auto &state = machine.cpu().state();
+  state.pc = 0x80006000;
+  state.gpr[3] = 0xc8002000;
+  state.gpr[4] = 0xc8402000;
+  state.gpr[5] = 0xffabcdef;
+  state.gpr[6] = 0xfedcba98;
+  state.fpr[8].bits[0] = 0x45102030ff80c0fcULL;
+  const std::array<u32, 6> code{
+      (36u << 26) | (5 << 21) | (3 << 16),     // stw color
+      (36u << 26) | (6 << 21) | (4 << 16),     // stw depth
+      (54u << 26) | (8 << 21) | (3 << 16) | 4, // stfd two consecutive color pokes
+      (32u << 26) | (7 << 21) | (3 << 16),     (32u << 26) | (9 << 21) | (4 << 16),
+      (50u << 26) | (10 << 21) | (3 << 16) | 4};
+  for (unsigned i = 0; i < code.size(); ++i)
+    memory.write32(0x6000 + i * 4, code[i]);
+  const auto count = state.instructions;
+  for (unsigned i = 0; i < code.size(); ++i)
+    machine.step();
+  CHECK(state.instructions == count + code.size() && state.pc == 0x80006018);
+  CHECK(state.gpr[7] == 0xffaacfef && state.gpr[9] == 0xdcba98);
+  CHECK(state.fpr[10].bits[0] == 0x0000000045102030ULL);
+  CHECK(memory.read32(0x08002008) == 0xff82c3ff);
+  CHECK(state.spr[cpu::spr::dar] == 0 && state.spr[cpu::spr::dsisr] == 0);
+}
+
 void efb_access(Console console) {
   runtime::Machine machine(console);
   machine.load_executable(runtime::self_test_dol());
@@ -129,7 +186,7 @@ void efb_access(Console console) {
                                 (40u << 26) | (7 << 21) | (3 << 16) | 2, // lhz r7,2(r3)
                                 (50u << 26) | (8 << 21) | (3 << 16),     // lfd f8,0(r3)
                                 (32u << 26) | (9 << 21) | (4 << 16),     // combined color/depth lwz
-                                (36u << 26) | (5 << 21) | (3 << 16)};    // unsupported EFB stw
+                                (36u << 26) | (5 << 21) | (3 << 16)};    // EFB stw
   for (unsigned i = 0; i < code.size(); ++i)
     memory.write32(0x6000 + i * 4, code[i]);
   for (unsigned i = 0; i < 4; ++i) {
@@ -143,7 +200,7 @@ void efb_access(Console console) {
   CHECK(state.spr[cpu::spr::dar] == 0);
   CHECK(state.spr[cpu::spr::dsisr] == 0);
   const auto cycles = state.cycles, instructions = state.instructions;
-  for (u32 pc : {0x80006010u, 0x80006014u}) {
+  for (u32 pc : {0x80006010u}) {
     state.pc = pc;
     bool unsupported = false;
     try {
@@ -157,6 +214,10 @@ void efb_access(Console console) {
     CHECK(state.cycles == cycles && state.instructions == instructions);
     CHECK(state.spr[cpu::spr::dar] == 0 && state.spr[cpu::spr::dsisr] == 0);
   }
+  state.pc = 0x80006014;
+  machine.step();
+  CHECK(state.pc == 0x80006018 && state.instructions == instructions + 1);
+  CHECK(memory.read32(0x08000000) == 0x45102030);
 
   memory.locked_cache_dma(0x08000000, 0xe003ffe0, 64, true);
   for (u32 offset = 0; offset < 64; offset += 4) {
@@ -175,14 +236,17 @@ void efb_access(Console console) {
   bp(memory, 0x43, 1);
   CHECK(memory.read32(0x08000000) == 0x45102030);
   CHECK_THROWS(memory.read32(0x08800000));
-  CHECK_THROWS(memory.write32(0x08000000, 0xdeadbeef));
+  CHECK_THROWS(memory.write32(0x08800000, 0xdeadbeef));
   try {
-    memory.write64(0x08000000, 0xdeadbeef11223344ULL);
+    memory.write64(0x08800000, 0xdeadbeef11223344ULL);
     CHECK(false);
   } catch (const BusFault &error) {
-    CHECK(error.unsupported_reason && error.write && error.address == 0x08000000);
+    CHECK(error.unsupported_reason && error.write && error.address == 0x08800000);
   }
   CHECK(memory.read32(0x08000000) == 0x45102030);
+  memory.write64(0x08000010, 0x45102030ff80c0fcULL);
+  CHECK(memory.read32(0x08000010) == 0x45102030);
+  CHECK(memory.read32(0x08000014) == 0xff82c3ff);
   memory.write16(0x0c001008, 3);
   CHECK_THROWS(memory.read32(0x08000000));
   CHECK(memory.read32(0x08000000 + 640 * 4) == 0);
@@ -193,6 +257,8 @@ void efb_access(Console console) {
 
 int main() {
   return run_tests([] {
+    efb_poke_guest(Console::GameCube);
+    efb_poke_guest(Console::Wii);
     efb_access(Console::GameCube);
     efb_access(Console::Wii);
     display_list_guest(Console::GameCube);

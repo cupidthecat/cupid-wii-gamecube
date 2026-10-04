@@ -7,10 +7,30 @@
 #include <vector>
 
 namespace cupid::gfx {
+struct RasterPlane {
+  float value = 1, dx = 0, dy = 0, x_offset = 0, y_offset = 0;
+  int x_origin = 0, y_origin = 0;
+  float at(int x, int y) const;
+};
+
+struct RasterWork {
+  struct Edge {
+    s64 dx, dy, constant;
+  };
+
+  int left, top, right, bottom;
+  std::array<Edge, 3> edges;
+  RasterPlane depth, reciprocal_w;
+  std::array<std::array<RasterPlane, 4>, 2> colors;
+  std::array<std::array<RasterPlane, 3>, 8> textures;
+};
+
 class Rasterizer {
 public:
   Rasterizer(std::span<const u32> bp, std::span<const u32> xf);
   std::function<void(unsigned x, unsigned y, u32 depth, const FragmentInputs &)> fragment;
+  // Returning false retains the validated CPU rasterization for this rectangle.
+  std::function<bool(const RasterWork &)> hardware;
   // Skipped indexed vertices are compacted before primitive assembly.
   void draw(u8 primitive_opcode, std::span<const std::optional<TransformedVertex>> vertices);
   void reset();
@@ -25,11 +45,7 @@ private:
     int left, top, right, bottom, x_offset, y_offset;
   };
 
-  struct Plane {
-    float value = 1, dx = 0, dy = 0, x_offset = 0, y_offset = 0;
-    int x_origin = 0, y_origin = 0;
-    float at(int x, int y) const;
-  };
+  using Plane = RasterPlane;
 
   std::span<const u32> bp_, xf_;
   Plane depth_{};

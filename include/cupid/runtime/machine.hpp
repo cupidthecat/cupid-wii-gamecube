@@ -44,6 +44,10 @@ public:
     return devices_;
   }
 
+  gfx::CommandProcessor &graphics() {
+    return graphics_;
+  }
+
   const BootInfo &boot_info() const {
     return boot_;
   }

@@ -125,6 +125,19 @@ u64 Memory::instruction_backing_read_errors() const {
   return instruction_backing_read_errors_;
 }
 
+u64 Memory::state_hash() const {
+  u64 hash = 14695981039346656037ull;
+  const auto append = [&](u8 byte) { hash = (hash ^ byte) * 1099511628211ull; };
+  for (const auto *bytes : {&mem1_, &mem2_, &cache_}) {
+    const auto size = static_cast<u64>(bytes->size());
+    for (unsigned n = 0; n < 8; ++n)
+      append(static_cast<u8>(size >> (56 - n * 8)));
+    for (u8 byte : *bytes)
+      append(byte);
+  }
+  return hash;
+}
+
 std::span<u8> Memory::cpu_range(u32 physical, unsigned byte_count) {
   std::vector<u8> *bytes = nullptr;
   u32 offset = 0;
@@ -250,8 +263,11 @@ void Memory::write(u32 address, u64 value, unsigned width) {
     return;
   }
   if (mmio_handles && mmio_handles(address)) {
-    if (width == 8 && address >= 0x08000000 && address < 0x0c000000)
-      throw BusFault(address, true, "CPU EFB writes are not implemented", true);
+    if (width == 8 && address >= 0x08000000 && address < 0x0c000000) {
+      write(address, static_cast<u32>(value >> 32), 4);
+      write(address + 4, static_cast<u32>(value), 4);
+      return;
+    }
     if (!mmio_write || width > 4)
       bad_address(address, true);
     mmio_write(address, static_cast<u32>(value), width);

@@ -36,6 +36,7 @@ public:
   bool write_page_table32(u32 physical, u32 value) override;
   u64 page_table_write_errors() const;
   u64 instruction_backing_read_errors() const;
+  u64 state_hash() const;
   std::span<u8> range(u32 address, std::size_t length);
   std::span<const u8> range(u32 address, std::size_t length) const;
   void copy_in(u32 physical, std::span<const u8> data);

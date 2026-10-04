@@ -15,6 +15,28 @@
 
 namespace cupid::runtime {
 namespace {
+u64 cpu_state_hash(const cpu::State &state) {
+  u64 hash = 14695981039346656037ull;
+  const auto append = [&](u64 value, unsigned width) {
+    for (unsigned n = 0; n < width; ++n)
+      hash = (hash ^ static_cast<u8>(value >> ((width - n - 1) * 8))) * 1099511628211ull;
+  };
+  for (u32 value : state.gpr)
+    append(value, 4);
+  for (const auto &reg : state.fpr)
+    for (u64 lane : reg.bits)
+      append(lane, 8);
+  for (u32 value : state.spr)
+    append(value, 4);
+  for (u32 value : state.sr)
+    append(value, 4);
+  for (u32 value : {state.pc, state.msr, state.cr, state.fpscr, state.last_pc, state.last_opcode})
+    append(value, 4);
+  for (u64 value : {state.cycles, state.instructions, state.timebase})
+    append(value, 8);
+  return hash;
+}
+
 void save_persistent(const std::filesystem::path &path, std::span<const u8> bytes) {
   if (std::filesystem::is_symlink(path))
     throw std::runtime_error("Persistent data path is a symbolic link");
@@ -63,8 +85,9 @@ Machine::Machine(Console console)
   };
   memory_.mmio_write = [this](u32 a, u32 v, unsigned w) {
     if (a >= 0x08000000 && a < 0x0c000000)
-      throw BusFault(a, true, "CPU EFB writes are not implemented", true);
-    devices_.write(a, v, w);
+      graphics_.write_efb(a, v);
+    else
+      devices_.write(a, v, w);
   };
   memory_.fifo_write = [this](u8 value) { graphics_.gather(value); };
   memory_.memory_error = [this] { devices_.set_interrupt(1, true); };
@@ -342,13 +365,15 @@ void Machine::persist() {
 void Machine::write_state(std::ostream &out, const std::string &outcome) const {
   const auto &state = cpu_.state();
   const auto host_audio = output_ ? output_->host_audio_stats() : platform::HostAudioStats{};
+  const auto hardware = graphics_.hardware_stats();
   out << "{\"version\":\"" << build::version << "\",\"commit\":\"" << build::commit
       << "\",\"console\":\"" << (console_ == Console::Wii ? "wii" : "gamecube")
       << "\",\"outcome\":\"" << outcome << "\",\"stage\":\"" << boot_.stage
       << "\",\"pc\":" << state.pc << ",\"entry\":" << boot_.entry
       << ",\"instructions\":" << state.instructions << ",\"step_attempts\":" << step_attempts_
       << ",\"cycles\":" << state.cycles << ",\"vi_fields\":" << devices_.field_count()
-      << ",\"input_replay_updates\":"
+      << ",\"cpu_state_hash\":" << cpu_state_hash(state)
+      << ",\"memory_state_hash\":" << memory_.state_hash() << ",\"input_replay_updates\":"
       << (input_replay_follower_ ? input_replay_follower_->accepted_updates() : 0)
       << ",\"input_replay_rejections\":"
       << (input_replay_follower_ ? input_replay_follower_->rejected_updates() : 0)
@@ -364,6 +389,9 @@ void Machine::write_state(std::ostream &out, const std::string &outcome) const {
       << ",\"instruction_backing_read_errors\":" << memory_.instruction_backing_read_errors()
       << ",\"gx_commands\":" << graphics_.command_count()
       << ",\"gx_fragments\":" << graphics_.fragment_count()
+      << ",\"hardware_dispatches\":" << hardware.dispatches
+      << ",\"hardware_fragments\":" << hardware.fragments
+      << ",\"hardware_fallback_rectangles\":" << hardware.fallback_rectangles
       << ",\"loaded_sections\":" << boot_.loaded_sections
       << ",\"loaded_bytes\":" << boot_.loaded_bytes
       << ",\"frame_hash\":" << (output_ ? output_->last_frame_hash() : 0) << ",\"cr\":" << state.cr

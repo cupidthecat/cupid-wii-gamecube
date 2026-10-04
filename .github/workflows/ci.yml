@@ -18,13 +18,15 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Install build and host-output requirements
-        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ clang libsdl2-dev
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ clang libsdl2-dev libgl1-mesa-dri xvfb xauth
       - name: Configure
-        run: cmake -S . -B build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=${{ matrix.compiler == 'gcc' && 'gcc' || 'clang' }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler == 'gcc' && 'g++' || 'clang++' }} -DCUPID_WARNINGS_AS_ERRORS=ON -DCUPID_COMMIT=${GITHUB_SHA}
+        run: cmake -S . -B build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=${{ matrix.compiler == 'gcc' && 'gcc' || 'clang' }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler == 'gcc' && 'g++' || 'clang++' }} -DCUPID_WARNINGS_AS_ERRORS=ON -DCUPID_REQUIRE_HARDWARE_TESTS=ON -DCUPID_COMMIT=${GITHUB_SHA}
       - name: Build
         run: cmake --build build/ci --parallel 2
       - name: Test
-        run: ctest --test-dir build/ci --output-on-failure
+        env:
+          LIBGL_ALWAYS_SOFTWARE: 1
+        run: xvfb-run -a ctest --test-dir build/ci --output-on-failure
       - name: Verify packaged executable
         run: cmake -DBUILD_DIR=build/ci -P tools/package-verify.cmake
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -76,9 +78,9 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Install source-check tools
-        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build clang-18 clang-format-18 clang-tidy-18 python3
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build clang-18 clang-format-18 clang-tidy-18 python3 libsdl2-dev
       - name: Configure
-        run: cmake -S . -B build/checks -G Ninja -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18 -DCUPID_HEADLESS_ONLY=ON
+        run: cmake -S . -B build/checks -G Ninja -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18
       - name: Check formatting
         run: cmake --build build/checks --target format-check
       - name: Verify generated audio coefficients

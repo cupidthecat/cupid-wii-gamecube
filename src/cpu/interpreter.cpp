@@ -24,12 +24,9 @@ u16 swap16(u16 v) {
 }
 
 u32 rotation_mask(unsigned begin, unsigned end) {
-  u32 result = 0;
-  for (unsigned n = begin;; n = (n + 1) & 31) {
-    result |= 0x80000000u >> n;
-    if (n == end)
-      return result;
-  }
+  const u32 from_begin = 0xffffffffu >> begin;
+  const u32 through_end = 0xffffffffu << (31 - end);
+  return begin <= end ? from_begin & through_end : from_begin | through_end;
 }
 
 bool add_overflow(u32 a, u32 b, u32 result) {
@@ -274,7 +271,19 @@ Interpreter::Interpreter(Bus &bus, Console console) : bus_(bus), console_(consol
   reset();
 }
 
+void Interpreter::set_execution_backend(ExecutionBackend backend) {
+  if (backend == ExecutionBackend::NativeInteger && !native_integer_)
+    native_integer_ = std::make_unique<NativeInteger>();
+  backend_ = backend;
+}
+
+NativeIntegerStatistics Interpreter::native_statistics() const noexcept {
+  return native_integer_ ? native_integer_->statistics() : NativeIntegerStatistics{};
+}
+
 void Interpreter::reset() {
+  if (native_integer_)
+    native_integer_->reset();
   state_ = {};
   state_.spr[spr::pvr] = console_ == Console::Wii ? 0x00087102 : 0x00083214;
   state_.spr[spr::hid1] = 0x80000000;
@@ -629,7 +638,9 @@ u32 Interpreter::step() {
     fetched = true;
     cycles = current_opcode_ == 0 ? 0 : instruction_cycles(current_opcode_);
     if (current_opcode_ != 0) {
-      execute(current_opcode_);
+      if (backend_ != ExecutionBackend::NativeInteger ||
+          !native_integer_->execute(state_, current_opcode_))
+        execute(current_opcode_);
       ++state_.instructions;
     }
   } catch (const GuestFault &) {

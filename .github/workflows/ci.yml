@@ -14,13 +14,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        compiler: [gcc, clang]
+        include:
+          - compiler: gcc
+            lto: "OFF"
+            artifact: linux-gcc
+          - compiler: clang
+            lto: "OFF"
+            artifact: linux-clang
+          - compiler: gcc
+            lto: "ON"
+            artifact: linux-gcc-lto
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Install build and host-output requirements
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ clang libsdl2-dev libgl1-mesa-dri xvfb xauth
       - name: Configure
-        run: cmake -S . -B build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=${{ matrix.compiler == 'gcc' && 'gcc' || 'clang' }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler == 'gcc' && 'g++' || 'clang++' }} -DCUPID_WARNINGS_AS_ERRORS=ON -DCUPID_REQUIRE_HARDWARE_TESTS=ON -DCUPID_COMMIT=${GITHUB_SHA}
+        run: cmake -S . -B build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=${{ matrix.compiler == 'gcc' && 'gcc' || 'clang' }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler == 'gcc' && 'g++' || 'clang++' }} -DCUPID_ENABLE_LTO=${{ matrix.lto }} -DCUPID_WARNINGS_AS_ERRORS=ON -DCUPID_REQUIRE_HARDWARE_TESTS=ON -DCUPID_COMMIT=${GITHUB_SHA}
       - name: Build
         run: cmake --build build/ci --parallel 2
       - name: Test
@@ -31,7 +40,7 @@ jobs:
         run: cmake -DBUILD_DIR=build/ci -P tools/package-verify.cmake
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: linux-${{ matrix.compiler }}
+          name: ${{ matrix.artifact }}
           path: build/ci/cupid-wii-gamecube-*.tar.gz
           if-no-files-found: error
 

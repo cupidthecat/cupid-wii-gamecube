@@ -1,7 +1,7 @@
 # Host audio
 
 `--audio sdl` opens one signed 16-bit stereo output stream at 48 kHz. Guest DMA
-and four Remote speaker queues feed a callback that resamples and mixes their
+and disc audio plus four Remote speaker queues feed a callback that resamples and mixes their
 samples. `--remote-speakers on` enables decoded Remote packets; it defaults to
 `off` and requires SDL audio. Headless runs can still select audio output.
 
@@ -41,7 +41,11 @@ divisors and rate steps outside the portable integer range fail explicitly.
 
 The existing `audio_samples`, `audio_nonzero_samples`, `audio_peak` and
 `audio_hash` fields describe the original main DMA values before host mixing.
-Remote packets do not change them. `host_audio_frames`,
+Remote packets and disc audio do not change them. The separate `disc_audio_samples`,
+`disc_audio_nonzero_samples`, `disc_audio_peak` and `disc_audio_hash` fields
+record delivered disc PCM before AI volume and host processing, including
+scheduled silence. See [disc audio](disc-audio.md) for commands and decoder checks.
+`host_audio_frames`,
 `host_audio_nonzero_samples` and `host_audio_dropped_granules` separately
 describe the callback output and queue loss. Callback timing makes the host
 fields unsuitable for deterministic guest-state comparisons.
@@ -108,6 +112,109 @@ the output driver was running. The server then stopped answering the same
 read-only query. The failed trace and captured build inputs are preserved.
 Successful Linux output through that shared endpoint and commercial-game
 audibility remain outstanding.
+
+## Commercial endpoint observation
+
+An October 4, 2026 Windows run verifies Sunshine's actual SDL output through
+WASAPI loopback on `Speakers (Razer Kraken V3 X)`. It used MSVC Release with
+link-time optimization, headless OpenGL on an RTX 3060, validated IPL fonts,
+a copied private user directory and no input replay. The frozen runtime
+reported `949784e21ac6-graphics-working`. A private observation executable
+recorded each real SDL callback buffer; the product source and public APIs
+were unchanged. Its SHA-256 is
+`ed1774113535d096ab1c2ecbaeda744bfdd62288ef3e0df22f0a0945ceaf89c6`.
+
+At three billion CPU attempts, it produced 320 VI fields, 338,464 guest DMA
+sample values and 13,900,800 host callback frames. The DMA contained 62,194
+nonzero values, with peak 13,760 and hash `16351903819501652029`. Guest CPU,
+memory, DMA and frame hashes match the separate stock executable's run at
+that same bound. Host callback timing varies between runs.
+
+The loopback captured stereo 48 kHz float PCM. After one constant alignment
+of 1,568 frames, all 27,805,696 observed sample values match the actual
+callback's signed 16-bit values divided by 32,768 exactly. Each channel has
+gain one and zero residual. Both paths contain 4,455,670 nonzero values.
+The observation includes 2,048 silent callback frames after the final state
+snapshot; the snapshot prefix matches its reported counts exactly. All
+endpoint samples outside the callback observation are zero.
+
+A three-second baseline had no signal. Session monitoring found no other
+rendering session with a nonzero peak. The capture session's own meter mirrors
+the endpoint mix, so the first helper diagnostic incorrectly classified that
+meter as foreign audio. Its original receipt remains intact; a separate
+analysis excludes that known capture-only session and checks the entire
+waveform, including silence. Windows build 19045 lacks the newer
+[process-specific loopback API](https://learn.microsoft.com/en-us/samples/microsoft/windows-classic-samples/applicationloopbackaudio-sample/),
+so this observation uses the shared endpoint API.
+
+Local receipts and private PCM remain under
+`local-artifacts/commercial-endpoint-20261004/`. `completed.json` records the
+invocation, bounds, binary/helper hashes, endpoint, sessions and timing;
+`inputs.json` records 48 frozen inputs checked before and after execution;
+`waveform-analysis.json` contains the exact comparison. Callback PCM SHA-256
+is `cb10db74f9435266ab2744c8210873784734e7f1f4bbfdc42adf757acbc91b2b`;
+loopback WAV SHA-256 is
+`414d4ad207715e03b04a99d015b134c13af07b5be7bee67342c7df58eb05cab6`.
+These files remain private and are excluded from packages and public tests.
+`windows-audio-driver-details.json` records the endpoint's Microsoft USB
+audio driver, version `10.0.19041.5794`, using `wdma_usb.inf`.
+
+This establishes that the commercial run's mixed samples reach the Windows
+audio engine. It does not establish physical-speaker listening, correct game
+timing, full-speed playback or playable gameplay. About 7.3 emulated seconds
+took 290 wall-clock seconds; zero dropped granules does not establish that
+the callback always had enough fresh guest audio.
+
+The same day's WSLg probe captured 142,545 monitor frames, including 50,529
+nonzero values at the intended 997 Hz and 1,489 Hz synthetic tones. Playback
+drain exceeded eight seconds and the shared PulseAudio server then stopped
+answering bounded `pactl info` queries. Those partial monitor results do not
+verify commercial Linux endpoint playback. The probe, capture and timeout
+receipt are retained alongside the Windows evidence.
+
+The frozen Sunshine runtime also produced a separate commercial mixer trace
+at three billion CPU attempts. It used SDL's dummy backend so its callbacks
+did not share the physical endpoint. The private observer recorded each
+enqueue and completed callback under the existing audio mutex, with an event
+number and monotonic timestamp. All 21,154 enqueue records account for the
+same 338,464 guest values and guest PCM hash as the endpoint run. Its CPU,
+memory and frame hashes also match.
+
+Replaying the captured order through the product FIFO and the unchanged
+pinned mixer passes on both Windows MSVC and Linux GCC. All 11,160 callback
+records, containing 22,855,680 sample values, match the recorded output
+exactly. There are 3,818,244 nonzero values, zero dropped granules and PCM hash
+`1169570902919312973`. A separate check verifies that the callback records
+concatenate to the private PCM file and that the enqueue records reproduce
+the guest diagnostics. This checks the captured asynchronous order; it does
+not claim that different host callback schedules produce the same waveform.
+
+The trace and results remain under
+`local-artifacts/commercial-endpoint-20261004/sunshine-events/`:
+`completed.json`, `event-analysis.json`, `native-replay.json` and
+`linux-replay.json`. The event trace SHA-256 is
+`fb40e384ef14dc8c4a78aae2b5ab20577392a6071c352779702536d902cb621c`;
+callback PCM SHA-256 is
+`3a240d5a942fd1b31e8bb03451d472ff172e9e817028b26572e5342908eda6ce`.
+This separate observation executable has SHA-256
+`42a728a62a486a5ee08a4212466d9c64b25005690c0df6da9898be299b4bd70a`.
+
+An initial Galaxy observation used the same frozen Windows runtime, endpoint
+and no-replay setup. At eight billion CPU attempts it reached 653 VI fields
+and delivered 701,728 guest DMA values, all zero. All 41,223,168 observed
+callback frames and 41,243,040 loopback frames are also zero, and every
+monitored session has peak zero. This bounded silence cannot establish
+waveform alignment, endpoint gain or nonzero Galaxy playback. Its receipts
+are `galaxy/completed.json` and `galaxy/silence-analysis.json` in the same
+artifact directory. Callback PCM SHA-256 is
+`57f579351a965d128741c3753f64e2041806f21a9feedfce710e6db6fbd094a0`;
+loopback WAV SHA-256 is
+`8933cee1deabf8f6cfa90cbfba85bdb17b71dfcd3efb547b5529787e43808256`.
+An input-free run at sixteen billion attempts also remained silent at
+1,313 VI fields and 1,406,144 guest DMA values. Its final captured frame shows
+the wrist-strap instructions. The input gate therefore matters when choosing
+an audio observation span. Its separate receipts and PCM hashes remain under
+`galaxy-16b/`; neither silent run establishes nonzero Galaxy playback.
 
 ## Behavior mapping
 

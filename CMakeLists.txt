@@ -17,6 +17,15 @@ if(CUPID_BUILD_TESTS AND CUPID_REQUIRE_HARDWARE_TESTS AND CUPID_HEADLESS_ONLY)
   message(FATAL_ERROR "Required hardware tests need SDL video support")
 endif()
 option(CUPID_ENABLE_SANITIZERS "Enable address and undefined-behavior sanitizers" OFF)
+option(CUPID_ENABLE_LTO "Enable supported Release link-time optimization" OFF)
+if(CUPID_ENABLE_LTO)
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT cupid_ipo_supported OUTPUT cupid_ipo_error LANGUAGES C CXX)
+  if(NOT cupid_ipo_supported)
+    message(FATAL_ERROR "Release link-time optimization is unavailable: ${cupid_ipo_error}")
+  endif()
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+endif()
 option(CUPID_WARNINGS_AS_ERRORS "Treat project compiler warnings as errors" OFF)
 option(CUPID_ENABLE_LOCAL_INTEGRATION "Run tests requiring locally supplied private assets" OFF)
 set(CUPID_LOCAL_GAME "" CACHE FILEPATH "Local disc image for opt-in bounded integration")
@@ -65,6 +74,7 @@ set(cupid_sources
   src/cpu/estimates.cpp
   src/cpu/fused.cpp
   src/cpu/cache.cpp
+  src/cpu/native_integer.cpp
   src/disc/image.cpp
   src/disc/crypto.cpp
   src/disc/filesystem.cpp
@@ -89,6 +99,7 @@ set(cupid_sources
   src/runtime/fonts.cpp
   src/audio/remote_speaker.cpp
   src/audio/host_mixer.cpp
+  src/audio/disc_stream.cpp
   src/dsp/engine.cpp
   src/dsp/audio.cpp
   src/dsp/handheld.cpp
@@ -107,13 +118,14 @@ include(cmake/DeveloperChecks.cmake)
 
 if(CUPID_BUILD_TESTS)
   enable_testing()
-  foreach(suite IN ITEMS cpu core disc device remote remote_speaker host_mixer extension_cipher sdp sdp_transport runtime elf fonts dsp handheld ios network sysconf gfx vertex texture fragment rasterizer efb_copy xfb_copy efb_access guest_video input_replay input_replay_follow input_replay_follow_guest audio_stats pointer)
+  foreach(suite IN ITEMS cpu native_integer core disc disc_stream device remote remote_speaker host_mixer extension_cipher sdp sdp_transport runtime elf fonts dsp handheld ios network sysconf gfx vertex texture fragment rasterizer efb_copy xfb_copy efb_access guest_video input_replay input_replay_follow input_replay_follow_guest audio_stats pointer)
     add_executable(cupid_${suite}_tests tests/${suite}_tests.cpp)
     target_include_directories(cupid_${suite}_tests PRIVATE tests)
     target_link_libraries(cupid_${suite}_tests PRIVATE cupid_core)
     add_test(NAME ${suite} COMMAND cupid_${suite}_tests)
     set_tests_properties(${suite} PROPERTIES TIMEOUT 60 LABELS "public;unit")
   endforeach()
+  set_tests_properties(native_integer PROPERTIES SKIP_RETURN_CODE 77)
   set_tests_properties(guest_video PROPERTIES TIMEOUT 180 LABELS "public;guest;integration")
   set_tests_properties(input_replay PROPERTIES LABELS "public;guest;input")
   set_tests_properties(input_replay_follow PROPERTIES LABELS "public;unit;input")
@@ -124,6 +136,9 @@ if(CUPID_BUILD_TESTS)
     add_test(NAME cli_${argument} COMMAND cupid-wii-gamecube --${argument})
     set_tests_properties(cli_${argument} PROPERTIES TIMEOUT 30 LABELS "public;cli")
   endforeach()
+  add_test(NAME cli_self_test_native COMMAND cupid-wii-gamecube --self-test --cpu native)
+  set_tests_properties(cli_self_test_native PROPERTIES TIMEOUT 30 LABELS "public;cli;cpu"
+    SKIP_RETURN_CODE 77)
   if(NOT CUPID_HEADLESS_ONLY)
     add_executable(cupid_hardware_renderer_tests tests/hardware_renderer_tests.cpp)
     target_include_directories(cupid_hardware_renderer_tests PRIVATE tests)
@@ -245,7 +260,7 @@ if(CUPID_BUILD_TESTS)
     add_executable(cupid_cpu_memory_reference_checks tests/cpu_memory_reference_checks.cpp
       ${cupid_memory_references})
     set_source_files_properties(${cupid_memory_references} PROPERTIES
-      COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->;$<$<CXX_COMPILER_ID:GNU>:-O1>;$<$<CXX_COMPILER_ID:GNU>:-Wno-error=unused-parameter>")
+      COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->;$<$<CXX_COMPILER_ID:GNU>:-O1>;$<$<CXX_COMPILER_ID:GNU,Clang>:-Wno-error=unused-parameter>")
     set_target_properties(cupid_cpu_memory_reference_checks PROPERTIES CXX_STANDARD 23)
     target_include_directories(cupid_cpu_memory_reference_checks SYSTEM PRIVATE
       "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core"
@@ -280,7 +295,7 @@ if(CUPID_BUILD_TESTS)
       add_executable(cupid_physical_memory_reference_checks tests/physical_memory_reference_checks.cpp
         ${cupid_physical_memory_references})
       set_source_files_properties(${cupid_physical_memory_references} PROPERTIES
-        COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->;$<$<CXX_COMPILER_ID:GNU>:-O1>;$<$<CXX_COMPILER_ID:GNU>:-Wno-error=unused-parameter>")
+        COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->;$<$<CXX_COMPILER_ID:GNU>:-O1>;$<$<CXX_COMPILER_ID:GNU,Clang>:-Wno-error=unused-parameter>")
       set_target_properties(cupid_physical_memory_reference_checks PROPERTIES CXX_STANDARD 23)
       target_include_directories(cupid_physical_memory_reference_checks SYSTEM PRIVATE
         "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core"
@@ -312,7 +327,7 @@ if(CUPID_BUILD_TESTS)
       add_executable(cupid_cpu_step_reference_checks tests/cpu_step_reference_checks.cpp
         ${cupid_step_references})
       set_source_files_properties(${cupid_step_references} PROPERTIES
-        COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->;$<$<CXX_COMPILER_ID:GNU>:-O1>;$<$<CXX_COMPILER_ID:GNU>:-Wno-error=unused-parameter>")
+        COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->;$<$<CXX_COMPILER_ID:GNU>:-O1>;$<$<CXX_COMPILER_ID:GNU,Clang>:-Wno-error=unused-parameter>")
       set_property(SOURCE "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/PowerPC/PowerPC.cpp"
         APPEND PROPERTY COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:GNU>:-Wno-error=extra>")
       set_target_properties(cupid_cpu_step_reference_checks PROPERTIES CXX_STANDARD 23)
@@ -354,7 +369,7 @@ if(CUPID_BUILD_TESTS)
       add_executable(cupid_cpu_dispatch_reference_checks tests/cpu_dispatch_reference_checks.cpp
         ${cupid_dispatch_references})
       set_source_files_properties(${cupid_dispatch_references} PROPERTIES
-        COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->;$<$<CXX_COMPILER_ID:GNU>:-O1>;$<$<CXX_COMPILER_ID:GNU>:-Wno-error=unused-parameter>")
+        COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->;$<$<CXX_COMPILER_ID:GNU>:-O1>;$<$<CXX_COMPILER_ID:GNU,Clang>:-Wno-error=unused-parameter>")
       set_property(SOURCE "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/PowerPC/PowerPC.cpp"
         APPEND PROPERTY COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:GNU>:-Wno-error=extra>")
       set_target_properties(cupid_cpu_dispatch_reference_checks PROPERTIES CXX_STANDARD 23)
@@ -438,7 +453,9 @@ if(CUPID_BUILD_TESTS)
     set(cupid_pointer_reference
       "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/HW/WiimoteEmu/Camera.cpp"
       "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Common/Matrix.cpp")
-    foreach(reference IN LISTS cupid_rasterizer_references cupid_texture_reference cupid_fragment_reference cupid_sdp_reference cupid_efb_copy_reference cupid_xfb_copy_reference cupid_host_audio_reference cupid_pointer_reference)
+    set(cupid_disc_stream_reference
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/HW/StreamADPCM.cpp")
+    foreach(reference IN LISTS cupid_rasterizer_references cupid_texture_reference cupid_fragment_reference cupid_sdp_reference cupid_efb_copy_reference cupid_xfb_copy_reference cupid_host_audio_reference cupid_pointer_reference cupid_disc_stream_reference)
       if(NOT EXISTS "${reference}")
         message(FATAL_ERROR "Required behavioral target file is absent: ${reference}")
       endif()
@@ -464,13 +481,29 @@ if(CUPID_BUILD_TESTS)
       "${cupid_host_audio_reference}")
     add_executable(cupid_pointer_reference_checks tests/pointer_reference_checks.cpp
       ${cupid_pointer_reference})
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    set(cupid_disc_schedule_reference
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/disc_stream_reference_functions.inc")
+    add_custom_command(OUTPUT "${cupid_disc_schedule_reference}"
+      COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/disc_stream_reference_extract.py"
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}" "${cupid_disc_schedule_reference}"
+      DEPENDS tests/disc_stream_reference_extract.py
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/HW/DVD/DVDInterface.cpp"
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/HW/DVD/DVDInterface.h"
+      VERBATIM)
+    add_executable(cupid_disc_stream_reference_checks tests/disc_stream_reference_checks.cpp
+      tests/disc_stream_schedule_reference_checks.cpp "${cupid_disc_schedule_reference}"
+      ${cupid_disc_stream_reference})
+    target_include_directories(cupid_disc_stream_reference_checks PRIVATE
+      "${CMAKE_CURRENT_BINARY_DIR}/generated")
     set_source_files_properties(${cupid_rasterizer_references} ${cupid_texture_reference} ${cupid_fragment_reference} "${cupid_sdp_reference}" "${cupid_efb_copy_reference}" "${cupid_xfb_copy_reference}" "${cupid_host_audio_reference}" ${cupid_pointer_reference}
       PROPERTIES COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->;$<$<CXX_COMPILER_ID:GNU>:-O1>")
     set_property(SOURCE "${cupid_efb_copy_reference}" APPEND PROPERTY COMPILE_OPTIONS
-      "$<$<CXX_COMPILER_ID:GNU>:-Wno-error=unused-parameter>")
+      "$<$<CXX_COMPILER_ID:GNU,Clang>:-Wno-error=unused-parameter>")
     set_property(SOURCE "${cupid_xfb_copy_reference}" APPEND PROPERTY COMPILE_OPTIONS
-      "$<$<CXX_COMPILER_ID:GNU>:-Wno-error=unused-parameter>")
-    foreach(comparison IN ITEMS rasterizer texture fragment sdp efb_copy xfb_copy host_audio pointer)
+      "$<$<CXX_COMPILER_ID:GNU,Clang>:-Wno-error=unused-parameter>")
+    foreach(comparison IN ITEMS rasterizer texture fragment sdp efb_copy xfb_copy host_audio pointer disc_stream)
       set(target cupid_${comparison}_reference_checks)
       set_target_properties(${target} PROPERTIES CXX_STANDARD 23)
       target_include_directories(${target} SYSTEM PRIVATE
@@ -526,7 +559,7 @@ if(CUPID_BUILD_TESTS)
       "SKIP: optional vertex comparisons require CUPID_BEHAVIOR_REFERENCE_ROOT and C++23")
     set_tests_properties(vertex_reference_checks PROPERTIES
       SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;differential")
-    foreach(comparison IN ITEMS rasterizer texture fragment sdp efb_copy xfb_copy host_audio pointer)
+    foreach(comparison IN ITEMS rasterizer texture fragment sdp efb_copy xfb_copy host_audio pointer disc_stream)
       add_test(NAME ${comparison}_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
         "SKIP: optional ${comparison} comparisons require CUPID_BEHAVIOR_REFERENCE_ROOT and C++23")
       set_tests_properties(${comparison}_reference_checks PROPERTIES

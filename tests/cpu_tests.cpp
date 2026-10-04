@@ -68,6 +68,75 @@ struct Fixture {
   }
 };
 
+void exhaustive_rotate_tests() {
+  constexpr std::array<u32, 8> values{0u,          0xffffffffu, 0x80000000u, 1u,
+                                      0xaaaaaaaau, 0x55555555u, 0x12345678u, 0x87654321u};
+  constexpr std::array<std::array<unsigned, 3>, 5> registers{
+      {{3, 4, 5}, {3, 3, 5}, {3, 4, 4}, {3, 4, 3}, {3, 3, 3}}};
+  unsigned cases = 0;
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    Memory memory;
+    Interpreter cpu(memory, console);
+    auto &s = cpu.state();
+    for (unsigned begin = 0; begin < 32; ++begin)
+      for (unsigned end = 0; end < 32; ++end)
+        for (unsigned shift = 0; shift < 32; ++shift)
+          for (unsigned op : {20u, 21u, 23u})
+            for (bool rc : {false, true})
+              for (bool summary : {false, true})
+                for (unsigned alias = 0; alias < registers.size(); ++alias) {
+                  // Every mask and shift has the distinct-register case. The
+                  // alias controls cover each mask at four boundary shifts.
+                  if (alias && shift != 0 && shift != 1 && shift != 16 && shift != 31)
+                    continue;
+                  const auto [source, destination, count] = registers[alias];
+                  for (unsigned n = 0; n < s.gpr.size(); ++n)
+                    s.gpr[n] = values[(n + begin + end + shift) & 7u];
+                  if (op == 23)
+                    s.gpr[count] = 0xffffffe0u | shift;
+                  const u32 input = s.gpr[source], retained = s.gpr[destination];
+                  const unsigned rotation = op == 23 ? s.gpr[count] & 31u : shift;
+                  u32 expected = 0;
+                  for (unsigned bit = 0; bit < 32; ++bit) {
+                    const bool selected =
+                        begin <= end ? bit >= begin && bit <= end : bit >= begin || bit <= end;
+                    const unsigned incoming = (bit + rotation) & 31u;
+                    const u32 value = selected   ? (input >> (31 - incoming)) & 1u
+                                      : op == 20 ? (retained >> (31 - bit)) & 1u
+                                                 : 0u;
+                    expected |= value << (31 - bit);
+                  }
+                  s.pc = 0x1000;
+                  s.cr = 0xa1b2c3d4u;
+                  s.spr[spr::xer] = (summary ? 0x80000000u : 0u) | 0x60000000u;
+                  const State before = s;
+                  const u32 opcode = (op << 26) | (source << 21) | (destination << 16) |
+                                     ((op == 23 ? count : shift) << 11) | (begin << 6) |
+                                     (end << 1) | static_cast<u32>(rc);
+                  memory.write32(0x1000, opcode);
+                  CHECK(cpu.step() == 1);
+                  auto expected_gpr = before.gpr;
+                  expected_gpr[destination] = expected;
+                  const u32 classification = expected == 0 ? 2u : (expected >> 31) ? 8u : 4u;
+                  const u32 expected_cr =
+                      rc ? (before.cr & 0x0fffffffu) |
+                               ((classification | static_cast<u32>(summary)) << 28)
+                         : before.cr;
+                  CHECK(s.gpr == expected_gpr && s.cr == expected_cr);
+                  CHECK(s.spr == before.spr && s.sr == before.sr && s.msr == before.msr);
+                  CHECK(s.fpscr == before.fpscr && s.pc == 0x1004);
+                  CHECK(s.last_pc == 0x1000 && s.last_opcode == opcode);
+                  CHECK(cpu.last_step_fetched_instruction());
+                  CHECK(s.cycles == before.cycles + 1 && s.instructions == before.instructions + 1);
+                  CHECK(s.timebase == s.cycles / 12);
+                  for (unsigned n = 0; n < s.fpr.size(); ++n)
+                    CHECK(s.fpr[n].bits == before.fpr[n].bits);
+                  ++cases;
+                }
+  }
+  CHECK(cases == 1179648);
+}
+
 struct Access {
   u32 address, value;
   unsigned bytes;
@@ -735,7 +804,7 @@ void cache_zero_transaction_tests() {
     f.s.cr = 0x18ab5327;
     const u32 opcode = locked ? fp(1014, 0, 7, 8, 0, 4) : ext(1014, 0, 7, 8);
     for (unsigned offset = 0; offset < 32; ++offset) {
-      std::fill(f.memory.bytes.begin() + 0x1ffc, f.memory.bytes.begin() + 0x2024, 0xa5);
+      std::fill(f.memory.bytes.begin() + 0x1ffc, f.memory.bytes.begin() + 0x2024, u8{0xa5});
       f.s.gpr[7] = 0x2000;
       f.s.gpr[8] = offset;
       CHECK(f.run(opcode) == (locked ? 1u : 5u));
@@ -765,7 +834,7 @@ void cache_zero_transaction_tests() {
   f.s.msr = 0;
   f.s.gpr[7] = 0x2000;
   f.memory.fail_write = 0x2008;
-  std::fill(f.memory.bytes.begin() + 0x2000, f.memory.bytes.begin() + 0x2020, 0xa5);
+  std::fill(f.memory.bytes.begin() + 0x2000, f.memory.bytes.begin() + 0x2020, u8{0xa5});
   f.run(ext(1014, 0, 7, 8));
   CHECK(f.s.pc == 0x300 && f.s.spr[spr::dar] == 0x2008);
   CHECK(f.s.spr[spr::dsisr] == 0x42000000 && f.memory.accesses.size() == 3);
@@ -783,7 +852,7 @@ void cache_zero_transaction_tests() {
 void string_store_transaction_tests() {
   TransactionFixture f;
   const auto check_case = [&](unsigned first, unsigned offset, unsigned count, bool indexed) {
-    std::fill(f.memory.bytes.begin() + 0x1ffc, f.memory.bytes.begin() + 0x2090, 0xa5);
+    std::fill(f.memory.bytes.begin() + 0x1ffc, f.memory.bytes.begin() + 0x2090, u8{0xa5});
     for (unsigned reg = 0; reg < 32; ++reg)
       f.s.gpr[reg] = 0x3927c15b ^ (0x01458329u * reg);
     f.s.gpr[7] = 0x2000 + offset;
@@ -886,7 +955,7 @@ void uncached_write_tests() {
       for (unsigned offset = 0; offset < 16; ++offset)
         for (u32 value : {0xa1b2c3d4u, 0x80000001u, 0x000000ffu, 0x6e3907b4u})
           for (const bool update : {false, true}) {
-            std::fill(f.memory.bytes.begin() + 0x1ffc, f.memory.bytes.begin() + 0x2020, 0xa5);
+            std::fill(f.memory.bytes.begin() + 0x1ffc, f.memory.bytes.begin() + 0x2020, u8{0xa5});
             f.s.spr[537] = (attributes << 3) | 2;
             f.s.gpr[7] = 0x80002000 + offset;
             f.s.gpr[9] = value;
@@ -954,7 +1023,7 @@ void uncached_write_tests() {
   f.s.msr = msr::dr | msr::ee;
   f.s.spr[537] = 0x22;
   f.s.gpr[7] = 0x80002000;
-  std::fill(f.memory.bytes.begin() + 0x2000, f.memory.bytes.begin() + 0x2008, 0xa5);
+  std::fill(f.memory.bytes.begin() + 0x2000, f.memory.bytes.begin() + 0x2008, u8{0xa5});
   f.memory.error_hook = [&] {
     CHECK(f.memory.bytes[0x2000] == 0xa5 && f.memory.bytes[0x2007] == 0xa5);
     f.cpu.set_external_interrupt(true);
@@ -989,7 +1058,7 @@ void page_write_attribute_result_tests() {
           const u32 pteg = 0x20000 | (((0x123u ^ 3u) << 6) & 0xffff);
           f.memory.write32(pteg, 0x80000000 | (0x123 << 7));
           f.memory.write32(pteg + 4, 0x5003 | (attributes << 3));
-          std::fill(f.memory.bytes.begin() + 0x5000, f.memory.bytes.begin() + 0x5010, 0xa5);
+          std::fill(f.memory.bytes.begin() + 0x5000, f.memory.bytes.begin() + 0x5010, u8{0xa5});
           const u32 address = 0x40003000 + offset;
           f.s.gpr[7] = address - 5;
           f.s.gpr[9] = 0xa1b2c3d4;
@@ -1031,7 +1100,7 @@ void uncached_translation_tests() {
     CHECK((f.memory.read32(pteg + 4) & 0x180) == 0x100);
     f.memory.write32(pteg + 4, 0x5102 | (old_attribute ? 0 : 0x40u));
     const auto check_write = [&] {
-      std::fill(f.memory.bytes.begin() + 0x5000, f.memory.bytes.begin() + 0x5008, 0xa5);
+      std::fill(f.memory.bytes.begin() + 0x5000, f.memory.bytes.begin() + 0x5008, u8{0xa5});
       f.memory.memory_errors = 0;
       f.run(imm(38, 9, 7, 0));
       CHECK(f.memory.memory_errors == 0);
@@ -1216,7 +1285,7 @@ void split_store_fault_tests() {
   f.s.gpr[7] = 0x80002001;
   f.memory.fail_write = 0x2004;
   f.memory.memory_errors = 0;
-  std::fill(f.memory.bytes.begin() + 0x2000, f.memory.bytes.begin() + 0x2008, 0xa5);
+  std::fill(f.memory.bytes.begin() + 0x2000, f.memory.bytes.begin() + 0x2008, u8{0xa5});
   f.run(imm(38, 9, 7, 0));
   CHECK(f.s.pc == 0x300 && f.s.spr[spr::dar] == 0x80002001);
   CHECK(f.memory.memory_errors == 1);
@@ -1237,8 +1306,8 @@ void changed_mapping_transaction_tests() {
     f.s.gpr[7] = 0x40003013;
     f.run(imm(34, 6, 7, 0));
     f.memory.write32(pteg + 4, 0x6002);
-    std::fill(f.memory.bytes.begin() + 0x5000, f.memory.bytes.begin() + 0x5020, 0xa5);
-    std::fill(f.memory.bytes.begin() + 0x6000, f.memory.bytes.begin() + 0x6020, 0xa5);
+    std::fill(f.memory.bytes.begin() + 0x5000, f.memory.bytes.begin() + 0x5020, u8{0xa5});
+    std::fill(f.memory.bytes.begin() + 0x6000, f.memory.bytes.begin() + 0x6020, u8{0xa5});
     f.run(locked ? fp(1014, 0, 7, 8, 0, 4) : ext(1014, 0, 7, 8));
     for (unsigned byte = 0; byte < 32; ++byte) {
       CHECK(f.memory.bytes[0x5000 + byte] == 0xa5);
@@ -1279,8 +1348,8 @@ void paired_page_store_tests() {
       f.memory.write32(pteg, mapped ? 0x80000000 | (0x123 << 7) : 0);
       f.memory.write32(pteg + 4, (first ? 0x4000u : 0x8000u) | 2 | (wi ? 0x20u : 0));
     }
-    std::fill(f.memory.bytes.begin() + 0x4fe0, f.memory.bytes.begin() + 0x5010, 0xa5);
-    std::fill(f.memory.bytes.begin() + 0x8000, f.memory.bytes.begin() + 0x8010, 0xa5);
+    std::fill(f.memory.bytes.begin() + 0x4fe0, f.memory.bytes.begin() + 0x5010, u8{0xa5});
+    std::fill(f.memory.bytes.begin() + 0x8000, f.memory.bytes.begin() + 0x8010, u8{0xa5});
   };
   constexpr std::array<u8, 8> payload{0x3f, 0x80, 0, 0, 0x40, 0, 0, 0};
   for (unsigned distance = 1; distance < 8; ++distance) {
@@ -2609,6 +2678,78 @@ void paired_tests() {
   CHECK(f.s.pc == 0x700 && (f.s.spr[spr::srr1] & 0x80000));
 }
 
+void cache_key_observation_tests() {
+  class ObservedMemory final : public Memory {
+  public:
+    mutable std::vector<u32> keys;
+    std::vector<std::array<u32, 2>> words, bytes;
+    u32 key_mask = 0xffffffff;
+
+    u8 read8(u32 physical) override {
+      return Memory::read8(physical & 0xfffff);
+    }
+
+    u32 instruction_cache_key(u32 physical) const override {
+      keys.push_back(physical);
+      return physical & key_mask;
+    }
+
+    bool read_instruction_words(u32 physical, std::span<u32> destination) override {
+      words.push_back({physical, static_cast<u32>(destination.size())});
+      return Bus::read_instruction_words(physical, destination);
+    }
+
+    bool read_instruction_bytes(u32 physical, std::span<u8> destination) override {
+      bytes.push_back({physical, static_cast<u32>(destination.size())});
+      return Bus::read_instruction_bytes(physical, destination);
+    }
+
+    void clear_observations() {
+      keys.clear();
+      words.clear();
+      bytes.clear();
+    }
+  } memory;
+
+  InstructionCache cache;
+  for (unsigned n = 0; n < 96; ++n)
+    memory.write8(0x2000 + n, static_cast<u8>(n));
+  CHECK(cache.read(memory, 0x402000, true, false) == 0x00010203);
+  CHECK(memory.keys == std::vector<u32>{0x402000});
+  CHECK((memory.words == std::vector<std::array<u32, 2>>{{0x402000, 8}}));
+  CHECK(memory.bytes.empty());
+  memory.clear_observations();
+  CHECK(cache.read(memory, 0x402004, true, true) == 0x04050607);
+  CHECK(memory.keys == std::vector<u32>{0x402004});
+  CHECK(memory.words.empty() && memory.bytes.empty());
+  memory.clear_observations();
+  CHECK(cache.read(memory, 0x402001, true, false) == 0x01020304);
+  CHECK(memory.keys == std::vector<u32>{0x402001});
+  CHECK(memory.words.empty() && memory.bytes.empty());
+  memory.clear_observations();
+  CHECK(cache.read(memory, 0x40201f, true, true) == 0x1f202122);
+  CHECK((memory.keys == std::vector<u32>{0x40201f, 0x402020}));
+  CHECK(memory.words.empty());
+  CHECK((memory.bytes == std::vector<std::array<u32, 2>>{{0x402020, 3}}));
+  memory.clear_observations();
+  CHECK(cache.read(memory, 0x402040, true, true) == 0x40414243);
+  CHECK(memory.keys == std::vector<u32>{0x402040});
+  CHECK(memory.words.empty());
+  CHECK((memory.bytes == std::vector<std::array<u32, 2>>{{0x402040, 4}}));
+  memory.clear_observations();
+  CHECK(cache.read(memory, 0x402004, false, true) == 0x04050607);
+  CHECK(memory.keys.empty() && memory.bytes.empty());
+  CHECK((memory.words == std::vector<std::array<u32, 2>>{{0x402004, 1}}));
+  memory.clear_observations();
+  // A changed host key must select a new guest tag even for a recent physical line.
+  memory.key_mask = 0xfffff;
+  memory.write8(0x2000, 0xff);
+  CHECK(cache.read(memory, 0x402000, true, false) == 0xff010203);
+  CHECK(memory.keys == std::vector<u32>{0x402000});
+  CHECK((memory.words == std::vector<std::array<u32, 2>>{{0x402000, 8}}));
+  CHECK(memory.bytes.empty());
+}
+
 void cache_tests() {
   Memory memory;
   InstructionCache cache;
@@ -2969,7 +3110,7 @@ void odd_instruction_tests() {
         for (unsigned offset = 0; offset < 4; ++offset)
           for (unsigned operation = 0; operation < program.size(); ++operation) {
             const u32 address = base + offset, opcode = program[operation];
-            std::ranges::fill(backing.range(address & ~31u, 64), 0);
+            std::ranges::fill(backing.range(address & ~31u, 64), u8{0});
             backing.write32(address, opcode);
             cpu.reset();
             auto &s = cpu.state();
@@ -3243,6 +3384,7 @@ void instruction_fill_failure_tests() {
 
 int main() {
   return run_tests([] {
+    exhaustive_rotate_tests();
     minus_one_carry_tests();
     instruction_byte_bus_tests();
     odd_instruction_tests();
@@ -3284,5 +3426,6 @@ int main() {
     floating_tests();
     paired_tests();
     cache_tests();
+    cache_key_observation_tests();
   });
 }

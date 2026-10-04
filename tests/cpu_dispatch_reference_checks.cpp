@@ -1014,7 +1014,7 @@ unsigned byte_backing_cases(Core::System &system) {
   return cases;
 }
 
-unsigned integer_dispatch_cases(Core::System &system, bool carry_only) {
+unsigned integer_dispatch_cases(Core::System &system, bool carry_only, bool rotate_only = false) {
   unsigned cases = 0, divergences = 0;
   std::vector<u32> program;
   const auto ext = [](unsigned xo, unsigned d, unsigned a, unsigned b, bool rc, bool oe = false) {
@@ -1066,6 +1066,17 @@ unsigned integer_dispatch_cases(Core::System &system, bool carry_only) {
         for (bool rc : {false, true})
           program.push_back(ext(xo, 3, 4, 0, rc, oe));
   }
+  if (rotate_only) {
+    program.clear();
+    for (unsigned op : {20u, 21u, 23u})
+      for (unsigned begin = 0; begin < 32; ++begin)
+        for (unsigned end = 0; end < 32; ++end)
+          for (unsigned shift = 0; shift < 32; ++shift)
+            for (bool rc : {false, true})
+              program.push_back((op << 26) | (3u << 21) | (4u << 16) | (shift << 11) |
+                                (begin << 6) | (end << 1) | static_cast<u32>(rc));
+  }
+  constexpr std::array<u32, 4> rotate_values{0u, 0xffffffffu, 0x12345663u, 0x87654324u};
   constexpr std::array<u32, 8> carry_values{0u,          1u,          2u,          0x7fffffffu,
                                             0x80000000u, 0x80000001u, 0xfffffffeu, 0xffffffffu};
   constexpr std::array<u32, 16> values{0u,          1u,          2u,          31u,
@@ -1099,7 +1110,7 @@ unsigned integer_dispatch_cases(Core::System &system, bool carry_only) {
       for (bool enabled : {false})
         for (u32 base : {0x2000u})
           for (unsigned offset : {0u})
-            for (unsigned input = 0; input < 64; ++input)
+            for (unsigned input = 0; input < (rotate_only ? 4u : 64u); ++input)
               for (u32 opcode : program) {
                 ++cases;
                 const u32 address = base + offset;
@@ -1117,8 +1128,17 @@ unsigned integer_dispatch_cases(Core::System &system, bool carry_only) {
                   state.gpr[n] = values[(n + input) & 15u];
                 state.gpr[4] = carry_only ? carry_values[input & 7u] : values[input & 15u];
                 state.gpr[5] = values[(input * 7u + (input >> 4)) & 15u];
+                if (rotate_only) {
+                  // The register-indexed opcode reads all 32 count registers,
+                  // including source/count and destination/count aliases.
+                  for (unsigned n = 0; n < 32; ++n)
+                    state.gpr[n] = (rotate_values[(n + input) & 3u] & ~31u) | n;
+                  state.gpr[3] = rotate_values[input];
+                  state.gpr[4] = rotate_values[(input + 1u) & 3u];
+                }
                 state.cr.Set(0xa1b2c3d4u ^ (input * 0x11111111u));
-                const u32 flags = carry_only
+                const u32 flags = rotate_only ? ((input & 3u) << 30) | ((input & 1u) << 29)
+                                  : carry_only
                                       ? (((input >> 3) & 1u) << 29) | (((input >> 4) & 3u) << 30)
                                       : (input & 7u) << 29;
                 state.SetXER(UReg_XER{flags | 0x0000ff7fu});
@@ -1126,7 +1146,7 @@ unsigned integer_dispatch_cases(Core::System &system, bool carry_only) {
                 state.spr[SPR_CTR] = values[(input + 3u) & 15u];
                 state.spr[SPR_SRR0] = 0x12345678;
                 state.spr[SPR_SRR1] = 0x56789abc;
-                std::ranges::fill(product_memory.range(address & ~31u, empty.size()), 0);
+                std::ranges::fill(product_memory.range(address & ~31u, empty.size()), u8{0});
                 product_memory.write32(address, opcode);
                 product_cpu.reset();
                 auto &product = product_cpu.state();
@@ -1175,8 +1195,9 @@ unsigned integer_dispatch_cases(Core::System &system, bool carry_only) {
     active_manager = nullptr;
   }
   std::cout << cases
-            << (carry_only ? " actual-table minus-one carry cases; "
-                           : " actual-table integer/branch cases; ")
+            << (rotate_only  ? " actual-table exhaustive rotate cases; "
+                : carry_only ? " actual-table minus-one carry cases; "
+                             : " actual-table integer/branch cases; ")
             << divergences << " divergences; scheduler, device and other dispatch excluded\n";
 #if defined(CUPID_OBSERVE_REFERENCE_COPY)
   std::cout << "Unchanged source backing transfers observed through forwarding link wrappers\n";
@@ -1184,7 +1205,10 @@ unsigned integer_dispatch_cases(Core::System &system, bool carry_only) {
   std::cout
       << "Product transfer order checked; source call interception unavailable on this target\n";
 #endif
-  require(cases == (carry_only ? 1024u : 199296u), cases, "integer comparison case count");
+  require(cases == (rotate_only  ? 1572864u
+                    : carry_only ? 1024u
+                                 : 199296u),
+          cases, "integer comparison case count");
   return cases;
 }
 
@@ -1250,7 +1274,7 @@ int main() {
                 state.spr[SPR_CTR] = 0x23456789;
                 state.spr[SPR_SRR0] = 0x12345678;
                 state.spr[SPR_SRR1] = 0x56789abc;
-                std::ranges::fill(product_memory.range(address & ~31u, empty.size()), 0);
+                std::ranges::fill(product_memory.range(address & ~31u, empty.size()), u8{0});
                 product_memory.write32(address, opcode);
                 product_cpu.reset();
                 auto &product = product_cpu.state();
@@ -1301,6 +1325,7 @@ int main() {
 #endif
     integer_dispatch_cases(system, true);
     integer_dispatch_cases(system, false);
+    integer_dispatch_cases(system, false, true);
     return divergences != 0;
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';

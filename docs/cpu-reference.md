@@ -8,6 +8,8 @@ The behavioral reference is pinned at `562875dd60fd0ff50b65dbbb611a2096802cd1b9`
 | --- | --- | --- |
 | Fetch, dispatch, floating availability | `Source/Core/Core/PowerPC/Interpreter/Interpreter.cpp`: `SingleStepInner`, `IsInvalidPairedSingleExecution`; `Interpreter_Tables.cpp` | `src/cpu/interpreter.cpp`: `step`, `execute` |
 | Integer arithmetic, carry, overflow, CR0, rotates, shifts, division edge cases | `Source/Core/Core/PowerPC/Interpreter/Interpreter_Integer.cpp`: integer instruction handlers, `Helper_UpdateCR0`, `HasAddOverflowed` | `src/cpu/interpreter.cpp`: `execute`, `execute_extended`, `record`, `carry`, `overflow` |
+| Inclusive and wrapped rotate masks | `Source/Core/Core/PowerPC/Gekko.h`: `MakeRotationMask`; `Interpreter_Integer.cpp`: `rlwimix`, `rlwinmx`, `rlwnmx`; `Interpreter_Tables.cpp`: primary dispatch entries | `src/cpu/interpreter.cpp`: `rotation_mask`; `tests/cpu_tests.cpp`: `exhaustive_rotate_tests`; `tests/cpu_dispatch_reference_checks.cpp`: exhaustive rotate dispatch |
+| Native integer immediates, rotates and condition recording | `Source/Core/Core/PowerPC/Jit64/Jit_Integer.cpp`: `reg_imm`, `rlwimix`, `rlwinmx`, `rlwnmx`, `ComputeRC`; `Jit64_Tables.cpp`: primary entries; `Jit.cpp`: fallback, `SingleStep`, `DoJit` and exits | `src/cpu/native_integer.cpp`: independent x86-64 emitter; `src/cpu/interpreter.cpp`: fetched-operation selection; `tests/native_integer_tests.cpp` |
 | Carry for addition and subtraction through minus one | `Source/Core/Core/PowerPC/Interpreter/Interpreter_Integer.cpp`: `addmex`, `subfmex`, `Helper_Carry`; `Interpreter_Tables.cpp`: normal and OE dispatch entries | `src/cpu/interpreter.cpp`: `execute_extended`; `tests/cpu_tests.cpp`: `minus_one_carry_tests` |
 | Branch conditions and register targets | `Source/Core/Core/PowerPC/Interpreter/Interpreter_Branch.cpp`: `bx`, `bcx`, `bclrx`, `bcctrx`, `rfi`, `sc` | `src/cpu/interpreter.cpp`: `execute` |
 | Integer and floating transfers, string and multiple transfers, reservation, cache zero | `Source/Core/Core/PowerPC/Interpreter/Interpreter_LoadStore.cpp`: load/store handlers, `lwarx`, `stwcxd`, `dcbz` | `src/cpu/interpreter.cpp`: `load`, `store`, instruction dispatch |
@@ -29,9 +31,9 @@ The behavioral reference is pinned at `562875dd60fd0ff50b65dbbb611a2096802cd1b9`
 | Reciprocal estimates | `Source/Core/Common/FloatUtils.cpp`: `ApproximateReciprocal`, `ApproximateReciprocalSquareRoot`; scalar and paired instruction callers | `src/cpu/estimates.cpp` |
 | Fused single rounding | `Source/Core/Core/PowerPC/Interpreter/Interpreter_FPUtils.h`: `NI_madd_msub`, `Force25Bit`; fused scalar and paired callers | `src/cpu/fused.cpp`: `single_fused_intermediate` |
 | NI output tininess and rounding boundary | `Interpreter_FPUtils.h`: `NI_mul`, `NI_div`, `NI_madd_msub`, `ForceSingle`, `ForceDouble`; `Source/Core/Common/x64FPURoundMode.cpp`: `SetSIMDMode`; `PowerPC.cpp`: `RoundingModeUpdated`; scalar instruction callers | `src/cpu/fused.cpp`: `binary64_arithmetic_is_tiny`; `src/cpu/floating.cpp`: `calculate`, `rounded_single`, `rounded_double` |
-| Instruction cache visibility and replacement | `Source/Core/Core/PowerPC/PPCCache.cpp`: `Cache::GetCache`, `InstructionCache::ReadInstruction`, `InstructionCache::Invalidate`; `MMU.cpp`: `TryReadInstruction` | `src/cpu/cache.cpp`; interpreter fetch and HID0 writes |
+| Instruction cache visibility and replacement | `Source/Core/Core/PowerPC/PPCCache.cpp`: `Cache::GetCache`, `InstructionCache::ReadInstruction`, `InstructionCache::Invalidate`; `MMU.cpp`: `TryReadInstruction` | `include/cupid/cpu/cache.hpp`: `read`, `obtain`; `src/cpu/cache.cpp`: allocation, replacement, invalidation and slow reads; interpreter fetch and HID0 writes |
 | Strict instruction backing and rejected fills | `Source/Core/Core/HW/Memmap.cpp`: `CopyFromEmu`, `GetPointerForRange`, `GetSpanForAddress`, `Read_U32`; `PowerPC/MMU.cpp`: `TryReadInstruction`; `PPCCache.cpp`: `Cache::GetCache`, `Cache::Read` | `Bus::read_instruction_words`; `Memory::read_instruction_words`; `InstructionCache::read` |
-| Byte-addressed instruction words and split cache reads | `Source/Core/Core/PowerPC/Interpreter/Interpreter.cpp`: `SingleStepInner`; `PowerPC/MMU.cpp`: `Read_Opcode`, `TryReadInstruction`; `PPCCache.cpp`: `Cache::Read`, `InstructionCache::ReadInstruction`; `HW/Memmap.cpp`: `CopyFromEmu`, `Read_U32` | `src/cpu/interpreter.cpp`: `step`; `src/cpu/cache.cpp`: `read`, `obtain`; `Bus::read_instruction_bytes`; `Memory::read_instruction_bytes` |
+| Byte-addressed instruction words and split cache reads | `Source/Core/Core/PowerPC/Interpreter/Interpreter.cpp`: `SingleStepInner`; `PowerPC/MMU.cpp`: `Read_Opcode`, `TryReadInstruction`; `PPCCache.cpp`: `Cache::Read`, `InstructionCache::ReadInstruction`; `HW/Memmap.cpp`: `CopyFromEmu`, `Read_U32` | `src/cpu/interpreter.cpp`: `step`; `include/cupid/cpu/cache.hpp`: `read`, `obtain`; `src/cpu/cache.cpp`: `read_unaligned`, `read_locked_miss`, `obtain_other`; `Bus::read_instruction_bytes`; `Memory::read_instruction_bytes` |
 | Fetched zero word and cycle accounting | `Source/Core/Core/PowerPC/Interpreter/Interpreter.cpp`: `SingleStepInner`, `UpdatePC`; `PPCTables.cpp`: `GetOpInfo`; `PowerPC.cpp`: `CheckExceptions`, `UpdatePerformanceMonitor` | `src/cpu/interpreter.cpp`: `step`, `monitor`, `tick` |
 | Failed instruction translation and ISI timing | `Source/Core/Core/PowerPC/MMU.cpp`: `Read_Opcode`, `TryReadInstruction`, `GenerateISIException`; `Interpreter/Interpreter.cpp`: `SingleStepInner`; `PowerPC.cpp`: `CheckExceptions`, `MSRUpdated` | `src/cpu/interpreter.cpp`: `translate`, `storage_fault`, `step` |
 
@@ -174,6 +176,66 @@ The authored NI boundary regression failed before the repair. The corrected full
 The helper harnesses are opt-in and do not vendor their reference files. Set the reference path to a checkout at the pinned commit. The estimate harness links `Source/Core/Common/FloatUtils.cpp` with `src/cpu/estimates.cpp`. The fused harness includes `Source/Core/Core/PowerPC/Interpreter/Interpreter_FPUtils.h` and links `src/cpu/fused.cpp`; the reference headers require C++23 and fmt headers on Linux. Both use the project's `include/` directory and the reference's `Source/Core/` include directory. Compile with strict floating behavior (`-frounding-math -ffp-contract=off` on GCC/Clang).
 
 The relevant reference unit tests inspected were `Source/UnitTests/Core/PowerPC/DivUtilsTest.cpp` and `PageTableHostMappingTest.cpp`. They cover division support calculations and page-table host mappings, respectively; their results are not claimed as tests of this runtime.
+
+## Bounded rotate-mask execution
+
+Rotate masks use two unsigned shifts and an intersection or union. All shift counts are between zero and 31. The intersection selects an inclusive nonwrapped range; the union selects a wrapped range. `rlwimi`, `rlwinm` and `rlwnm` retain their existing destination, alias and CR0 behavior.
+
+The complete public CPU suite passes strict GCC, native MSVC `/W4 /WX /fp:strict`, and GCC address/undefined-behavior sanitizers. Its added 1,179,648 authored cases cover every mask and rotation for all three instructions, Rc and both incoming SO states on both consoles. Each mask also has source/destination/count alias controls at rotations zero, one, 16 and 31. A separate per-bit oracle checks the result, and the cases check all integer, special, segment and floating registers, CR, MSR, FPSCR, instruction diagnostics and execution counters.
+
+The compiled dispatch driver adds 1,572,864 unchanged-handler comparisons. These cover every mask and immediate rotation, register counts through all 32 register indices including aliases, Rc, two incoming SO states and four operand patterns on both consoles. They compare the existing integer and exception fields and returned cycles, retain ordered backing observations, and reject excluded device and scheduler calls. Strict GCC and full address/undefined-behavior instrumentation passed the expanded driver with all 20 unchanged external translation units and product CPU/memory instrumented. The source translation units remain separate from the runtime.
+
+Two frozen complete CPU/memory builds measured newly authored loops on the i9-10900F under WSL Ubuntu with GCC 13.3. Both use `-std=c++20 -O3 -Wall -Wextra -Wpedantic -Werror -frounding-math -ffp-contract=off`, a warmed enabled instruction cache, ordinary RAM, no relocation and no link-time optimization. Five pairs alternate execution order, each with 195 million measured instructions after 65,000 warmup instructions. Affinity is fixed to one logical CPU. Every final CPU-state checksum matches within each workload.
+
+| Loop | Earlier median seconds | Bounded-mask median seconds | Earlier/current ratio |
+| --- | ---: | ---: | ---: |
+| Integer control without rotates | 3.870950 | 4.762133 | 0.813 |
+| Integer, memory and rotate mixture | 6.044919 | 5.242644 | 1.153 |
+| Rotate-heavy integer loop | 6.506302 | 4.959692 | 1.312 |
+
+Compilation, tests and game runs shared the host; elapsed times varied substantially. The control result is slower and remains part of the measurement. These synthetic measurements support faster rotate-heavy execution under those conditions, without establishing an overall commercial-game speedup. Frozen sources, exact samples, file hashes and the benchmark remain in `.cache/cpu-rotate-20261004/`.
+
+## Inlined instruction-cache hits
+
+Aligned cache hits and disabled-cache word reads execute inline in the CPU caller. A repeated line hit retains its existing replacement bits; allocation, other-line replacement, locked misses and unaligned reads use the separate slow paths. Each line lookup still obtains the host key once, including a changed key for a previously read physical address. The authored key-observation regression checks that call order and the exact word or byte backing requests for cold fills, warm reads, locked misses, split reads and disabled caching.
+
+The complete public CPU suite, including that regression, passes strict GCC, native MSVC `/W4 /WX /fp:strict`, and GCC address/undefined-behavior sanitizers. The frozen path also passes the pinned physical-memory/cache, CPU memory, step and dispatch comparisons under strict GCC. A separate before/current trace matches 16,384 complete CPU states, ordered bus records and both final RAM images byte for byte, totaling 156,330,032 bytes. A clock-focused trace with long instructions, decrementer changes and timebase writes also matches when checking the separate short-clock prototype; that prototype is not part of this runtime.
+
+Three alternating pairs per console and workload measured 65 million instructions per sample on the i9-10900F under WSL with GCC 13.3. Frozen variants differ only in the cache header and implementation, retain strict floating-point flags, and use no link-time optimization. Code and ordinary data use the boot BAT mappings, with Wii data in MEM2. The instruction cache is enabled and warmed, and affinity is fixed to one logical CPU.
+
+| Console and loop | Earlier median seconds | Inline median seconds | Earlier/current ratio |
+| --- | ---: | ---: | ---: |
+| GameCube integer control | 2.485200 | 2.164400 | 1.148 |
+| GameCube integer/memory/rotate mixture | 3.846999 | 2.730111 | 1.409 |
+| GameCube rotate-heavy loop | 2.623820 | 2.486353 | 1.055 |
+| Wii integer control | 2.271047 | 1.913492 | 1.187 |
+| Wii integer/memory/rotate mixture | 2.550208 | 2.227824 | 1.145 |
+| Wii rotate-heavy loop | 2.187211 | 1.958733 | 1.117 |
+
+All final state checksums match within each workload. Other builds and game continuations share the host; these component timings do not establish gameplay speed. Six same-source 100-million-step Sunshine startup runs also match every emitted final state field. Their median elapsed times are 6.108099 seconds earlier and 6.047568 seconds inline, with no VI fields, graphics commands or audio in that span; the spread does not establish a substantial integrated speedup.
+
+One three-billion-step Sunshine pair takes 202.617566 seconds inline first and 185.107392 seconds earlier second. A reversed pair takes 300.782968 seconds earlier first and 249.722765 seconds inline second. The inconsistent timings remain recorded and establish no integrated gain. Builds and reference tests share the host. Every emitted final state field and every persisted file match across all four runs. Each reaches 320 VI fields, 65,917 graphics commands, 18,956,440 fragments and 338,464 audio values. Frozen sources, exact commands, all preliminary and repeated samples, state records and binary hashes remain in `.cache/cpu-bat-cache-20261004/`.
+
+## Experimental native integer execution
+
+An x86-64 backend emits leaf machine-code operations for `addi`, `addis`, `ori`, `oris`, `xori`, `xoris`, `andi.`, `andis.`, `rlwimi`, `rlwinm` and `rlwnm`. The emitter uses volatile host registers and retains the guest's source/destination/count aliases, unsigned wraparound, CR0 and incoming SO behavior. It executes one already-fetched operation at a time. The interpreter still performs each fetch, interrupt check, exception path, instruction diagnostic, performance-counter update and timer update. Unsupported operations use the existing interpreter handlers; zero words retain their existing step behavior.
+
+Cached code is keyed by the actual fetched opcode. A rewritten backing word therefore cannot select old code after the guest instruction cache exposes the change. The default cache holds at most 1,024 distinct operations; a full cache uses interpreter fallback for new words while retaining existing entries. Code pages alternate between writable and executable protection on their owning CPU thread, with an instruction-cache flush before use. No page is writable and executable at the same time. Reset clears generated code and statistics while retaining the selected backend. The interpreter remains the default.
+
+The public native suite passes 2,752,512 complete-state emitted-operation comparisons against the interpreter on both consoles under strict GCC, native MSVC `/W4 /WX /fp:strict`, and GCC address/undefined-behavior sanitizers. The sanitizer builds instrument the C++ runtime, emitter and test driver; the emitted machine code has no compiler sanitizer instrumentation. Cases cover every rotate mask and count, aliases, Rc, SO and immediate boundary values. Additional controls compare ordered bus observations, final RAM, instruction-cache visibility and invalidation, odd PCs, interrupts, zero words, unsupported compiler operations, guest exceptions, host errors, decrementer/timebase changes, performance counters, cache bounds, backend switching and reset. A separate mixed trace matches the frozen earlier interpreter's 16,384 complete states, ordered bus records and both final RAM images byte for byte.
+
+Three alternating pairs per console and workload measure 65 million steps per sample in the same executable, with fixed CPU affinity, warmed instruction caching, boot BAT mappings, Wii data in MEM2 and strict GCC 13.3 flags without link-time optimization. Every state checksum matches. Samples execute 48 to 64 million native operations with no capacity fallback. The final inline-dispatch measurements are:
+
+| Console and loop | Interpreter median seconds | Native median seconds | Interpreter/native ratio |
+| --- | ---: | ---: | ---: |
+| GameCube integer control | 2.276041 | 2.528851 | 0.900 |
+| GameCube integer/memory/rotate mixture | 3.131185 | 3.407652 | 0.919 |
+| GameCube rotate-heavy loop | 2.478812 | 2.752314 | 0.901 |
+| Wii integer control | 2.585980 | 3.145098 | 0.822 |
+| Wii integer/memory/rotate mixture | 3.313480 | 3.700977 | 0.895 |
+| Wii rotate-heavy loop | 2.735790 | 3.288123 | 0.832 |
+
+The native backend is slower in these measurements, including an earlier out-of-line dispatch series. Other work shares the host, but no workload demonstrates a speedup. This is experimental native integer execution with validated interpreter fallback. It does not implement native basic blocks or establish full-speed execution. Both source variants, exact samples, tests and trace images remain in `.cache/cpu-native-integer-20261004/`; final inline-dispatch artifacts are in its `inline-dispatch/` subdirectory.
 
 ## Unfinished behavior
 

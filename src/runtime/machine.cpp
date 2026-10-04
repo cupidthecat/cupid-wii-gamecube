@@ -126,6 +126,15 @@ Machine::Machine(Console console)
     if (output_)
       output_->audio(samples, rate);
   };
+  devices_.disc_audio_samples = [this](std::span<const s16> samples, u32 divisor, u8 left,
+                                       u8 right) {
+    if (output_)
+      output_->disc_audio(samples, divisor, left, right);
+  };
+  devices_.disc_audio_control = [this](u32 divisor, u8 left, u8 right) {
+    if (output_)
+      output_->disc_audio_control(divisor, left, right);
+  };
   devices_.rumble = [this](unsigned port, bool enabled) {
     if (output_)
       output_->rumble(port, enabled);
@@ -261,6 +270,9 @@ void Machine::load_disc(const std::filesystem::path &path) {
   image_ = std::make_unique<disc::Image>(path);
   if (image_->header().console != console_)
     throw std::runtime_error("Disc console differs from the selected console mode");
+  std::array<u8, 32> disc_id{};
+  image_->read(0, disc_id);
+  devices_.prepare_disc_boot(console_ == Console::GameCube && disc_id[8] != 0, disc_id[9]);
   memory_.clear();
   cpu_.reset();
   step_attempts_ = last_poll_ = 0;
@@ -365,13 +377,24 @@ void Machine::persist() {
 void Machine::write_state(std::ostream &out, const std::string &outcome) const {
   const auto &state = cpu_.state();
   const auto host_audio = output_ ? output_->host_audio_stats() : platform::HostAudioStats{};
+  const auto disc_audio = output_ ? output_->disc_audio_stats() : platform::DiscAudioStats{};
   const auto hardware = graphics_.hardware_stats();
+  const auto native = cpu_.native_statistics();
   out << "{\"version\":\"" << build::version << "\",\"commit\":\"" << build::commit
       << "\",\"console\":\"" << (console_ == Console::Wii ? "wii" : "gamecube")
       << "\",\"outcome\":\"" << outcome << "\",\"stage\":\"" << boot_.stage
       << "\",\"pc\":" << state.pc << ",\"entry\":" << boot_.entry
       << ",\"instructions\":" << state.instructions << ",\"step_attempts\":" << step_attempts_
       << ",\"cycles\":" << state.cycles << ",\"vi_fields\":" << devices_.field_count()
+      << ",\"cpu_backend\":\""
+      << (cpu_.execution_backend() == cpu::ExecutionBackend::NativeInteger ? "native"
+                                                                           : "interpreter")
+      << "\",\"native_executed\":" << native.executed << ",\"native_fallback\":" << native.fallback
+      << ",\"native_compilations\":" << native.compiled_operations
+      << ",\"native_cache_hits\":" << native.cache_hits
+      << ",\"native_capacity_fallbacks\":" << native.capacity_fallbacks
+      << ",\"native_cache_entries\":" << native.cache_entries
+      << ",\"native_executable_bytes\":" << native.executable_bytes
       << ",\"cpu_state_hash\":" << cpu_state_hash(state)
       << ",\"memory_state_hash\":" << memory_.state_hash() << ",\"input_replay_updates\":"
       << (input_replay_follower_ ? input_replay_follower_->accepted_updates() : 0)
@@ -382,6 +405,9 @@ void Machine::write_state(std::ostream &out, const std::string &outcome) const {
       << ",\"audio_nonzero_samples\":" << (output_ ? output_->audio_nonzero_samples() : 0)
       << ",\"audio_peak\":" << (output_ ? output_->audio_peak() : 0)
       << ",\"audio_hash\":" << (output_ ? output_->audio_hash() : 0)
+      << ",\"disc_audio_samples\":" << disc_audio.samples
+      << ",\"disc_audio_nonzero_samples\":" << disc_audio.nonzero_samples
+      << ",\"disc_audio_peak\":" << disc_audio.peak << ",\"disc_audio_hash\":" << disc_audio.hash
       << ",\"host_audio_frames\":" << host_audio.mixed_frames
       << ",\"host_audio_nonzero_samples\":" << host_audio.nonzero_samples
       << ",\"host_audio_dropped_granules\":" << host_audio.dropped_granules

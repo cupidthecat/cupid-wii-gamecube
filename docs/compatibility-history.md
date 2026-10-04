@@ -83,6 +83,12 @@ The three local IPL candidates each have the expected 2 MiB size, but none match
 
 The host CPU is an Intel Core i9-10900F with 10 cores and 20 logical processors. The Windows Galaxy 492,998,315-instruction probe took 78.488 seconds while other validation work was active. That is a bounded startup measurement, not a gameplay benchmark. Future performance records should include active concurrent work and the guest video/audio rate.
 
+## Sealed startup comparison on October 4
+
+A working snapshot based on `949784e21ac66fe3ed6be50f34292724098ef7f7` has a 200-file source-manifest SHA256 of `2bb8f640f5ed1b91f439a712cf3bb8aadf4ddfc95533766ad6317a5b09e01a30`. It uses software graphics, headless output, disabled host audio, validated USA IPL fonts and ordinary GameCube input. Native MSVC Release LTO and Linux GCC13 Release LTO plain CLIs and forwarding observers all report the same complete state at 100 million attempts. Both CPU and physical-memory hashes are included. The input storage is a separate copy of one runtime-generated blank-card/SRAM seed for every run. Initial independently created card identities gave different memory hashes; the failed comparison remains in the private receipts.
+
+The Linux prefix exits normally at three billion attempts, with 2,999,997,603 completed instructions, 3,549,400,101 cycles and 320 presented fields. Main PCM has 338,464 values, 62,194 nonzero values, peak magnitude 13,760 and hash `16351903819501652029`. DAR/DSISR and the page-table/instruction-backing error counters are zero. Its ten retained field checkpoints from 30 through 300 match the native continuation's complete JSON state and PPM bytes exactly. The inspected field-300 image contains the Nintendo Presents / Super Mario Sunshine intro card. This verifies startup rendering and guest PCM, with a deterministic comparison across these two builds. It does not establish title input, gameplay, host audio playback or save/load on this snapshot. The software continuation has separate larger bounds, and subsequent device or graphics changes are absent from the sealed source.
+
 ## Recording a new result
 
 Record the source revision and working-tree status, platform/compiler, graphics and audio backend, console, input mapping, user-data conditions, run bounds, final state, and visible behavior. Keep private traces local.

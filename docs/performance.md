@@ -65,3 +65,48 @@ Six integrated 100-million-instruction startup runs replaced only the DSP object
 The October 4 instruction-cache change preserves replacement state while accelerating aligned and repeated same-line reads. A frozen three-billion-step Sunshine pair takes 211.680 seconds before and 185.991 seconds after, with every emitted final JSON field equal. A separate authored comparison matches 8,192 complete CPU states, ordered bus records and final RAM images byte for byte. [CPU behavior mappings](cpu-reference.md) record the exact source isolation, repeated startup measurements and their limits.
 
 The DSP countdown now returns inline before the next update boundary. Three interleaved 200-million-call repetitions per mode and console show 30.0 to 41.3 percent less elapsed time in the component workload. Original and current full DSP traces match across 2,912 checkpoints and 119,768,032 bytes, including audio, RAM and callbacks. [DSP mappings](dsp-reference.md) retain the modes, compiler, input hashes and narrower caller comparison. The component ratio does not establish a whole-game improvement.
+
+## Optional Release link-time optimization
+
+`CUPID_ENABLE_LTO=ON` requests supported Release link-time optimization. It retains strict floating-point evaluation and stays off by default. The experiment uses the same sealed October 4 source as the integrated hardware checks, with explicit `integrated-runtime-private-20261004` metadata, copied storage, Sunshine RVZ and fonts, ordinary replay, headless software graphics and disabled host audio.
+
+| Compiler and workload | Baseline seconds | LTO seconds | Measurement |
+| --- | ---: | ---: | --- |
+| GCC 13.3, 100M startup | 5.82850 | 4.12804 | Median of three pairs; all three LTO runs faster. |
+| GCC 13.3, 3B rendered phase | 175.1940 | 141.2915 | Median of three pairs; two LTO runs faster. |
+| MSVC, 100M startup | 5.80338 | 5.41383 | Median of three pairs; all three LTO runs faster. |
+| MSVC, 3B rendered phase | 222.89857 | 204.05083 | One pair, LTO first. Process CPU times are 222.50000 and 203.67188 seconds. |
+
+The three GCC phase pairs are baseline/LTO 175.1940/202.9613, 177.9627/124.0056 and 166.0546/141.2915 seconds; the slower LTO result remains recorded. Other builds, tests and native continuation runs shared the host. WSL reported some child CPU counters above elapsed time, so those counters do not establish precise scheduler share. The median reductions are 19.4 percent for the GCC rendered phase and 8.46 percent for the one native phase. Neither measures full-speed gameplay.
+
+Every reported state field matches within every pair, including CPU/RAM, frame and audio hashes. The rendered phases each reach 320 fields, 65,917 GX commands, 18,956,440 fragments and 338,464 audio values. All native persisted files match too. Separate GCC baseline/LTO authored traces match 8,192 complete CPU states, ordered bus operations and final RAM images byte for byte. GCC passes all 40 public cases, including required Mesa shader tests, and seven pinned CPU/memory comparisons; native MSVC passes all 40 public cases and sixteen direct comparisons. Exact flags, source and binary hashes, workload inventories, failures and all measurements remain in `local-artifacts/release-lto-20261004/` and `local-artifacts/integrated-runtime-20261004/native-ipo-measurement/`.
+
+
+## Additional scheduling and texture-cache measurements
+
+The IPC deadline change matches 3,212 full IOS/SDP checkpoints and
+109,068,024 serialized bytes. Three interleaved repetitions of 200 million
+advances per console and workload reduce component medians by 57.1 to 68.3
+percent. Six 100-million-attempt Sunshine runs retain all 44 reported fields
+and all four persistent files; medians are 5.721769 seconds earlier and
+5.553776 seconds current. The three-billion-attempt pair takes 269.199949 and
+190.877508 seconds respectively, but concurrent work differs and prevents a
+precise isolated-host speed claim. Exact states, flags, source and executable
+hashes remain in `local-artifacts/ios-deadline-20261004`.
+[Runtime mappings](runtime-reference.md) describe the event semantics.
+
+The command-processor deadline path likewise improves its component workload
+while preserving PI reassertion and FIFO/event boundaries. Its longer
+Sunshine pair is slightly slower, with exact state, frame and storage matches.
+[Graphics scheduling](graphics-scheduling.md) records both results.
+
+The GPU texture cache avoids repeated decoding and broad texture-memory
+checks when the reachable source bytes remain unchanged. On the RTX 3060,
+1,024 repeated C8 draws take 1.59635 seconds earlier and 0.0267991 seconds
+current; 64 filter-only updates take 0.325189 and 0.0044628 seconds. Exact EFB
+comparisons pass. Commercial pairs retain all 44 reported fields, frame bytes
+and persistent files: Sunshine at three billion attempts takes
+367.960/371.777 seconds earlier/current, and Galaxy at one billion takes
+201.853/203.136 seconds. Neither pair establishes a whole-game gain. The
+[hardware rendering record](hardware-rendering.md) separates these frozen
+cache measurements from later framebuffer-copy work.

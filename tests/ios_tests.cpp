@@ -10,6 +10,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -200,6 +201,91 @@ void handshake() {
   CHECK_THROWS(fixture.devices.read(ipc_base + 0x30, 4));
   CHECK_THROWS(fixture.devices.read(ipc_base + 0x34, 4));
   CHECK(fixture.devices.read(ipc_base + 0x64, 4) == 0xffffffff);
+}
+
+void clock_boundaries() {
+  constexpr u64 maximum = std::numeric_limits<u64>::max();
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    Memory memory(console);
+    hw::Devices devices(console);
+    ios::Ipc ipc(memory, devices, console);
+    ipc.advance(0);
+    CHECK(ipc.cycles() == 0);
+    ipc.advance(maximum - 1);
+    CHECK(ipc.cycles() == maximum - 1);
+    CHECK_THROWS(ipc.advance(2));
+    CHECK(ipc.cycles() == maximum - 1);
+    ipc.advance(1);
+    ipc.advance(0);
+    CHECK(ipc.cycles() == maximum);
+    CHECK_THROWS(ipc.advance(1));
+    CHECK(ipc.cycles() == maximum);
+  }
+
+  Fixture fixture;
+  fixture.ipc.advance(maximum - 6000);
+  fixture.prepare(2, 99);
+  fixture.devices.write(ipc_base, request, 4);
+  fixture.devices.write(ipc_base + 4, 0x31, 4);
+  fixture.ipc.advance(5999);
+  CHECK(fixture.memory.read32(request) == 2);
+  CHECK(fixture.ipc.cycles() == maximum - 1);
+  fixture.ipc.advance(1);
+  CHECK(fixture.memory.read32(request) == 8);
+  CHECK(fixture.memory.read32(request + 4) == 0xfffffffc);
+  CHECK(fixture.ipc.cycles() == maximum);
+  fixture.ipc.advance(0);
+  CHECK_THROWS(fixture.ipc.advance(1));
+  CHECK(fixture.ipc.cycles() == maximum);
+}
+
+void callback_clocks() {
+  for (bool reentrant : {false, true}) {
+    for (bool fail : {false, true}) {
+      Fixture fixture;
+      const u32 fd = u32(fixture.open("/dev/stm/immediate"));
+      const u64 start = fixture.ipc.cycles();
+      unsigned calls = 0;
+      fixture.ipc.set_shutdown_handler([&] {
+        ++calls;
+        CHECK(fixture.ipc.cycles() == start + 6000);
+        hw::RemoteState remote;
+        remote.connected = true;
+        fixture.ipc.set_remote(0, remote);
+        fixture.ipc.advance(0);
+        CHECK(fixture.ipc.cycles() == start + 6000);
+        if (reentrant) {
+          fixture.ipc.advance(1200);
+          CHECK(fixture.devices.external_interrupt_pending());
+        }
+        if (fail)
+          throw std::runtime_error("Authored IOS callback failure");
+      });
+      fixture.prepare(6, fd);
+      fixture.memory.write32(request + 12, 0x2003);
+      fixture.devices.write(ipc_base, request, 4);
+      fixture.devices.write(ipc_base + 4, 0x31, 4);
+      fixture.ipc.advance(5999);
+      CHECK(calls == 0);
+      if (fail) {
+        CHECK_THROWS(fixture.ipc.advance(24001));
+        CHECK(fixture.ipc.cycles() == start + 6000 + (reentrant ? 1200 : 0));
+        CHECK(fixture.memory.read32(request) == 6);
+      } else {
+        fixture.ipc.advance(24001);
+        CHECK(fixture.ipc.cycles() == start + 30000);
+        CHECK(fixture.memory.read32(request) == 8);
+        CHECK(fixture.memory.read32(request + 4) == 0);
+      }
+      CHECK(calls == 1);
+      fixture.clear_ack();
+      fixture.ipc.advance(100000);
+      if (!fail)
+        fixture.clear_reply();
+      fixture.prepare(2, 99);
+      CHECK(fixture.complete() == -4);
+    }
+  }
 }
 
 void system_management() {
@@ -1778,6 +1864,8 @@ int main(int argc, char **argv) {
     memory_values();
     wii_register_mirrors();
     handshake();
+    clock_boundaries();
+    callback_clocks();
     system_management();
     network_scheduler_queries();
     network_storage_permissions();

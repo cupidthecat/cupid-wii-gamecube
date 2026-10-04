@@ -36,10 +36,9 @@ Yuv filtered_color(const std::array<u32, 3> &colors, const std::array<unsigned, 
 }
 } // namespace
 
-XfbCopyLayout copy_efb_xfb(Memory &memory, std::span<const u32> bp,
-                           const std::function<u32(unsigned, unsigned)> &color) {
-  if (bp.size() < 256 || !color)
-    throw std::invalid_argument("XFB copy requires BP state and a color source");
+XfbCopyPlan plan_efb_xfb(std::span<const u32> bp) {
+  if (bp.size() < 256)
+    throw std::invalid_argument("XFB copy requires 256 BP registers");
   const u32 control = bp[0x52];
   if (!(control & (1 << 14)))
     unsupported("texture target passed to the XFB encoder");
@@ -50,11 +49,14 @@ XfbCopyLayout copy_efb_xfb(Memory &memory, std::span<const u32> bp,
     unsupported("nonzero horizontal origin has undefined intermediate indexing");
   if (top >= 528)
     unsupported("source rectangle does not touch the EFB");
-  XfbCopyLayout layout;
+  XfbCopyPlan plan;
+  auto &layout = plan.layout;
+  plan.top = top;
   layout.destination = (bp[0x4b] & 0xffffff) << 5;
   layout.width = std::min(640u, (bp[0x4a] & 1023) + 1);
   const unsigned raw_height_minus_one = (bp[0x4a] >> 10) & 1023;
   const unsigned source_height = std::min(raw_height_minus_one + 1, 528 - top);
+  plan.source_height = source_height;
   if (layout.width & 1)
     unsupported("odd source width");
   layout.stride = (bp[0x4d] & 0xffffff) << 5;
@@ -80,17 +82,49 @@ XfbCopyLayout copy_efb_xfb(Memory &memory, std::span<const u32> bp,
     unsupported("staging readback would expose unwritten encoded bytes");
   const u64 last_row = (extent - 1) / (layout.width * 2);
   const double ratio = static_cast<double>(source_height) / layout.encoded_height;
+  plan.row_ratio = ratio;
   if (std::round(static_cast<double>(last_row) * ratio) >= source_height)
     unsupported("nearest-row selection reaches unwritten source data");
   if (u64(layout.destination) + extent > u64{1} << 32)
     unsupported("destination address wraps");
-  auto destination = memory.range(layout.destination, static_cast<std::size_t>(extent));
   std::array<unsigned, 7> coefficients{};
   for (unsigned tap = 0; tap < coefficients.size(); ++tap)
     coefficients[tap] = (bp[tap < 4 ? 0x53 : 0x54] >> ((tap < 4 ? tap : tap - 4) * 6)) & 63;
-  const std::array<unsigned, 3> weights{coefficients[0] + coefficients[1],
-                                        coefficients[2] + coefficients[3] + coefficients[4],
-                                        coefficients[5] + coefficients[6]};
+  plan.weights = {coefficients[0] + coefficients[1],
+                  coefficients[2] + coefficients[3] + coefficients[4],
+                  coefficients[5] + coefficients[6]};
+  plan.gamma = (control >> 7) & 3;
+  return plan;
+}
+
+const std::array<std::array<u32, 256>, 4> &xfb_gamma_tables() {
+  static const auto tables = [] {
+    std::array<std::array<u32, 256>, 4> result{};
+    for (unsigned gamma = 0; gamma < 4; ++gamma) {
+      const float inverse = 1.0f / std::array<float, 4>{1.0f, 1.7f, 2.2f, 2.2f}[gamma];
+      for (unsigned value = 0; value < 256; ++value) {
+        const float normalized = static_cast<float>(value) / 255.0f;
+        result[gamma][value] =
+            static_cast<u32>(std::clamp(std::pow(normalized, inverse) * 255.0f, 0.0f, 255.0f));
+      }
+    }
+    return result;
+  }();
+  return tables;
+}
+
+XfbCopyLayout copy_efb_xfb(Memory &memory, std::span<const u32> bp,
+                           const std::function<u32(unsigned, unsigned)> &color) {
+  if (bp.size() < 256 || !color)
+    throw std::invalid_argument("XFB copy requires BP state and a color source");
+  const auto plan = plan_efb_xfb(bp);
+  const auto &layout = plan.layout;
+  const u32 control = bp[0x52];
+  const unsigned top = plan.top, source_height = plan.source_height;
+  const auto &weights = plan.weights;
+  const double ratio = plan.row_ratio;
+  const u64 extent = u64(layout.height - 1) * layout.stride + layout.copied_row_bytes;
+  auto destination = memory.range(layout.destination, static_cast<std::size_t>(extent));
   const float gamma_inverse =
       1.0f / std::array<float, 4>{1.0f, 1.7f, 2.2f, 2.2f}[(control >> 7) & 3];
   std::vector<Yuv> scanline(layout.width);

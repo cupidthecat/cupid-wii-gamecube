@@ -113,6 +113,21 @@ bool compare(unsigned mode, u32 value, u32 reference) {
   }
 }
 
+u32 fog_factor(float distance, unsigned type) {
+  if (std::isnan(distance))
+    throw VertexError("Fog computation produced an undefined NaN");
+  float fog = std::clamp(distance, 0.0f, 1.0f);
+  if (type >= 4) {
+    if (type >= 6)
+      fog = 1 - fog;
+    const float exponent = type & 1 ? -8.0f * fog * fog : -8.0f * fog;
+    fog = std::pow(2.0f, exponent);
+    if (type < 6)
+      fog = 1 - fog;
+  }
+  return static_cast<u32>(fog * 256);
+}
+
 FragmentShader::FragmentShader(Memory &memory, std::span<const u32> bp, const TevRegisters &colors,
                                const TevRegisters &konst, std::span<const u8> tmem)
     : sampler_(memory, bp, tmem), bp_(bp), colors_(colors), konst_(konst) {
@@ -371,18 +386,7 @@ std::optional<Color> FragmentShader::shade(const FragmentInputs &input, u32 *dep
       distance *= std::sqrt(offset * offset + k * k) / k;
     }
     distance -= fog_c;
-    if (std::isnan(distance))
-      throw VertexError("Fog computation produced an undefined NaN");
-    float fog = std::clamp(distance, 0.0f, 1.0f);
-    if (fog_type >= 4) {
-      if (fog_type >= 6)
-        fog = 1 - fog;
-      const float exponent = fog_type & 1 ? -8.0f * fog * fog : -8.0f * fog;
-      fog = std::pow(2.0f, exponent);
-      if (fog_type < 6)
-        fog = 1 - fog;
-    }
-    const u32 factor = static_cast<u32>(fog * 256);
+    const u32 factor = fog_factor(distance, fog_type);
     for (unsigned channel = 0; channel < 3; ++channel) {
       const u32 component = (bp_[0xf2] >> (16 - channel * 8)) & 255;
       result[channel] =

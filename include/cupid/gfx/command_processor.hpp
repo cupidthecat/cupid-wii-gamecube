@@ -13,7 +13,16 @@ class CommandProcessor {
 public:
   CommandProcessor(Memory &memory, hw::Devices &devices, Console console);
   void gather(u8 byte);
-  void advance(u64 cycles);
+
+  void advance(u64 cycles) {
+    if (event_remaining_ || ((registers_[1] & 1) && fifo(0x30) >= 32)) {
+      advance_pending(cycles);
+      return;
+    }
+    command_cycles_ = 0;
+    devices_.set_interrupts(0xe00, interrupt_causes_);
+  }
+
   void reset_fifo();
   u32 read(u32 address, unsigned width);
   u32 read_efb(u32 address) const;
@@ -72,6 +81,7 @@ private:
   mutable u64 fragment_count_ = 0;
   mutable u64 hardware_fragment_count_ = 0;
   u64 event_remaining_ = 0;
+  u32 interrupt_causes_ = 0;
   u16 token_pending_ = 0;
   bool token_irq_pending_ = false, finish_pending_ = false, token_irq_ = false, finish_irq_ = false;
   bool display_list_ = false;
@@ -80,6 +90,7 @@ private:
   u16 read16(u32 address);
   void write16(u32 address, u16 value);
   void consume_fifo();
+  void advance_pending(u64 cycles);
   std::size_t decode(std::span<const u8> bytes);
   void write_bp(unsigned index, u32 value);
   void load_texture_memory(unsigned index, u32 value);

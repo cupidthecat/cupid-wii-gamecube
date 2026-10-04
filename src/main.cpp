@@ -22,7 +22,7 @@ struct Options {
   std::filesystem::path game, bios, user = "userdata", trace, state, log, output, input, frame_dump;
   std::filesystem::path ipl_fonts;
   std::filesystem::path input_replay, input_replay_follow;
-  std::string console = "auto", graphics = "software", audio = "none";
+  std::string console = "auto", cpu = "interpreter", graphics = "software", audio = "none";
   std::string display_aspect = "standard", remote_speakers = "off";
   std::string extract_file;
   runtime::RunLimits limits;
@@ -90,6 +90,8 @@ Options parse(int argc, char **argv) {
       o.trace_after_boot = true;
     else if (arg == "--game")
       o.game = value();
+    else if (arg == "--cpu")
+      o.cpu = value();
     else if (arg == "--bios")
       o.bios = value();
     else if (arg == "--ipl-fonts")
@@ -143,6 +145,8 @@ Options parse(int argc, char **argv) {
   }
   if (o.console != "auto" && o.console != "gamecube" && o.console != "wii")
     throw UsageError("Console must be auto, gamecube or wii");
+  if (o.cpu != "interpreter" && o.cpu != "native")
+    throw UsageError("CPU backend must be interpreter or native");
   if (o.graphics != "software" && o.graphics != "opengl")
     throw UsageError("Graphics backend must be software or opengl");
   if (o.display_aspect != "standard" && o.display_aspect != "widescreen" &&
@@ -181,6 +185,7 @@ Usage: cupid-wii-gamecube --game PATH [options]
 
   --game PATH                 RVZ, ISO/GCM disc, DOL or ELF executable
   --console auto|gamecube|wii  Select the guest console (auto from disc)
+  --cpu interpreter|native   Interpreter or experimental native integers (default interpreter)
   --headless                  Disable the game-output window
   --bios PATH                 Validate and load GameCube IPL for EXI reads
   --validate-bios             Check --bios without running software
@@ -212,7 +217,8 @@ Usage: cupid-wii-gamecube --game PATH [options]
   --output PATH               Destination of an explicitly requested read
 
 Exit codes: 0 command completed or run limit; 2 usage; 3 input;
-            4 unsupported guest behavior; 5 host I/O; 6 self-test failure.
+            4 unsupported guest behavior; 5 host I/O; 6 self-test failure;
+            77 native self-test unavailable on this host.
 Commercial gameplay is under development. See docs/compatibility.md.
 )";
 
@@ -276,12 +282,19 @@ int main(int argc, char **argv) {
       return 0;
     }
     if (options.self_test) {
+      if (options.cpu == "native" && !cpu::NativeInteger::supported()) {
+        std::cout << "SKIP: native integer execution requires an x86-64 host\n";
+        return 77;
+      }
       runtime::Machine machine(Console::GameCube);
+      if (options.cpu == "native")
+        machine.cpu().set_execution_backend(cpu::ExecutionBackend::NativeInteger);
       machine.load_executable(runtime::self_test_dol());
       for (unsigned i = 0; i < 7; ++i)
         machine.step();
       if (machine.memory().read32(0x5000) != 16 || machine.cpu().state().gpr[7] != 16 ||
-          machine.cpu().state().instructions != 7) {
+          machine.cpu().state().instructions != 7 ||
+          (options.cpu == "native" && machine.cpu().native_statistics().executed == 0)) {
         std::cerr << "Guest execution self-test failed\n";
         return 6;
       }
@@ -423,6 +436,10 @@ int main(int argc, char **argv) {
     platform::Output output({options.headless, options.audio == "sdl", options.frame_dump,
                              options.input, display_aspect, options.remote_speakers == "on"});
     runtime::Machine machine(console);
+    if (options.cpu == "native") {
+      machine.cpu().set_execution_backend(cpu::ExecutionBackend::NativeInteger);
+      message("Native integer execution enabled; remaining operations use the interpreter");
+    }
     if (options.graphics == "opengl") {
       machine.graphics().set_hardware_rendering(true);
       message("OpenGL rendering device: " + machine.graphics().hardware_device());

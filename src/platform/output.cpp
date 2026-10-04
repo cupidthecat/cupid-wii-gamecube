@@ -66,6 +66,7 @@ struct Output::Impl {
   u64 frames = 0, hash = 0, samples = 0;
   u64 nonzero_samples = 0, pcm_hash = 14695981039346656037ULL;
   u32 peak = 0;
+  DiscAudioStats disc_stats;
   hw::RemoteState remote;
 #if CUPID_HAS_SDL2
   SDL_Window *window = nullptr;
@@ -76,6 +77,7 @@ struct Output::Impl {
   std::exception_ptr audio_error;
   std::atomic<bool> audio_lock_failure{false};
   std::unique_ptr<audio::SampleFifo> dma;
+  std::unique_ptr<audio::SampleFifo> disc;
   std::array<std::unique_ptr<audio::SampleFifo>, 4> speakers;
   HostAudioStats host_stats;
 
@@ -105,6 +107,7 @@ struct Output::Impl {
                                  static_cast<std::size_t>(length) / sizeof(s16)};
       const audio::MixerOptions mixing;
       self.dma->mix(destination, mixing);
+      self.disc->mix(destination, mixing);
       for (auto &speaker : self.speakers)
         speaker->mix(destination, mixing);
       self.host_stats.mixed_frames += destination.size() / 2;
@@ -256,6 +259,8 @@ Output::Output(const OutputOptions &options) : impl_(std::make_unique<Impl>()) {
   }
   if (options.audio) {
     impl_->dma = std::make_unique<audio::SampleFifo>();
+    impl_->disc = std::make_unique<audio::SampleFifo>(2250);
+    impl_->disc->set_volume(0, 0);
     for (auto &speaker : impl_->speakers)
       speaker = std::make_unique<audio::SampleFifo>(36000);
     SDL_AudioSpec desired{}, obtained{};
@@ -581,6 +586,58 @@ void Output::remote_speaker(unsigned port, const audio::RemoteSpeakerPacket &pac
 #endif
 }
 
+void Output::disc_audio_control(u32 divisor, u8 left, u8 right) {
+  if (divisor != 2248 && divisor != 2250 && divisor != 3372 && divisor != 3375)
+    throw std::invalid_argument("Unsupported disc audio rate divisor");
+#if CUPID_HAS_SDL2
+  if (impl_->options.audio) {
+    const std::lock_guard lock(impl_->audio_mutex);
+    impl_->check_audio_error_locked();
+    impl_->disc->set_rate_divisor(divisor);
+    impl_->disc->set_volume(left, right);
+  }
+#else
+  (void)left;
+  (void)right;
+#endif
+}
+
+void Output::disc_audio(std::span<const s16> samples, u32 divisor, u8 left, u8 right) {
+  if (samples.size() & 1)
+    throw std::invalid_argument("Disc audio has an incomplete stereo frame");
+  disc_audio_control(divisor, left, right);
+  auto &stats = impl_->disc_stats;
+  stats.samples += samples.size();
+  for (s16 sample : samples) {
+    stats.nonzero_samples += sample != 0;
+    stats.peak = std::max(stats.peak, static_cast<u32>(sample < 0 ? -s32(sample) : s32(sample)));
+    const auto bits = static_cast<u16>(sample);
+    stats.hash = (stats.hash ^ (bits >> 8)) * 1099511628211ULL;
+    stats.hash = (stats.hash ^ (bits & 255)) * 1099511628211ULL;
+  }
+#if CUPID_HAS_SDL2
+  if (impl_->options.audio) {
+    const std::lock_guard lock(impl_->audio_mutex);
+    impl_->check_audio_error_locked();
+    // The decoded pair follows the same right/left convention as audio DMA.
+    std::array<s16, 336> ordered{};
+    while (!samples.empty()) {
+      const auto count = std::min(samples.size(), ordered.size());
+      for (std::size_t n = 0; n < count; n += 2) {
+        ordered[n] = samples[n + 1];
+        ordered[n + 1] = samples[n];
+      }
+      impl_->disc->push_stereo(std::span<const s16>(ordered).first(count));
+      samples = samples.subspan(count);
+    }
+  }
+#endif
+}
+
+DiscAudioStats Output::disc_audio_stats() const {
+  return impl_->disc_stats;
+}
+
 bool Output::remote_speaker_processing() const {
   return impl_->options.remote_speakers;
 }
@@ -592,6 +649,7 @@ HostAudioStats Output::host_audio_stats() const {
   auto stats = impl_->host_stats;
   if (impl_->dma) {
     stats.dropped_granules = impl_->dma->dropped_granules();
+    stats.dropped_granules += impl_->disc->dropped_granules();
     for (const auto &speaker : impl_->speakers)
       stats.dropped_granules += speaker->dropped_granules();
   }

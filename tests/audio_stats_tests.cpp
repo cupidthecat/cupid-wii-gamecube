@@ -14,6 +14,14 @@ int main() {
       output.audio(pcm, rate);
     CHECK(output.audio_samples() == 32 && output.audio_nonzero_samples() == 16);
     CHECK(output.audio_peak() == 32768 && output.audio_hash() == 0xd9168ca25cee7afdULL);
+    for (u32 divisor : {2248u, 2250u, 3372u, 3375u})
+      output.disc_audio(pcm, divisor, 255, 128);
+    const auto disc = output.disc_audio_stats();
+    CHECK(disc.samples == 32 && disc.nonzero_samples == 16);
+    CHECK(disc.peak == 32768 && disc.hash == 0xd9168ca25cee7afdULL);
+    CHECK_THROWS(output.disc_audio(pcm, 0, 255, 255));
+    CHECK_THROWS(output.disc_audio(std::span<const s16>(pcm).first(3), 2250, 255, 255));
+    CHECK(output.disc_audio_stats().samples == 32);
     output.audio({}, 48000);
     CHECK_THROWS(output.audio(pcm, 20000));
     CHECK_THROWS(output.audio(std::span<const s16>(pcm).first(3), 48000));

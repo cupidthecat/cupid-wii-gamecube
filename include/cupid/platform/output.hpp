@@ -34,6 +34,11 @@ struct HostAudioStats {
   u64 left_nonzero = 0, right_nonzero = 0, dropped_granules = 0;
 };
 
+struct DiscAudioStats {
+  u64 samples = 0, nonzero_samples = 0, hash = 14695981039346656037ULL;
+  u32 peak = 0;
+};
+
 class Output {
 public:
   explicit Output(const OutputOptions &options);
@@ -45,6 +50,9 @@ public:
   bool rumble(unsigned port, bool enabled);
   void present(const Memory &memory, const hw::Xfb &xfb);
   void audio(std::span<const s16> samples, u32 sample_rate);
+  void disc_audio(std::span<const s16> samples, u32 rate_divisor, u8 left, u8 right);
+  void disc_audio_control(u32 rate_divisor, u8 left, u8 right);
+  DiscAudioStats disc_audio_stats() const;
   void remote_speaker(unsigned port, const audio::RemoteSpeakerPacket &packet);
   bool remote_speaker_processing() const;
   HostAudioStats host_audio_stats() const;

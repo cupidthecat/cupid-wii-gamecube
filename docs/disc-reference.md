@@ -19,6 +19,14 @@ parsing, bounds checks, chunk decoder, SHA-1, AES-CBC, and cache code.
 | File content reads | `Source/Core/DiscIO/DiscExtractor.cpp`: `ReadFile` |
 | Boot callers | `Source/Core/Core/Boot/Boot_BS2Emu.cpp`: Wii game partition selection and apploader reads |
 
+Physical Wii reads from WIA/RVZ reconstruct plaintext, H0/H1/H2 hashes, and hash
+exceptions for the complete 64-sector group before returning bytes. Each sector has its own
+AES-CBC hash and data chains, so the cache encrypts only requested sectors and
+records which sectors are ready. It retains 2 MiB of plaintext and hashes beside
+the 2 MiB encrypted group. Changing partitions or groups invalidates the cache;
+plaintext reads can replace the decoded chunk without changing retained sectors.
+An invalid exception elsewhere in the group still rejects the physical read.
+
 On 2026-10-03, a separate Linux GCC 13.3 test executable compiled the actual
 pinned reader, compression, padding, sector hash, and encryption sources. It
 compared their bytes with `disc::Image` from this working tree. The harness and
@@ -64,3 +72,48 @@ compared the Wii metadata against `TicketReader` and `TMDReader`. The supplied
 `RMGE01` image matched the title ID, IOS 33 requirement, title version, boot index,
 and all fields of its one content record. This checked metadata parsing, not
 cryptographic signature verification.
+
+On 2026-10-04, isolated before and current builds used the same complete source
+snapshot and tests, with only `src/disc/image.cpp` differing. A separate executable
+compiled the actual reader sources at the same pinned commit. Both builds matched
+that reader across five generated RVZ codecs: uncompressed, Bzip2, LZMA, LZMA2,
+and Zstandard. Each fixture contains 130 Wii sectors split after sector 64. Its
+28 reads cover physical and plaintext boundaries, hash headers, sector 63/64,
+sector 127/128, the partial final group, and repeated reads with intervening
+plaintext reads. Each codec compared 517,056 bytes with SHA-1
+`2837751139d6bfe72aeec5ed3951fe95f00d91dc`.
+
+The expanded supplied-image comparison added compressed chunk boundaries and
+physical hash and encryption boundaries to the earlier random samples. It also
+repeated the complete FST, file sample, and metadata checks above.
+
+| Local input | Matching reads | Compared bytes | SHA-1 |
+| --- | ---: | ---: | --- |
+| `GMSE01` | 106 | 5,313,779 | `72ce49aa9516c01e51cde64ccee663a3a09865bf` |
+| `RMGE01` | 143 | 6,364,155 | `fb9d0edb133811b264b19b0016041077a92845c2` |
+
+Two generated fixtures put an invalid exception in sector 63 or 64. The actual
+pinned reader rejected the first physical read from the affected group, even
+when the requested bytes came from its first sector. Both builds rejected
+repeated attempts and preserved the output buffer. Public tests also alternate
+two partition keys, read across their boundary, and decrypt a future sector whose
+exception changes its data IV. The GCC 13.3 Release pair passed all 36 executable
+public tests; 23 optional tests were explicitly skipped. The current disc tests
+also passed Clang 18.1.3 AddressSanitizer and UndefinedBehaviorSanitizer checks.
+
+The sealed GCC Release pair measured 120 random 64 KiB physical Wii reads with
+seed `0x4355504944525632`. Six sequential processes ran in before/current/current/
+before/before/current order. Every process returned the same 7,864,320 bytes,
+with SHA-1 `e97c58dda718365151d8e69ac2ec5cdc3f2236c1`. The timer excluded image
+construction and the final digest. Before times were 32.416, 45.457, and 41.845
+seconds; current times were 9.896, 8.458, and 5.585 seconds. Their medians fell
+from 41.845 to 8.458 seconds, a 79.8% reduction. Other builds shared the host
+during measurement. This measures physical sector reconstruction; game partition
+plaintext reads use a different path, so it does not establish a gameplay speedup.
+
+A paired headless `RMGE01` run used independent copies of the same user seed,
+software graphics, audio disabled, and one billion step attempts per build. Both
+ended with 999,994,000 executed instructions and identical values for all 44 final
+state fields. Their final frame bytes and all six persisted user files (33,958
+bytes) matched exactly. This is a bounded state comparison. The changing host
+load made the two elapsed times unsuitable for a gameplay performance comparison.

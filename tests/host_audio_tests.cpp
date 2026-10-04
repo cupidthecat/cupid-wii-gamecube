@@ -92,6 +92,27 @@ void dma_order(u32 rate, bool left) {
   std::cout << "DMA " << rate << " left " << stats.left_nonzero << " right " << stats.right_nonzero
             << '\n';
 }
+
+void disc_order(u32 divisor, bool left) {
+  platform::OutputOptions options;
+  options.audio = true;
+  platform::Output output(options);
+  std::array<s16, 2048> decoded_rl{};
+  for (std::size_t n = 0; n < decoded_rl.size(); n += 2)
+    decoded_rl[n + (left ? 1 : 0)] = 16000;
+  output.disc_audio(decoded_rl, divisor, left ? u8{255} : u8{0}, left ? u8{0} : u8{255});
+  const auto stats =
+      wait_audio(output, [](const auto &value) { return value.nonzero_samples != 0; });
+  CHECK(left ? stats.left_nonzero > 0 : stats.right_nonzero > 0);
+  CHECK(left ? stats.right_nonzero == 0 : stats.left_nonzero == 0);
+  CHECK(output.disc_audio_stats().samples == decoded_rl.size());
+  CHECK(output.disc_audio_stats().nonzero_samples == 1024);
+  CHECK(output.disc_audio_stats().hash == hash_samples(decoded_rl));
+  CHECK(output.audio_samples() == 0 && output.audio_hash() == 14695981039346656037ULL);
+  // Independent AI volume control must mute already queued disc samples.
+  output.disc_audio_control(divisor, 0, 0);
+  CHECK_THROWS(output.disc_audio_control(0, 255, 255));
+}
 } // namespace
 
 #include "machine_speaker_checks.inc"
@@ -121,6 +142,10 @@ int main() {
     for (u32 rate : {32000u, 48000u, 32028u, 48042u}) {
       dma_order(rate, true);
       dma_order(rate, false);
+    }
+    for (u32 divisor : {2248u, 2250u, 3372u, 3375u}) {
+      disc_order(divisor, true);
+      disc_order(divisor, false);
     }
     {
       platform::Output output({true, false, {}, {}});

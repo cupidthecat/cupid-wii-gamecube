@@ -4,8 +4,10 @@
 #include "cupid/core/types.hpp"
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <span>
+#include <stdexcept>
 
 namespace cupid {
 class Memory;
@@ -45,12 +47,26 @@ public:
                          u64 partition_offset = 0);
   u32 read(u32 address);
   void write(u32 address, u32 value);
-  void advance(u64 cycles);
+
+  void advance(u64 cycles) {
+    if (cycles > std::numeric_limits<u64>::max() - now_)
+      throw std::overflow_error("IPC clock overflow");
+    const u64 end = now_ + cycles;
+    if (!pending_event_ || end < next_event_) {
+      now_ = end;
+      return;
+    }
+    advance_events(end);
+  }
+
   u64 cycles() const;
   std::function<void(u64, std::span<u8>)> disc_read;
   std::function<void(u64, std::span<u8>)> partition_read;
 
 private:
+  void advance_events(u64 end);
+  u64 now_ = 0, next_event_ = 0;
+  bool pending_event_ = false;
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cupid/gfx/hardware_renderer.hpp"
+#include "cupid/gfx/xfb_copy.hpp"
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -17,6 +18,12 @@ namespace {
 constexpr const char *compute_source =
 #include "hardware_shader.inc"
     ;
+constexpr const char *xfb_source =
+#include "hardware_xfb_shader.inc"
+    ;
+constexpr const char *clear_source =
+#include "hardware_clear_shader.inc"
+    ;
 
 template <typename T> T load_gl(const char *name) {
   auto function = reinterpret_cast<T>(SDL_GL_GetProcAddress(name));
@@ -28,6 +35,37 @@ template <typename T> T load_gl(const char *name) {
 float fog_parameter(u32 value) {
   return std::bit_cast<float>(((value & 0x80000) << 12) | (((value >> 11) & 255) << 23) |
                               ((value & 2047) << 12));
+}
+
+const std::array<std::array<u32, 256>, 4> &fog_thresholds() {
+  // Each entry is the first representable input whose CPU fog factor reaches
+  // its integer bucket. This avoids driver-specific transcendental rounding
+  // changing the final eight-bit color at a bucket boundary.
+  static const auto tables = [] {
+    std::array<std::array<u32, 256>, 4> result{};
+    for (unsigned type = 0; type < 4; ++type) {
+      const auto factor = [type](u32 bits) {
+        return fog_factor(std::bit_cast<float>(bits), type + 4);
+      };
+      for (u32 bucket = 1; bucket <= 256; ++bucket) {
+        u32 lower = 0, upper = std::bit_cast<u32>(1.0f);
+        if (factor(upper) < bucket) {
+          result[type][bucket - 1] = std::bit_cast<u32>(std::numeric_limits<float>::infinity());
+          continue;
+        }
+        while (lower < upper) {
+          const u32 middle = lower + (upper - lower) / 2;
+          if (factor(middle) >= bucket)
+            upper = middle;
+          else
+            lower = middle + 1;
+        }
+        result[type][bucket - 1] = lower;
+      }
+    }
+    return result;
+  }();
+  return tables;
 }
 } // namespace
 
@@ -42,9 +80,10 @@ struct HardwareRenderer::Impl {
 
   struct CachedTexture {
     bool valid = false;
-    u64 hash = 0, revision = 0;
-    std::array<u32, 7> registers{};
-    std::vector<u8> ram_snapshot, texture_memory_snapshot;
+    u64 revision = 0;
+    std::array<u32, 6> registers{};
+    std::vector<u8> ram_snapshot;
+    std::array<std::vector<u8>, 3> texture_memory_snapshots;
     std::array<u32, 11> offsets{};
     std::vector<u32> texels;
   };
@@ -55,9 +94,13 @@ struct HardwareRenderer::Impl {
   SDL_GLContext context = nullptr;
   bool initialized = false, dirty = false;
   u64 dispatches = 0, fallbacks = 0;
+  u64 texture_decodes = 0, texture_uploads = 0, texture_snapshot_bytes = 0;
+  u64 xfb_copies = 0, xfb_readback_bytes = 0, efb_readbacks = 0, efb_readback_bytes = 0;
+  std::vector<u32> xfb_staging;
+  std::size_t xfb_capacity = 0;
   std::string device, fallback;
-  GLuint program = 0;
-  std::array<GLuint, 6> buffers{};
+  GLuint program = 0, xfb_program = 0, clear_program = 0;
+  std::array<GLuint, 8> buffers{};
 #define CUPID_GL_FUNCTION(type, name) type name = load_gl<type>("gl" #name)
   CUPID_GL_FUNCTION(PFNGLCREATESHADERPROC, CreateShader);
   CUPID_GL_FUNCTION(PFNGLSHADERSOURCEPROC, ShaderSource);
@@ -91,8 +134,27 @@ struct HardwareRenderer::Impl {
       : memory(guest_memory), texture_memory(guest_texture_memory), window(host_window),
         context(host_context), initialized(true) {
     device = reinterpret_cast<const char *>(GetString(GL_RENDERER));
+    program = compile_program(compute_source, "fragment");
+    xfb_program = compile_program(xfb_source, "XFB");
+    clear_program = compile_program(clear_source, "clear");
+    GenBuffers(GLsizei(buffers.size()), buffers.data());
+    const std::array<std::size_t, 8> sizes{640 * 528 * 2, 288,     11, 288, 88,
+                                           640 * 528 * 8, 4 * 256, 1};
+    for (unsigned i = 0; i < buffers.size(); ++i) {
+      BindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[i]);
+      BufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(sizes[i] * sizeof(u32)), nullptr,
+                 GL_DYNAMIC_DRAW);
+      BindBufferBase(GL_SHADER_STORAGE_BUFFER, i, buffers[i]);
+    }
+    BindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[6]);
+    const auto &thresholds = fog_thresholds();
+    BufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(thresholds), thresholds.data());
+    reset_counters();
+  }
+
+  GLuint compile_program(const char *source, const char *kind) {
     const GLuint shader = CreateShader(GL_COMPUTE_SHADER);
-    ShaderSource(shader, 1, &compute_source, nullptr);
+    ShaderSource(shader, 1, &source, nullptr);
     CompileShader(shader);
     GLint success = 0;
     GetShaderiv(shader, GL_COMPILE_STATUS, &success);
@@ -100,29 +162,21 @@ struct HardwareRenderer::Impl {
       std::array<char, 8192> log{};
       GetShaderInfoLog(shader, GLsizei(log.size()), nullptr, log.data());
       DeleteShader(shader);
-      throw std::runtime_error(std::string("Hardware fragment compilation failed: ") + log.data());
+      throw std::runtime_error(std::string("Hardware ") + kind +
+                               " compilation failed: " + log.data());
     }
-    program = CreateProgram();
-    AttachShader(program, shader);
-    LinkProgram(program);
+    const GLuint linked = CreateProgram();
+    AttachShader(linked, shader);
+    LinkProgram(linked);
     DeleteShader(shader);
-    GetProgramiv(program, GL_LINK_STATUS, &success);
+    GetProgramiv(linked, GL_LINK_STATUS, &success);
     if (!success) {
       std::array<char, 8192> log{};
-      GetProgramInfoLog(program, GLsizei(log.size()), nullptr, log.data());
-      DeleteProgram(program);
-      program = 0;
-      throw std::runtime_error(std::string("Hardware fragment link failed: ") + log.data());
+      GetProgramInfoLog(linked, GLsizei(log.size()), nullptr, log.data());
+      DeleteProgram(linked);
+      throw std::runtime_error(std::string("Hardware ") + kind + " link failed: " + log.data());
     }
-    GenBuffers(GLsizei(buffers.size()), buffers.data());
-    const std::array<std::size_t, 6> sizes{640 * 528 * 2, 288, 6, 14 + 34 * 7, 88, 640 * 528 * 2};
-    for (unsigned i = 0; i < buffers.size(); ++i) {
-      BindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[i]);
-      BufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(sizes[i] * sizeof(u32)), nullptr,
-                 GL_DYNAMIC_DRAW);
-      BindBufferBase(GL_SHADER_STORAGE_BUFFER, i, buffers[i]);
-    }
-    reset_counters();
+    return linked;
   }
 
   bool prepare_textures() {
@@ -135,6 +189,8 @@ struct HardwareRenderer::Impl {
       if ((order & 64) && texture_count)
         used[order & 7] = true;
     }
+    for (unsigned stage = 0; stage < ((bp[0] >> 16) & 7); ++stage)
+      used[(bp[0x27] >> (stage * 6)) & 7] = true;
     TextureSampler sampler(memory, bp, texture_memory);
     bool changed = false;
     std::array<u64, 8> hashes{};
@@ -160,42 +216,56 @@ struct HardwareRenderer::Impl {
           fallback = "Texture mip range requires the CPU fragment path";
           return false;
         }
-        u64 hash = 14695981039346656037ull;
-        std::array<u32, 7> signature{};
-        std::span<const u8> ram_bytes, texture_memory_bytes;
-        const auto hash_bytes = [&](std::span<const u8> bytes) {
-          for (u8 byte : bytes)
-            hash = (hash ^ byte) * 1099511628211ull;
-        };
-        for (unsigned group = 0; group < 7; ++group) {
-          const u32 value = bp[address + group * 4];
-          signature[group] = value;
-          for (unsigned i = 0; i < 4; ++i)
-            hash = (hash ^ u8(value >> (i * 8))) * 1099511628211ull;
+        const bool manual = (bp[address + 12] & (1u << 21)) != 0;
+        const bool indexed = format == 8 || format == 9 || format == 10;
+        // Filter, wrap and LOD bias affect sampling, not decoded source pixels.
+        // Only the reachable mip count belongs to the decoder's cache key.
+        const std::array<u32, 6> signature{levels,
+                                           bp[address + 8],
+                                           manual ? bp[address + 12] & 0x207fff : 0,
+                                           manual && format == 6 ? bp[address + 16] & 0x7fff : 0,
+                                           manual ? 0 : bp[address + 20],
+                                           indexed ? bp[address + 24] & 0xfff : 0};
+        std::span<const u8> ram_bytes;
+        std::array<std::span<const u8>, 3> texture_memory_bytes{};
+        u64 offset = 0, extent = 0;
+        for (unsigned level = 0; level <= levels; ++level) {
+          const unsigned w = ((width - 1) >> level) + 1, h = ((height - 1) >> level) + 1;
+          extent = std::max(extent, offset + u64((w + tile_w - 1) / tile_w) *
+                                                 ((h + tile_h - 1) / tile_h) * tile_bytes);
+          offset += u64(std::max(tile_w, width >> level)) * std::max(tile_h, height >> level) *
+                    tile_bytes / (tile_w * tile_h);
         }
-        if ((bp[address + 12] & (1u << 21)) || format == 8 || format == 9 || format == 10)
-          texture_memory_bytes = texture_memory;
-        hash_bytes(texture_memory_bytes);
-        if (!(bp[address + 12] & (1u << 21))) {
-          u64 offset = 0, extent = 0;
-          for (unsigned level = 0; level <= levels; ++level) {
-            const unsigned w = ((width - 1) >> level) + 1, h = ((height - 1) >> level) + 1;
-            extent = std::max(extent, offset + u64((w + tile_w - 1) / tile_w) *
-                                                   ((h + tile_h - 1) / tile_h) * tile_bytes);
-            offset += u64(std::max(tile_w, width >> level)) * std::max(tile_h, height >> level) *
-                      tile_bytes / (tile_w * tile_h);
-          }
+        const auto tmem_range = [&](std::size_t start, std::size_t length) {
+          if (start > texture_memory.size() || length > texture_memory.size() - start)
+            throw VertexError("Texture-memory cache range is out of bounds");
+          return texture_memory.subspan(start, length);
+        };
+        if (manual) {
+          const auto bank_bytes = static_cast<std::size_t>(format == 6 ? extent / 2 : extent);
+          texture_memory_bytes[0] = tmem_range((bp[address + 12] & 0x7fff) * 32, bank_bytes);
+          if (format == 6)
+            texture_memory_bytes[1] = tmem_range((bp[address + 16] & 0x7fff) * 32, bank_bytes);
+        } else {
           ram_bytes = memory.range(bp[address + 20] << 5, static_cast<std::size_t>(extent));
-          hash_bytes(ram_bytes);
+        }
+        if (indexed) {
+          const unsigned palette_bytes = format == 8 ? 32 : format == 9 ? 512 : 32768;
+          texture_memory_bytes[2] = tmem_range((bp[address + 24] & 1023) * 512, palette_bytes);
         }
         auto &cached = textures[unit];
-        const auto same_bytes = [](std::span<const u8> bytes, const std::vector<u8> &snapshot) {
+        const auto same_bytes = [&](std::span<const u8> bytes, const std::vector<u8> &snapshot) {
+          texture_snapshot_bytes += bytes.size();
           return bytes.size() == snapshot.size() &&
                  std::equal(bytes.begin(), bytes.end(), snapshot.begin());
         };
-        if (!cached.valid || cached.hash != hash || cached.registers != signature ||
-            !same_bytes(ram_bytes, cached.ram_snapshot) ||
-            !same_bytes(texture_memory_bytes, cached.texture_memory_snapshot)) {
+        bool same = cached.valid && cached.registers == signature;
+        if (same) {
+          same = same_bytes(ram_bytes, cached.ram_snapshot);
+          for (unsigned bank = 0; bank < texture_memory_bytes.size(); ++bank)
+            same &= same_bytes(texture_memory_bytes[bank], cached.texture_memory_snapshots[bank]);
+        }
+        if (!same) {
           cached.texels.clear();
           cached.valid = false;
           for (unsigned level = 0; level <= levels; ++level) {
@@ -210,13 +280,14 @@ struct HardwareRenderer::Impl {
                 cached.texels.push_back(value);
               }
           }
-          cached.hash = hash;
           cached.valid = true;
           ++cached.revision;
+          ++texture_decodes;
           cached.registers = signature;
           cached.ram_snapshot.assign(ram_bytes.begin(), ram_bytes.end());
-          cached.texture_memory_snapshot.assign(texture_memory_bytes.begin(),
-                                                texture_memory_bytes.end());
+          for (unsigned bank = 0; bank < texture_memory_bytes.size(); ++bank)
+            cached.texture_memory_snapshots[bank].assign(texture_memory_bytes[bank].begin(),
+                                                         texture_memory_bytes[bank].end());
         }
         hashes[unit] = cached.revision;
         changed |= cached.revision != uploaded_revisions[unit];
@@ -243,6 +314,7 @@ struct HardwareRenderer::Impl {
       BufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(data.size() * sizeof(u32)), data.data(),
                  GL_DYNAMIC_DRAW);
       uploaded_revisions = hashes;
+      ++texture_uploads;
     }
     return true;
   }
@@ -253,6 +325,10 @@ struct HardwareRenderer::Impl {
       DeleteBuffers(GLsizei(buffers.size()), buffers.data());
     if (program)
       DeleteProgram(program);
+    if (xfb_program)
+      DeleteProgram(xfb_program);
+    if (clear_program)
+      DeleteProgram(clear_program);
     SDL_GL_DeleteContext(context);
     SDL_DestroyWindow(window);
     if (initialized)
@@ -265,7 +341,7 @@ struct HardwareRenderer::Impl {
   }
 
   void reset_counters() {
-    const std::array<u32, 6> counters{0, 0xffffffff, 0, 0xffffffff, 0, 0};
+    const std::array<u32, 11> counters{0, 0xffffffff, 0, 0xffffffff, 0, 0, 0, 0, 0, 0, 0};
     BindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[2]);
     BufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(counters), counters.data());
   }
@@ -312,22 +388,30 @@ bool HardwareRenderer::begin(std::span<const u32> bp, const TevRegisters &colors
   impl_->samples_texture = false;
   impl_->textures_ready = false;
   std::copy_n(bp.begin(), 256, impl_->bp.begin());
-  if ((bp[0] >> 16) & 7)
-    impl_->fallback = "Indirect texture stages require the CPU fragment path";
-  else if (((bp[0xf1] >> 21) & 7) >= 4 || (((bp[0xf1] >> 21) & 7) && (bp[0xe8] & 1024)))
-    impl_->fallback = "Exponential fog and fog range adjustment require the CPU fragment path";
-  else if (((bp[0xf1] >> 21) & 7) &&
-           (((!(bp[0xf1] & (1u << 20))) && bp[0xf0] >= 32) ||
-            ((((bp[0xee] >> 11) & 255) == 255 || ((bp[0xf1] >> 11) & 255) == 255) &&
-             !(((bp[0xee] >> 11) & 255) == 255 && ((bp[0xf1] >> 11) & 255) == 255))))
+  if (((bp[0xf1] >> 21) & 7) &&
+      (((!(bp[0xf1] & (1u << 20))) && bp[0xf0] >= 32) ||
+       ((((bp[0xee] >> 11) & 255) == 255 || ((bp[0xf1] >> 11) & 255) == 255) &&
+        !(((bp[0xee] >> 11) & 255) == 255 && ((bp[0xf1] >> 11) & 255) == 255))))
     impl_->fallback = "Fog parameter range requires CPU diagnostics";
   else {
     bool texture_valid = false;
     for (unsigned stage = 0; stage <= ((bp[0] >> 10) & 15); ++stage) {
       const u32 order = bp[0x28 + stage / 2] >> ((stage & 1) * 12);
       const unsigned channel = (order >> 7) & 7;
-      if ((channel >= 2 && channel != 7) || bp[0x10 + stage]) {
-        impl_->fallback = "Indirect or retained texture state requires the CPU fragment path";
+      const u32 indirect = bp[0x10 + stage];
+      const unsigned matrix = (indirect >> 9) & 3, matrix_id = (indirect >> 11) & 3;
+      if ((channel >= 2 && channel != 5 && channel != 6 && channel != 7) ||
+          ((!matrix && matrix_id) || matrix_id == 3) || ((indirect >> 13) & 7) == 7 ||
+          ((indirect >> 16) & 7) == 7) {
+        impl_->fallback = "Reserved indirect control requires CPU diagnostics";
+        break;
+      }
+      if (stage == 0 && (indirect & (1 << 20))) {
+        impl_->fallback = "Cross-fragment indirect accumulation requires the CPU fragment path";
+        break;
+      }
+      if ((matrix || ((indirect >> 7) & 3)) && (indirect & 3) >= ((bp[0] >> 16) & 7)) {
+        impl_->fallback = "Retained indirect map requires the CPU fragment path";
         break;
       }
       texture_valid |= (order & 64) != 0;
@@ -395,6 +479,23 @@ bool HardwareRenderer::draw(const RasterWork &work) {
     impl_->fallback = "Non-finite interpolation requires CPU diagnostics";
     return false;
   }
+  if (((impl_->bp[0xf1] >> 21) & 7) && (impl_->bp[0xe8] & 1024)) {
+    bool safe = std::isfinite(work.viewport_width) && work.viewport_width != 0;
+    for (int x : {work.left, work.right - 1}) {
+      const float offset =
+          (float(x) - float(int(impl_->bp[0xe8] & 1023) - 342)) / work.viewport_width;
+      safe &= std::isfinite(offset * offset);
+    }
+    // A zero coefficient can yield an undefined range factor. Retain the CPU
+    // diagnostic instead of letting GLSL silently propagate a NaN.
+    for (unsigned i = 0; i < 10; ++i)
+      safe &= ((impl_->bp[0xe9 + i / 2] >> ((i & 1) ? 0 : 12)) & 4095) != 0;
+    if (!safe) {
+      ++impl_->fallbacks;
+      impl_->fallback = "Fog range parameters require CPU diagnostics";
+      return false;
+    }
+  }
   if (((impl_->bp[0xf1] >> 21) & 7) && !(impl_->bp[0xf1] & (1u << 20)) &&
       (fog_parameter(impl_->bp[0xee]) == 0 ||
        (((impl_->bp[0xee] >> 11) & 255) == 255 && ((impl_->bp[0xf1] >> 11) & 255) == 255))) {
@@ -449,7 +550,7 @@ bool HardwareRenderer::draw(const RasterWork &work) {
       return false;
     }
   }
-  std::array<u32, 14 + 34 * 7> data{};
+  std::array<u32, 16 + 34 * 7> data{};
   data[0] = work.left;
   data[1] = work.top;
   data[2] = work.right;
@@ -486,7 +587,9 @@ bool HardwareRenderer::draw(const RasterWork &work) {
   for (const auto &texture : work.textures)
     for (const auto &plane : texture)
       append(plane);
-  data[index] = impl_->samples_texture ? (impl_->pending_dispatches + 1) * 1048576u : 0;
+  data[index++] = (impl_->pending_dispatches + 1) * 1048576u;
+  data[index++] = impl_->samples_texture ? 1 : 0;
+  data[index] = std::bit_cast<u32>(work.viewport_width);
   impl_->BindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->buffers[3]);
   impl_->BufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(data), data.data());
   impl_->DispatchCompute((work.right - work.left + 7) / 8, (work.bottom - work.top + 7) / 8, 1);
@@ -505,11 +608,85 @@ void HardwareRenderer::upload(std::span<const u32> colors, std::span<const u32> 
                        GLsizeiptr(depths.size_bytes()), depths.data());
 }
 
+bool HardwareRenderer::copy_xfb(std::span<const u32> bp) {
+  const auto plan = plan_efb_xfb(bp);
+  const auto &layout = plan.layout;
+  const u64 extent = u64(layout.height - 1) * layout.stride + layout.copied_row_bytes;
+  auto destination = impl_->memory.range(layout.destination, static_cast<std::size_t>(extent));
+  const unsigned words_per_row = layout.copied_row_bytes / sizeof(u32);
+  const std::size_t words = std::size_t(layout.height) * words_per_row;
+  impl_->xfb_staging.resize(words);
+  impl_->current();
+  std::array<u32, 288> parameters{};
+  parameters[0] = static_cast<u32>(words);
+  parameters[1] = layout.stride;
+  parameters[2] = words_per_row;
+  parameters[3] = plan.top;
+  parameters[4] = plan.source_height;
+  parameters[5] = layout.width;
+  parameters[7] = bp[0x43] & 7;
+  parameters[8] = bp[0x52] & 1;
+  parameters[9] = bp[0x52] & 2;
+  std::copy(plan.weights.begin(), plan.weights.end(), parameters.begin() + 10);
+  const u64 ratio = std::bit_cast<u64>(plan.row_ratio);
+  parameters[13] = static_cast<u32>(ratio);
+  parameters[14] = static_cast<u32>(ratio >> 32);
+  parameters[16] = plan.top;
+  parameters[17] = layout.width;
+  parameters[18] = plan.top + plan.source_height;
+  parameters[19] = ((bp[0x4f] & 255) << 24) | ((bp[0x50] & 0xffff) << 8) | ((bp[0x4f] >> 8) & 255);
+  parameters[20] = bp[0x41];
+  parameters[21] = bp[0x40] & 16;
+  parameters[22] = bp[0x51];
+  const unsigned groups = static_cast<unsigned>((words + 63) / 64);
+  const unsigned horizontal = std::min(groups, 1024u);
+  parameters[23] = horizontal * 64;
+  const auto &gamma = xfb_gamma_tables()[plan.gamma];
+  std::copy(gamma.begin(), gamma.end(), parameters.begin() + 32);
+  impl_->BindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->buffers[3]);
+  impl_->BufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(parameters), parameters.data());
+  impl_->BindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->buffers[7]);
+  const auto bytes = words * sizeof(u32);
+  if (bytes > impl_->xfb_capacity) {
+    impl_->BufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(bytes), nullptr, GL_DYNAMIC_DRAW);
+    impl_->xfb_capacity = bytes;
+  }
+  impl_->UseProgram(impl_->xfb_program);
+  impl_->DispatchCompute(horizontal, (groups + horizontal - 1) / horizontal, 1);
+  impl_->MemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+  impl_->GetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, GLsizeiptr(bytes),
+                          impl_->xfb_staging.data());
+  for (unsigned row = 0; row < layout.height; ++row)
+    for (unsigned column = 0; column < words_per_row; ++column) {
+      const u32 value = impl_->xfb_staging[std::size_t(row) * words_per_row + column];
+      const auto offset = std::size_t(row) * layout.stride + column * sizeof(u32);
+      for (unsigned byte = 0; byte < 4; ++byte)
+        destination[offset + byte] = static_cast<u8>(value >> (byte * 8));
+    }
+  ++impl_->xfb_copies;
+  impl_->xfb_readback_bytes += bytes;
+  if (bp[0x52] & (1 << 11)) {
+    impl_->UseProgram(impl_->clear_program);
+    impl_->DispatchCompute((layout.width + 7) / 8, (plan.source_height + 7) / 8, 1);
+    impl_->MemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+    impl_->dirty = true;
+  }
+  impl_->UseProgram(impl_->program);
+  return true;
+}
+
 HardwareStats HardwareRenderer::synchronize(std::span<u32> colors, std::span<u32> depths,
                                             FragmentShader *shader) {
   HardwareStats result;
   result.dispatches = impl_->dispatches;
   result.fallback_rectangles = impl_->fallbacks;
+  result.texture_decodes = impl_->texture_decodes;
+  result.texture_uploads = impl_->texture_uploads;
+  result.texture_snapshot_bytes = impl_->texture_snapshot_bytes;
+  result.xfb_copies = impl_->xfb_copies;
+  result.xfb_readback_bytes = impl_->xfb_readback_bytes;
+  result.efb_readbacks = impl_->efb_readbacks;
+  result.efb_readback_bytes = impl_->efb_readback_bytes;
   if (!impl_->dirty)
     return result;
   impl_->current();
@@ -518,7 +695,10 @@ HardwareStats HardwareRenderer::synchronize(std::span<u32> colors, std::span<u32
                           colors.data());
   impl_->GetBufferSubData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(colors.size_bytes()),
                           GLsizeiptr(depths.size_bytes()), depths.data());
-  std::array<u32, 6> counters{};
+  result.efb_readbacks = ++impl_->efb_readbacks;
+  impl_->efb_readback_bytes += colors.size_bytes() + depths.size_bytes();
+  result.efb_readback_bytes = impl_->efb_readback_bytes;
+  std::array<u32, 11> counters{};
   impl_->BindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->buffers[2]);
   impl_->GetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(counters), counters.data());
   result.fragments = counters[0];
@@ -526,20 +706,34 @@ HardwareStats HardwareRenderer::synchronize(std::span<u32> colors, std::span<u32
   result.right = counters[2];
   result.top = counters[3];
   result.bottom = counters[4];
-  if (counters[5] && shader) {
-    const u32 pixel_order = counters[5] & 1048575;
+  const auto read_state = [&](u32 key) {
+    const u32 pixel_order = key & 1048575;
     const u32 block = pixel_order / 4;
     const u32 x = (block % 320) * 2 + (pixel_order & 1);
     const u32 y = (block / 320) * 2 + ((pixel_order >> 1) & 1);
-    std::array<u32, 2> texture_values{};
+    std::array<u32, 8> values{};
     impl_->BindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->buffers[5]);
-    impl_->GetBufferSubData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr((y * 640 + x) * 2 * sizeof(u32)),
-                            sizeof(texture_values), texture_values.data());
-    const auto unpack = [](u32 value) {
-      return Color{u8(value >> 24), u8(value >> 16), u8(value >> 8), u8(value)};
-    };
+    impl_->GetBufferSubData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr((y * 640 + x) * 8 * sizeof(u32)),
+                            sizeof(values), values.data());
+    return values;
+  };
+  const auto unpack = [](u32 value) {
+    return Color{u8(value >> 24), u8(value >> 16), u8(value >> 8), u8(value)};
+  };
+  if (counters[5] && shader) {
+    const auto texture_values = read_state(counters[5]);
     shader->restore_texture_state(unpack(texture_values[0]), unpack(texture_values[1]));
   }
+  if (counters[6] && shader) {
+    const auto values = read_state(counters[6]);
+    shader->restore_indirect_coordinates(
+        {static_cast<s32>(values[2]), static_cast<s32>(values[3])});
+  }
+  for (unsigned stage = 0; stage < 4; ++stage)
+    if (counters[7 + stage] && shader) {
+      const auto values = read_state(counters[7 + stage]);
+      shader->restore_indirect_texture(stage, unpack(values[4 + stage]));
+    }
   impl_->reset_counters();
   impl_->dirty = false;
   impl_->pending_dispatches = 0;
@@ -573,6 +767,10 @@ bool HardwareRenderer::draw(const RasterWork &) {
 }
 
 void HardwareRenderer::upload(std::span<const u32>, std::span<const u32>) {
+}
+
+bool HardwareRenderer::copy_xfb(std::span<const u32>) {
+  return false;
 }
 
 HardwareStats HardwareRenderer::synchronize(std::span<u32>, std::span<u32>, FragmentShader *) {

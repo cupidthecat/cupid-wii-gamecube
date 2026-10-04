@@ -187,7 +187,8 @@ struct Ipc::Impl {
   Memory &memory;
   hw::Devices &devices;
   Console console;
-  u64 now = 0, serial = 0, last_reply = 0;
+  u64 &now;
+  u64 serial = 0, last_reply = 0;
   u32 ppc_message = 0, arm_message = 0, flags = 0, mask = irq_ipc, control = 0;
   u32 gpio_out = 0, gpio_dir = 0xffdf3f, resets = 0xffffffff;
   u32 version = 30, disc_error = 0, last_length = 0;
@@ -244,7 +245,8 @@ struct Ipc::Impl {
   u32 bluetooth_generation = 0;
 
   Impl(Ipc &owner, Memory &memory, hw::Devices &devices, Console console)
-      : owner(owner), memory(memory), devices(devices), console(console), network(memory) {
+      : owner(owner), memory(memory), devices(devices), console(console), now(owner.now_),
+        network(memory) {
     network.unix_time = [&] { return u64(this->devices.rtc_seconds()) + 946684800; };
     network.read_file = [&](std::string_view name) -> std::optional<std::vector<u8>> {
       const std::string path(name);
@@ -300,8 +302,15 @@ struct Ipc::Impl {
     };
   }
 
+  void refresh_deadline() {
+    owner.pending_event_ = !events.empty();
+    if (owner.pending_event_)
+      owner.next_event_ = events.top().due;
+  }
+
   void schedule(Kind kind, u64 delay, u32 address = 0) {
     events.push(Event{now + delay, serial++, kind, address, 0, 0, {}});
+    refresh_deadline();
   }
 
   bool ready() const {
@@ -1448,6 +1457,7 @@ struct Ipc::Impl {
     if (ordered)
       last_reply = due;
     events.push(Event{due, serial++, Kind::Reply, address, 0, 0, {}});
+    refresh_deadline();
   }
 
   void stm_event(u32 event) {
@@ -2237,6 +2247,8 @@ struct Ipc::Impl {
           event.due = now + 300 * (devices.ticks_per_second() / 1000000);
           event.data.resize(length);
           last_length = operation == 0x71 ? position : length;
+          if (operation == 0x70)
+            devices.disc_id_read();
           try {
             if (operation == 0x12) {
               event.data[3] = 2;
@@ -2264,6 +2276,32 @@ struct Ipc::Impl {
             event.data.clear();
           }
         }
+      }
+    } else if (operation == 0xab || (operation >= 0xe1 && operation <= 0xe4)) {
+      u32 command = operation << 24, argument1 = 0, argument2 = 0;
+      const u8 mode = memory.read8(input + 7);
+      if (operation == 0xab)
+        argument1 = memory.read32(input + 4);
+      else if (operation == 0xe1) {
+        command |= (u32(mode) & 3) << 16;
+        argument1 = memory.read32(input + 12);
+        argument2 = memory.read32(input + 8);
+      } else if (operation == 0xe2)
+        command |= (u32(mode) & 3) << 16;
+      else if (operation == 0xe3)
+        command |= ((u32(mode) & 1) << 17) | ((memory.read8(input + 11) & 1u) << 20);
+      else
+        command |= ((u32(mode) & 1) << 16) | (memory.read8(input + 11) & 15u);
+      const auto result = devices.disc_immediate(command, argument1, argument2);
+      event.due = now + 300 * (devices.ticks_per_second() / 1000000);
+      event.result = result.failed ? 2 : 1;
+      if (result.failed)
+        disc_error = result.error;
+      else if (operation == 0xe3 || operation == 0xe4) {
+        // These transfers retain the drive's immediate register and copy it even
+        // when the nominal output size is shorter than one word.
+        const u32 value = result.immediate;
+        event.data = {u8(value >> 24), u8(value >> 16), u8(value >> 8), u8(value)};
       }
     } else if (operation == 0x83 || operation == 0x84 || operation == 0x88 || operation == 0xe0 ||
                operation == 0x7a || operation == 0x95 || operation == 0x96) {
@@ -2313,6 +2351,7 @@ struct Ipc::Impl {
     else
       unsupported(address, "disc ioctl " + std::to_string(operation));
     events.push(std::move(event));
+    refresh_deadline();
   }
 };
 
@@ -2425,7 +2464,7 @@ bool Ipc::set_title_context(std::span<const u8> ticket, std::span<const u8> tmd,
 }
 
 u64 Ipc::cycles() const {
-  return impl_->now;
+  return now_;
 }
 
 u32 Ipc::read(u32 address) {
@@ -2531,14 +2570,12 @@ void Ipc::write(u32 address, u32 value) {
   }
 }
 
-void Ipc::advance(u64 cycles) {
+void Ipc::advance_events(u64 end) {
   auto &state = *impl_;
-  if (cycles > std::numeric_limits<u64>::max() - state.now)
-    throw std::overflow_error("IPC clock overflow");
-  const u64 end = state.now + cycles;
   while (!state.events.empty() && state.events.top().due <= end) {
     auto event = state.events.top();
     state.events.pop();
+    state.refresh_deadline();
     state.now = event.due;
     if (event.kind == Impl::Kind::Request) {
       state.requests.push_back(event.address);

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
+#include "cupid/audio/disc_stream.hpp"
 #include "cupid/core/types.hpp"
 #include <array>
 #include <functional>
@@ -26,6 +27,11 @@ struct Xfb {
   float aspect_ratio = 4.0f / 3.0f;
 };
 
+struct DiscCommandResult {
+  bool failed = false;
+  u32 immediate = 0, error = 0;
+};
+
 class Devices {
 public:
   explicit Devices(Console console);
@@ -35,8 +41,16 @@ public:
   void advance(u64 cpu_cycles);
   bool external_interrupt_pending() const;
   void set_interrupt(u32 cause, bool active);
+
+  void set_interrupts(u32 mask, u32 causes) {
+    pi_[0] = (pi_[0] & ~mask) | (causes & mask);
+  }
+
   void dsp_interrupt();
   void reset_disc(bool spinup);
+  void prepare_disc_boot(bool streaming, u8 buffer_size);
+  void disc_id_read();
+  DiscCommandResult disc_immediate(u32 command, u32 argument1 = 0, u32 argument2 = 0);
   void set_pad(unsigned port, const PadState &pad);
   void poll_controllers();
   Xfb xfb(unsigned field = 0) const;
@@ -84,6 +98,8 @@ public:
   std::function<void(u64, std::span<u8>)> disc_read;
   std::function<void(const Xfb &)> xfb_present;
   std::function<void(std::span<const s16>, u32 sample_rate)> audio_samples;
+  std::function<void(std::span<const s16>, u32 rate_divisor, u8 left, u8 right)> disc_audio_samples;
+  std::function<void(u32 rate_divisor, u8 left, u8 right)> disc_audio_control;
   std::function<u32(u32)> ipc_read;
   std::function<void(u32, u32)> ipc_write;
   std::function<u16(u32)> dsp_read;
@@ -113,6 +129,9 @@ private:
   u64 video_period() const;
   void start_disc_command();
   void finish_disc_command();
+  bool disc_read_ready();
+  u32 disc_status_error() const;
+  u32 disc_audio_divisor() const;
   void controller_transfer();
   std::array<u32, 2> pad_data(unsigned port) const;
   void exi_transfer(unsigned channel);
@@ -131,8 +150,11 @@ private:
   std::array<u32, 10> di_{};
   u64 di_remaining_ = 0;
   u32 di_error_ = 0;
-  bool di_failed_ = false, motor_stopped_ = false;
+  enum class DriveState : u8 { Ready, ReadyNoReads, CoverOpened, Changed, NoMedium, Stopped, NoId };
+  DriveState drive_state_ = DriveState::ReadyNoReads;
+  bool di_failed_ = false;
   std::vector<u8> di_data_;
+  audio::DiscStream disc_stream_;
   std::array<PadState, 4> pads_{};
   std::array<u8, 4> pad_modes_{3, 3, 3, 3};
   std::array<std::array<u32, 3>, 4> si_channels_{};

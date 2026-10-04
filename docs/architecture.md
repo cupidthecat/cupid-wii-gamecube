@@ -8,6 +8,15 @@ The interpreter fetches guest instructions through its instruction cache, transl
 
 After every instruction, Machine advances graphics events, DSP work, IOS requests, and hardware devices by the returned cycle count. It checks external interrupt state before the next instruction. Host input and wall-clock bounds are polled every 4,096 step attempts. Replay events use their next instruction and field deadlines. This scheduling is observable and deterministic for the tested fixtures, but full hardware edge timing remains unverified.
 
+The optional native integer backend emits x86-64 code for fetched immediate
+and rotate instructions. It shares the interpreter's fetch, exceptions,
+performance-monitor updates and cycle accounting, and returns to Machine
+after each instruction. Other operations use the existing handlers. Its
+bounded code cache keys actual fetched words, preserving retained instruction
+cache visibility after guest stores. Code pages alternate writable and
+executable protection on the owning CPU thread. This is an experimental
+single-instruction backend; the default remains the interpreter.
+
 ## Boot and discs
 
 The disc reader supplies random raw reads and plaintext game-partition reads. Its filesystem reader resolves FST paths without changing the disc. Machine executes the disc's actual guest apploader and fulfills its transfer requests, then continues from the returned entry point. The DOL and ELF loaders validate their sections before modifying memory. The current bootstrap does not execute the complete IPL boot sequence.
@@ -18,7 +27,7 @@ Wii boot selects the disc's requested IOS memory profile and establishes the tit
 
 CPU write-gather bytes enter the PI/CP FIFO ring. Graphics commands load CP, XF, and BP state, decode vertices, transform them, and assemble and clip primitives. The selected software or [OpenGL compute renderer](hardware-rendering.md) rasterizes covered pixels and runs TEV and pixel operations. The GPU path synchronizes raw EFB data for CPU pokes, reads, copies and checked software fallback. EFB copies write guest RAM. VI presentation reads guest YUYV framebuffer data; the SDL backend displays those bytes after color conversion.
 
-DSP program protocols produce planar PCM in guest RAM. Guest code can interleave it and configure audio DMA. The [host audio backend](host-audio.md) resamples main DMA and optional decoded Remote speaker packets into a fixed-rate SDL callback. Separate guest and host diagnostics retain the origin of the samples.
+DSP program protocols produce planar PCM in guest RAM. Guest code can interleave it and configure audio DMA. The [host audio backend](host-audio.md) resamples main DMA, decoded [disc streaming](disc-audio.md) and optional Remote speaker packets into a fixed-rate SDL callback. Separate guest and host diagnostics retain the origin of the samples.
 
 ## Input and storage
 

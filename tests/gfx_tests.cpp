@@ -334,6 +334,54 @@ void interrupts() {
   CHECK(graphics.read(0x0c00100e, 2) == 0x3333);
 }
 
+void interrupt_reassertion(Console console) {
+  Memory memory(console);
+  hw::Devices devices(console);
+  gfx::CommandProcessor graphics(memory, devices, console);
+  devices.write(0x0c003004, 0xe00, 4);
+  devices.set_interrupt(0xe20, true);
+  graphics.advance(0);
+  CHECK((devices.read(0x0c003000, 4) & 0xe20) == 0x20);
+
+  fifo(graphics, 0x2c, 32);
+  graphics.write(0x0c000002, 9, 2);
+  CHECK((devices.read(0x0c003000, 4) & 0xe20) == 0x820);
+  devices.write(0x0c003000, 0x800, 4);
+  CHECK(!devices.external_interrupt_pending());
+  graphics.advance(0);
+  CHECK(devices.external_interrupt_pending());
+
+  graphics.write(0x0c00100a, 3, 2);
+  bp(graphics, 0x48, 0x4321);
+  bp(graphics, 0x45, 2);
+  for (unsigned i = 0; i < 499; ++i)
+    graphics.advance(1);
+  CHECK((devices.read(0x0c003000, 4) & 0xe00) == 0x800);
+  graphics.advance(1);
+  CHECK((devices.read(0x0c003000, 4) & 0xe20) == 0xe20);
+  CHECK(graphics.read(0x0c00100e, 2) == 0x4321);
+  devices.write(0x0c003000, 0xe00, 4);
+  graphics.advance(1);
+  CHECK((devices.read(0x0c003000, 4) & 0xe20) == 0xe20);
+  graphics.write(0x0c00100a, 15, 2);
+  graphics.write(0x0c000002, 0, 2);
+  devices.set_interrupt(0xe00, true);
+  graphics.advance(0);
+  CHECK((devices.read(0x0c003000, 4) & 0xe20) == 0x20);
+
+  // A disabled FIFO resumes as soon as the read-enable register is written.
+  fifo(graphics, 0x20, 0x1000);
+  fifo(graphics, 0x24, 0x1040);
+  fifo(graphics, 0x38, 0x1000);
+  fifo(graphics, 0x30, 32);
+  const auto commands = graphics.command_count();
+  graphics.advance(1000);
+  CHECK(graphics.command_count() == commands);
+  graphics.write(0x0c000002, 1, 2);
+  CHECK(graphics.command_count() == commands + 32);
+  CHECK(graphics.read(0x0c000030, 2) == 0);
+}
+
 void copies() {
   Memory memory(Console::GameCube);
   hw::Devices devices(Console::GameCube);
@@ -384,6 +432,8 @@ int main() {
     display_list_aliases(Console::Wii);
     ring();
     interrupts();
+    interrupt_reassertion(Console::GameCube);
+    interrupt_reassertion(Console::Wii);
     copies();
     primitive_pipeline();
     depth_and_alpha();

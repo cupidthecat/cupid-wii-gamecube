@@ -174,7 +174,7 @@ Bytes filesystem_table(bool wii) {
 }
 
 Fixture fixture(u32 codec, bool wii = false, bool packed = false, bool zero_last = false,
-                bool exception = false, bool filesystem = false) {
+                bool exception = false, bool filesystem = false, u32 sectors = 8, u32 split = 4) {
   const bool wia = codec == 1;
   const u32 chunk = wia ? 0x200000 : 0x8000;
   Fixture result;
@@ -188,7 +188,7 @@ Fixture fixture(u32 codec, bool wii = false, bool packed = false, bool zero_last
     put32(result.raw, 0x40020, 0x50000 / 4);
     put32(result.raw, 0x40024, 0);
     put32(result.raw, 0x502b8, 0x10000 / 4);
-    put32(result.raw, 0x502bc, 0x40000 / 4);
+    put32(result.raw, 0x502bc, sectors * 0x8000 / 4);
     put32(result.raw, 0x502a4, 0x208);
     put32(result.raw, 0x502a8, 0x2c0 / 4);
     put32(result.raw, 0x502c0, 0x10001);
@@ -202,11 +202,11 @@ Fixture fixture(u32 codec, bool wii = false, bool packed = false, bool zero_last
     put32(result.raw, 0x502c0 + 0x1e4, 7);
     put16(result.raw, 0x502c0 + 0x1e8, 2);
     put16(result.raw, 0x502c0 + 0x1ea, 1);
-    put64(result.raw, 0x502c0 + 0x1ec, 8 * 0x7c00);
+    put64(result.raw, 0x502c0 + 0x1ec, sectors * 0x7c00);
     put32(result.raw, 0x502ac, 0x20);
     put32(result.raw, 0x502b0, 0x500 / 4);
     std::fill(result.raw.begin() + 0x50500, result.raw.begin() + 0x50520, 0x55);
-    result.plain = header(true, 8 * 0x7c00);
+    result.plain = header(true, sectors * 0x7c00);
     for (std::size_t i = 0x480; i < result.plain.size(); ++i)
       result.plain[i] = static_cast<u8>((i * 13 + i / 7) % 253);
   }
@@ -225,7 +225,7 @@ Fixture fixture(u32 codec, bool wii = false, bool packed = false, bool zero_last
   put32(result.file, 4, 0x1000000);
   put32(result.file, 8, wia ? 0x1000000 : 0x30000);
   put32(result.file, 0xc, 0xdc);
-  put64(result.file, 0x24, wii ? 0xa0000 : result.raw.size());
+  put64(result.file, 0x24, wii ? 0x60000 + sectors * 0x8000 : result.raw.size());
   const std::size_t h = 0x48;
   put32(result.file, h, wii ? 2 : 1);
   put32(result.file, h + 4, codec);
@@ -241,10 +241,10 @@ Fixture fixture(u32 codec, bool wii = false, bool packed = false, bool zero_last
       partitions[i] = static_cast<u8>(i);
     for (std::size_t segment = 0; segment < 2; ++segment) {
       const std::size_t base = 16 + segment * 16;
-      put32(partitions, base, static_cast<u32>(0x60000 / 0x8000 + segment * 4));
-      put32(partitions, base + 4, 4);
-      put32(partitions, base + 8, raw_groups + static_cast<u32>(segment) * 4);
-      put32(partitions, base + 12, 4);
+      put32(partitions, base, 0x60000 / 0x8000 + (segment ? split : 0));
+      put32(partitions, base + 4, segment ? sectors - split : split);
+      put32(partitions, base + 8, raw_groups + (segment ? split : 0));
+      put32(partitions, base + 12, segment ? sectors - split : split);
     }
   }
   put32(result.file, h + 0x90, wii ? 1 : 0);
@@ -261,7 +261,7 @@ Fixture fixture(u32 codec, bool wii = false, bool packed = false, bool zero_last
   put64(result.file, h + 0xb8, result.file.size());
   put32(result.file, h + 0xc0, static_cast<u32>(encoded.size()));
   result.file.insert(result.file.end(), encoded.begin(), encoded.end());
-  const u32 total_groups = raw_groups + (wii ? 8 : 0);
+  const u32 total_groups = raw_groups + (wii ? sectors : 0);
   Bytes groups(static_cast<std::size_t>(total_groups) * (wia ? 8 : 12));
   for (u32 index = 0; index < total_groups; ++index) {
     const bool partition = index >= raw_groups;
@@ -477,6 +477,147 @@ void wii_tests(u32 codec) {
   }
 }
 
+void wii_sector_cache_tests() {
+  for (u32 codec : {0u, 2u, 3u, 4u, 5u}) {
+    const auto sample = fixture(codec, true, true, false, true, false, 130, 64);
+    TemporaryFile file(sample.file);
+    disc::Image image(file.path);
+    Bytes encrypted(130 * 0x8000);
+    image.read(0x60000, encrypted);
+    Bytes output, plain(0x7c00), hashes(0x400);
+    output.resize(80);
+    image.read(0x60000 - 17, output);
+    CHECK(std::equal(output.begin(), output.begin() + 17, sample.raw.end() - 17));
+    CHECK(std::equal(output.begin() + 17, output.end(), encrypted.begin()));
+    std::array<u8, 16> key{};
+    for (std::size_t i = 0; i < key.size(); ++i)
+      key[i] = static_cast<u8>(i);
+    const disc::detail::Aes128 aes(key);
+    const std::array<u8, 16> zero{};
+    for (u64 sector : std::array<u64, 12>{129, 64, 63, 0, 127, 1, 128, 65, 62, 64, 129, 63}) {
+      const u64 offset = sector * 0x8000;
+      output.resize(0x8000);
+      image.read(0x60000 + offset, output);
+      CHECK(std::equal(output.begin(), output.end(), encrypted.begin() + offset));
+      aes.decrypt_cbc(std::span(output).first(0x400), hashes, zero);
+      std::array<u8, 16> iv{};
+      std::copy_n(output.begin() + 0x3d0, 16, iv.begin());
+      aes.decrypt_cbc(std::span(output).subspan(0x400), plain, iv);
+      CHECK(std::equal(plain.begin(), plain.end(), sample.plain.begin() + sector * 0x7c00));
+      const auto expected = disc::detail::sha1(std::span(plain).first(0x400));
+      CHECK(std::equal(expected.begin(), expected.end(), hashes.begin()));
+
+      // Plaintext reads replace the decoded chunk without invalidating reconstructed sectors.
+      image.read_game(((sector + 31) % 130) * 0x7c00, plain);
+      for (u64 within : {u64{0}, u64{0x3cf}, u64{0x3ff}, u64{0x400}, u64{0x7fff}}) {
+        const auto count = std::min<u64>(37, encrypted.size() - offset - within);
+        output.resize(static_cast<std::size_t>(count));
+        image.read(0x60000 + offset + within, output);
+        CHECK(std::equal(output.begin(), output.end(), encrypted.begin() + offset + within));
+      }
+    }
+  }
+}
+
+void wii_future_sector_exceptions() {
+  const auto make = [](u32 sector, u16 offset) {
+    auto sample = fixture(0, true, false, false, false, false, 130, 64);
+    Bytes payload(24);
+    put16(payload, 0, 1);
+    put16(payload, 2, offset);
+    for (std::size_t i = 4; i < payload.size(); ++i)
+      payload[i] = static_cast<u8>(0x80 + i);
+    const auto plain = std::span(sample.plain).subspan(sector * 0x7c00, 0x7c00);
+    payload.insert(payload.end(), plain.begin(), plain.end());
+    while (sample.file.size() % 4)
+      sample.file.push_back(0);
+    const u32 raw_groups = static_cast<u32>(sample.raw.size() / 0x8000);
+    const auto group = sample.groups_offset + (raw_groups + sector) * 12;
+    put32(sample.file, group, static_cast<u32>(sample.file.size() / 4));
+    put32(sample.file, group + 4, static_cast<u32>(payload.size()));
+    sample.file.insert(sample.file.end(), payload.begin(), payload.end());
+    seal(sample.file);
+    return sample;
+  };
+  {
+    const auto sample = make(63, 0x3d0);
+    TemporaryFile file(sample.file);
+    disc::Image image(file.path);
+    Bytes output(0x8000), hashes(0x400), plain(0x7c00);
+    image.read(0x60000, output);
+    image.read(0x60000 + 63 * 0x8000, output);
+    std::array<u8, 16> key{};
+    for (std::size_t i = 0; i < key.size(); ++i)
+      key[i] = static_cast<u8>(i);
+    const disc::detail::Aes128 aes(key);
+    const std::array<u8, 16> zero{};
+    aes.decrypt_cbc(std::span(output).first(0x400), hashes, zero);
+    for (std::size_t i = 0; i < 20; ++i)
+      CHECK(hashes[0x3d0 + i] == 0x84 + i);
+    std::array<u8, 16> iv{};
+    std::copy_n(output.begin() + 0x3d0, 16, iv.begin());
+    aes.decrypt_cbc(std::span(output).subspan(0x400), plain, iv);
+    CHECK(std::equal(plain.begin(), plain.end(), sample.plain.begin() + 63 * 0x7c00));
+  }
+  for (u32 sector : {63u, 64u}) {
+    const auto sample = make(sector, 0x3f0);
+    TemporaryFile file(sample.file);
+    disc::Image image(file.path);
+    Bytes output(37, 0xa5), plain(0x7c00);
+    if (sector == 64)
+      image.read(0x60000, output);
+    output.assign(37, 0xa5);
+    for (unsigned retry = 0; retry < 2; ++retry) {
+      CHECK_THROWS(image.read(0x60000 + (sector / 64) * 0x200000, output));
+      CHECK(output == Bytes(37, 0xa5));
+      image.read_game(0, plain);
+      CHECK(std::equal(plain.begin(), plain.end(), sample.plain.begin()));
+    }
+  }
+}
+
+void wii_partition_cache_tests() {
+  auto sample = fixture(0, true, false, false, true, false, 130, 64);
+  constexpr u64 second = 0x60000 + 130 * 0x8000;
+  Bytes partitions(sample.file.begin() + 0x124, sample.file.begin() + 0x154);
+  partitions.insert(partitions.end(), sample.file.begin() + 0x124, sample.file.begin() + 0x154);
+  std::array<u8, 16> key{};
+  for (std::size_t i = 0; i < key.size(); ++i)
+    key[i] = partitions[0x30 + i] = static_cast<u8>(i ^ 0x5a);
+  put32(partitions, 0x30 + 16, second / 0x8000);
+  put32(partitions, 0x30 + 32, second / 0x8000 + 64);
+  put32(sample.file, 0x48 + 0x90, 2);
+  put64(sample.file, 0x48 + 0x98, sample.file.size());
+  copy_hash(sample.file, 0x48 + 0xa0, partitions);
+  sample.file.insert(sample.file.end(), partitions.begin(), partitions.end());
+  put64(sample.file, 0x24, second + 130 * 0x8000);
+  seal(sample.file);
+  TemporaryFile file(sample.file);
+  disc::Image image(file.path);
+  Bytes first(0x8000), other(0x8000), output(0x8000), plain(0x7c00);
+  image.read(0x60000 + 63 * 0x8000, first);
+  image.read(second + 63 * 0x8000, other);
+  CHECK(other != first);
+  const disc::detail::Aes128 aes(key);
+  std::array<u8, 16> iv{};
+  std::copy_n(other.begin() + 0x3d0, 16, iv.begin());
+  aes.decrypt_cbc(std::span(other).subspan(0x400), plain, iv);
+  CHECK(std::equal(plain.begin(), plain.end(), sample.plain.begin() + 63 * 0x7c00));
+  for (unsigned retry = 0; retry < 2; ++retry) {
+    image.read_game(0, plain);
+    image.read(0x60000 + 63 * 0x8000, output);
+    CHECK(output == first);
+    image.read(second + 63 * 0x8000, output);
+    CHECK(output == other);
+  }
+  Bytes left(37), right(37), crossing(74);
+  image.read(second - 37, left);
+  image.read(second, right);
+  image.read(second - 37, crossing);
+  CHECK(std::equal(left.begin(), left.end(), crossing.begin()));
+  CHECK(std::equal(right.begin(), right.end(), crossing.begin() + 37));
+}
+
 void malformed_tests() {
   const auto sample = fixture(0);
   for (std::size_t offset : {std::size_t{0x10}, std::size_t{0x34}, std::size_t{0x48}}) {
@@ -662,6 +803,9 @@ int main(int argc, char **argv) {
       container_tests(codec);
     wii_tests(0);
     wii_tests(5);
+    wii_sector_cache_tests();
+    wii_future_sector_exceptions();
+    wii_partition_cache_tests();
     malformed_tests();
     padding_tests();
     raw_wii_tests();

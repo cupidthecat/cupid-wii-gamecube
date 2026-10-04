@@ -23,6 +23,7 @@ struct RasterWork {
   RasterPlane depth, reciprocal_w;
   std::array<std::array<RasterPlane, 4>, 2> colors;
   std::array<std::array<RasterPlane, 3>, 8> textures;
+  float viewport_width = 1;
 };
 
 class Rasterizer {

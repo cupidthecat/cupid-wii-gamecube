@@ -8,6 +8,13 @@ ctest --test-dir build/release --output-on-failure
 
 CTest registers separate CPU, memory/core, disc, device, remote, remote-speaker, host mixer, extension-cipher, service discovery, DSP, handheld, graphics-command, vertex, texture, fragment, rasterizer, framebuffer-copy, IOS, network, system-configuration, executable-loader, font-loader and runtime suites, plus CLI help, version and synthetic runtime checks. Each suite has a timeout. Assertions stay active in Release builds because the test support code performs explicit checks.
 
+The native integer suite requires actual emitted execution for supported
+immediate and rotate operations and compares complete CPU state with the
+interpreter. It also checks fetched instruction visibility, fallback, cache
+bounds, interrupts and reset. The separate native CLI self-test selects that
+backend and requires a nonzero emitted-operation count. Both skip on hosts
+without x86-64 support; ordinary native game selection reports an error there.
+
 The authored guest video suite executes its display, graphics, controller and input-dependent redraw operations through PowerPC instructions on both console modes. See [guest video](guest-video.md) for the fixture and checked output. It uses no private console assets.
 
 The hardware renderer suite compares exact EFB pixels, depth and counters with the CPU path. The separate `guest_video_hardware` suite drives GPU draws, EFB texture copies and clears, texture sampling, XFB output and controller-driven redraw through actual guest instructions on both consoles. These suites skip an unavailable context by default; `CUPID_REQUIRE_HARDWARE_TESTS=ON` makes that condition fail. Shader and backend failures always fail. See [hardware rendering](hardware-rendering.md) for coverage, fallback and driver scope.
@@ -30,11 +37,77 @@ The output suite uses SDL's dummy video and audio drivers to create a renderer, 
 
 The pure host mixer suite checks sample queues, filtering, saturation, rate changes and overflow without SDL. The handheld suite checks authentication calculations, checked memory requests, an authored PowerPC command path, malformed buffers and unsupported variants.
 
+The disc-stream suite checks ADPCM decoding, drive command state, callback
+timing and actual guest DI/AI writes on both consoles. An optional compiled
+comparison covers every decoder header pair and retained predictor history,
+plus unchanged drive command handlers and streaming callbacks extracted into
+the build directory. The scheduling driver supplies clocks, encoded reads and
+mixer capture; it preserves the compared command, planner and reset functions.
+SDL audio checks exercise the separate stream queue, channel order and AI
+gains. These fixtures use authored bytes. See [disc audio](disc-audio.md) for
+the exact comparison scope and source mapping.
+
+Graphics scheduling tests check retained CP/PE interrupt levels after PI
+acknowledgement, split event boundaries and register-driven FIFO resumption.
+The separately frozen component/state comparison is recorded in
+[graphics scheduling](graphics-scheduling.md).
+
 Renderer readback checks standard, widescreen and square pixel views at the initial window size and after a resize. Mouse checks place infrared points inside the displayed image and exclude the surrounding black bars.
 
 The headless audio statistics suite checks sample counts, nonzero values, the full signed peak range and a fixed hash of canonical big-endian PCM bytes. Invalid rates and incomplete stereo pairs leave these statistics unchanged. The SDL output suite checks the same statistics while queueing audio.
 
 The synthetic runtime check executes a redistributable program assembled within the project. Passing that check shows the tested execution path works; it does not establish commercial-game compatibility. See [compatibility](compatibility.md) for asset-dependent results and remaining runtime limits.
+
+## Integrated snapshot checks
+
+A sealed October 4 integrated scheduling/cache/disc-audio snapshot passes all
+41 public checks and 17 optional compiled comparisons on native MSVC and GCC
+13. Both runs require successful OpenGL tests; Windows uses the RTX 3060 and
+Linux uses Mesa under Xvfb. The private asset-dependent opt-in test skips on
+both. Extracted Windows and Linux packages pass help, exact version metadata
+and guest execution checks. The frozen 209-file manifest has SHA-256
+`ef66567bb5946a7fe410ad1a59bf95476c46efe21cb20e3392677a2ea2b448e4`;
+receipts remain in `local-artifacts/integrated-continuation-20261004`.
+This snapshot excludes later native integer, GPU framebuffer-copy and
+on-demand disc-encryption work. Those changes require their own checks.
+
+The next sealed 215-file snapshot includes those three additions. Native MSVC
+Release and GCC 13 Release, both with LTO and required graphics contexts, pass
+43 public checks and all 17 compiled comparisons. The one private opt-in test
+skips. Both extracted packages also pass the native guest self-test. The source
+manifest SHA-256 is
+`7a1f6e68b4c942c8802888ef100ce820b2db53c3ebcb69c3277165a1ea457858`.
+The format gate first rejects mixed line endings in `src/hw/devices.cpp`;
+normalizing that file preserves every decoded text line and all 142 checked
+files then pass. Original failure, repaired bytes, hashes and complete logs
+remain in `local-artifacts/integrated-native-xfb-20261004`.
+Clang 18 static analysis also passes all 42 product translation units with no
+project diagnostics. The 256 generated audio coefficients pass their exact
+regeneration check.
+
+The same executables run Sunshine for three billion attempts and Galaxy for
+one billion attempts with both CPU backends on each platform. All 44 guest
+state fields, final PPM bytes and persistent files match between interpreter
+and native execution. Native execution actually handles 149,319,791 Sunshine
+operations and 81,038,847 Galaxy operations; the bounded cache holds 1,024
+entries. These runs use OpenGL, disabled host audio and copied ordinary input.
+
+| Platform | Game | Interpreter seconds | Native seconds | VI fields |
+| --- | --- | ---: | ---: | ---: |
+| Windows | Sunshine | 145.598339 | 141.971633 | 320 |
+| Windows | Galaxy | 68.769293 | 67.836642 | 76 |
+| Linux | Sunshine | 139.636891 | 142.837500 | 320 |
+| Linux | Galaxy | 72.558600 | 71.245818 | 76 |
+
+Across platforms all 52 reported fields, including backend diagnostics, match
+for each game/backend pair, as do frames and final storage. Galaxy's copied
+seeds differ only by a SRAM file created when the older long run ended between
+copies; that difference and the resulting identical final SRAM are recorded.
+The first Linux comparison helper failed before launching a runtime because it
+tried to hash a whole image in memory. Streaming hashes resolve that failure;
+both attempts remain preserved. Concurrent builds, captures and continuations
+share the host, so these timings establish no isolated backend speedup or
+full-speed gameplay.
 
 ## Sanitizers
 

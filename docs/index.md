@@ -21,6 +21,7 @@
 - [Locked-cache DMA](locked-cache-dma.md).
 - [Memory, boot, and platform mappings](runtime-reference.md).
 - [Disc formats](disc-format.md) and [disc mappings](disc-reference.md).
+- [Disc audio](disc-audio.md): drive commands, streamed ADPCM, timing and separate host mixing.
 - [ELF loader](elf-loader.md) and [ELF mappings](elf-reference.md).
 - [Devices and system-service mappings](device-reference.md).
 - [Wii system configuration](system-config.md): checked settings and controller registration.
@@ -30,6 +31,7 @@
 - [Host audio](host-audio.md): queueing, resampling, Remote routing and separate output diagnostics.
 - [Extension cipher](extension-cipher.md): first-party keys and phase-dependent Nunchuk register transfers.
 - [Graphics](graphics.md) and [graphics mappings](graphics-reference.md).
+- [Graphics scheduling](graphics-scheduling.md): FIFO deadlines, retained interrupt levels and measured checks.
 - [Hardware rendering](hardware-rendering.md): OpenGL compute coverage and driver requirements.
 - [Vertex transforms](vertex-reference.md).
 - [Rasterization](rasterizer-reference.md).

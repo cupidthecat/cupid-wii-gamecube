@@ -7,6 +7,11 @@ layout(std430, binding=2) buffer Counters { uint counters[]; };
 layout(std430, binding=3) readonly buffer Work { uint work[]; };
 layout(std430, binding=4) readonly buffer Textures { uint textures[]; };
 layout(std430, binding=5) buffer TextureState { uint texture_state[]; };
+layout(std430, binding=6) readonly buffer FogThresholds { uint fog_thresholds[]; };
+
+float fog_divide(float numerator, float denominator) {
+  return float(double(numerator)/double(denominator));
+}
 
 bool compare_value(uint mode, uint value, uint reference) {
   if (mode==0u) return false;
@@ -123,7 +128,16 @@ vec2 projected_uv(uint coordinate, ivec2 pixel) {
   precise vec2 result=vec2(plane(10u+coordinate*3u,pixel),plane(11u+coordinate*3u,pixel))*projection;
   return result;
 }
-ivec4 sample_texture(uint unit, uint coordinate, ivec2 pixel) {
+int coordinate_bits(int value) {
+  return int((uint(value)&16777215u)^8388608u)-8388608;
+}
+ivec2 fixed_coordinates(uint coordinate, ivec2 pixel) {
+  if ((state[0]&15u)==0u) return ivec2(0);
+  precise vec2 uv=projected_uv(coordinate,pixel);
+  ivec2 fixed_uv=ivec2(uv*128.0)&ivec2(16777215);
+  return (fixed_uv^ivec2(8388608))-ivec2(8388608);
+}
+ivec4 sample_texture(uint unit, uint coordinate, ivec2 pixel, ivec2 fixed_uv) {
   uint mode=texture_register(unit,0u),mode1=texture_register(unit,1u);
   ivec2 block=pixel&~ivec2(1);
   precise vec2 origin=projected_uv(coordinate,block);
@@ -140,13 +154,57 @@ ivec4 sample_texture(uint unit, uint coordinate, ivec2 pixel) {
   uint mip_mode=(mode>>5u)&3u;
   uint level=lod>0 && mip_mode!=0u ? uint(lod)>>4u : 0u;
   if (mip_mode==1u && (lod&15)>=8 && lod>0) ++level;
-  precise vec2 uv=projected_uv(coordinate,pixel);
-  ivec2 fixed_uv=ivec2(uv*128.0)&ivec2(16777215);
-  fixed_uv=(fixed_uv^ivec2(8388608))-ivec2(8388608);
   ivec4 result=sample_mip(unit,fixed_uv,level,linear);
   if (mip_mode==2u && lod>0 && (lod&15)!=0)
     result=(result*(16-(lod&15))+sample_mip(unit,fixed_uv,level+1u,linear)*(lod&15))>>4;
   return result;
+}
+int indirect_wrap(int value, uint mode) {
+  if (mode==0u) return value;
+  if (mode==6u) return 0;
+  return value&((1<<(16-int(mode)))-1);
+}
+ivec2 indirect_coordinates(uint control, ivec2 source, ivec2 previous, ivec4 map,
+                           out int alpha_bump) {
+  uint format=(control>>2u)&3u, bump=(control>>7u)&3u;
+  int shift=format==0u ? 0 : format==1u ? 3 : format==2u ? 4 : 5;
+  ivec3 channels=ivec3(map.a,map.b,map.g);
+  alpha_bump=bump==0u ? 0 : channels[bump-1u];
+  alpha_bump=format==0u ? alpha_bump&248 : (alpha_bump<<(8-shift))&255;
+  int bias=format==0u ? -128 : 1;
+  ivec3 values=(channels>>shift)+ivec3((control&16u)!=0u ? bias : 0,
+                                    (control&32u)!=0u ? bias : 0,
+                                    (control&64u)!=0u ? bias : 0);
+  ivec2 translation=ivec2(0);
+  uint matrix=(control>>9u)&3u, matrix_id=(control>>11u)&3u;
+  if (matrix!=0u) {
+    uint base=6u+(matrix-1u)*3u;
+    int scale=int(((state[base]>>22u)&3u)|(((state[base+1u]>>22u)&3u)<<2u)|
+                  (((state[base+2u]>>22u)&1u)<<4u));
+    if (matrix_id==0u) {
+      for (uint row=0u;row<2u;++row) {
+        int total=0;
+        for (uint column=0u;column<3u;++column) {
+          int coefficient=int(((state[base+column]>>(row*11u))&2047u)^1024u)-1024;
+          total+=coefficient*values[column];
+        }
+        translation[row]=total>>3;
+      }
+    } else translation=(source*values[matrix_id-1u])/256;
+    int exponent=17-scale;
+    if (exponent>=0) translation>>=exponent;
+    else translation=ivec2(uvec2(translation)<<uint(-exponent));
+  }
+  ivec2 result=ivec2(indirect_wrap(source.x,(control>>13u)&7u),
+                    indirect_wrap(source.y,(control>>16u)&7u));
+  // Only the low 24 bits survive. Unsigned sums also cover scaled-matrix
+  // translations whose mathematical value exceeds the signed 32-bit range.
+  uvec2 combined=uvec2(result)+uvec2(translation);
+  if ((control&1048576u)!=0u) combined+=uvec2(previous);
+  return ivec2(coordinate_bits(int(combined.x)),coordinate_bits(int(combined.y)));
+}
+uint pack_rgba(ivec4 value) {
+  return (uint(value.r)<<24u)|(uint(value.g)<<16u)|(uint(value.b)<<8u)|uint(value.a);
 }
 bool shade(ivec2 pixel, inout uint depth, out ivec4 result) {
   RegisterFile registers;
@@ -164,19 +222,39 @@ bool shade(ivec2 pixel, inout uint depth, out ivec4 result) {
   uint last_color=0u,last_alpha=0u;
   ivec4 texture_color=ivec4(0);
   ivec4 raw_texture=ivec4(0);
+  RegisterFile indirect_maps;
+  indirect_maps.r0=ivec4(0); indirect_maps.r1=ivec4(0);
+  indirect_maps.r2=ivec4(0); indirect_maps.r3=ivec4(0);
+  uint texgens=state[0]&15u;
+  uint indirect_count=(state[0]>>16u)&7u;
+  for (uint stage=0u;stage<indirect_count;++stage) {
+    uint order=state[39]>>(stage*6u),coordinate=(order>>3u)&7u;
+    if (coordinate>=texgens) coordinate=0u;
+    uint scale=state[37u+stage/2u]>>((stage&1u)*8u);
+    ivec2 source=fixed_coordinates(coordinate,pixel);
+    source=ivec2(source.x>>int(scale&15u),source.y>>int((scale>>4u)&15u));
+    set_register(indirect_maps,stage,sample_texture(order&7u,coordinate,pixel,source));
+  }
+  ivec2 texture_coordinates=ivec2(0);
   uint count=((state[0]>>10u)&15u)+1u;
   for (uint stage=0u;stage<count;++stage) {
     uint order=state[40u+stage/2u]>>((stage&1u)*12u);
     uint cc=state[192u+stage*2u], ac=state[193u+stage*2u];
+    uint coordinate=(order>>3u)&7u;
+    if (coordinate>=texgens) coordinate=0u;
+    int alpha_bump;
+    uint indirect=state[16u+stage];
+    texture_coordinates=indirect_coordinates(indirect,fixed_coordinates(coordinate,pixel),
+                    texture_coordinates,get_register(indirect_maps,indirect&3u),alpha_bump);
     if ((order&64u)!=0u) {
-      uint texgens=state[0]&15u,coordinate=(order>>3u)&7u;
-      if (coordinate>=texgens) coordinate=0u;
-      ivec4 raw=texgens!=0u ? sample_texture(order&7u,coordinate,pixel) : ivec4(0);
+      ivec4 raw=texgens!=0u ? sample_texture(order&7u,coordinate,pixel,texture_coordinates) : ivec4(0);
       raw_texture=raw;
       texture_color=swap_color(raw,(ac>>2u)&3u);
     }
     uint color_channel=(order>>7u)&7u;
     ivec4 raster=color_channel<2u ? swap_color(color_channel==0u ? vertex_color0 : vertex_color1,ac&3u) : ivec4(0);
+    if (color_channel==5u || color_channel==6u)
+      raster=ivec4(color_channel==5u ? alpha_bump : alpha_bump|(alpha_bump>>5));
     uint selections=state[246u+stage/2u]>>((stage&1u)*10u);
     RegisterFile args;
     for (uint operand=0u;operand<4u;++operand) {
@@ -208,14 +286,20 @@ bool shade(ivec2 pixel, inout uint depth, out ivec4 result) {
     set_register(registers,last_alpha,next_register);
   }
   result=ivec4(get_register(registers,last_color).rgb,get_register(registers,last_alpha).a)&ivec4(255);
-  if (work[251]!=0u) {
-    uint offset=(uint(pixel.y)*640u+uint(pixel.x))*2u;
-    texture_state[offset]=(uint(texture_color.r)<<24u)|(uint(texture_color.g)<<16u)|
-                          (uint(texture_color.b)<<8u)|uint(texture_color.a);
-    texture_state[offset+1u]=(uint(raw_texture.r)<<24u)|(uint(raw_texture.g)<<16u)|
-                            (uint(raw_texture.b)<<8u)|uint(raw_texture.a);
-    uint order=uint((pixel.y/2)*320+pixel.x/2)*4u+uint((pixel.y&1)*2+(pixel.x&1));
-    atomicMax(counters[5],work[251]+order);
+  uint offset=(uint(pixel.y)*640u+uint(pixel.x))*8u;
+  uint order=uint((pixel.y/2)*320+pixel.x/2)*4u+uint((pixel.y&1)*2+(pixel.x&1));
+  uint key=work[251]+order;
+  if (work[252]!=0u) {
+    texture_state[offset]=pack_rgba(texture_color);
+    texture_state[offset+1u]=pack_rgba(raw_texture);
+    atomicMax(counters[5],key);
+  }
+  texture_state[offset+2u]=uint(texture_coordinates.x);
+  texture_state[offset+3u]=uint(texture_coordinates.y);
+  atomicMax(counters[6],key);
+  for (uint stage=0u;stage<indirect_count;++stage) {
+    texture_state[offset+4u+stage]=pack_rgba(get_register(indirect_maps,stage));
+    atomicMax(counters[7u+stage],key);
   }
   uint test=state[243];
   bool a=compare_value((test>>16u)&7u,uint(result.a),test&255u);
@@ -241,10 +325,31 @@ bool shade(ivec2 pixel, inout uint depth, out ivec4 result) {
       a=0.0;
       c=uintBitsToFloat((state[238]&524288u)==0u && (state[241]&524288u)==0u ? 4286578688u : 2139095040u);
     }
-    if ((state[241]&1048576u)!=0u) distance=a*(float(depth)/16777215.0);
-    else distance=(a*16777215.0)/float(int(state[239]-(depth>>state[240])));
+    if ((state[241]&1048576u)!=0u) distance=a*fog_divide(float(depth),16777215.0);
+    else distance=fog_divide(a*16777215.0,float(int(state[239]-(depth>>state[240]))));
+    if ((state[232]&1024u)!=0u) {
+      precise float offset=fog_divide(float(pixel.x)-float(int(state[232]&1023u)-342),uintBitsToFloat(work[253]));
+      precise float index=clamp(9.0-abs(offset)*9.0,0.0,9.0);
+      uint lower=uint(index),upper=min(9u,lower+1u);
+      precise float first=float((state[233u+lower/2u]>>((lower&1u)!=0u ? 0u : 12u))&4095u)/64.0;
+      precise float second=float((state[233u+upper/2u]>>((upper&1u)!=0u ? 0u : 12u))&4095u)/64.0;
+      precise float fraction=index-float(lower);
+      precise float k=first*(1.0-fraction)+second*fraction;
+      precise float squared=offset*offset+k*k;
+      precise float adjustment=fog_divide(float(sqrt(double(squared))),k);
+      distance=distance*adjustment;
+    }
     precise float fog=clamp(distance-c,0.0,1.0);
     uint factor=uint(fog*256.0);
+    if (fog_type>=4u) {
+      uint lower=0u,upper=256u;
+      while (lower<upper) {
+        uint middle=lower+(upper-lower)/2u;
+        if (fog>=uintBitsToFloat(fog_thresholds[(fog_type-4u)*256u+middle])) lower=middle+1u;
+        else upper=middle;
+      }
+      factor=lower;
+    }
     for (uint channel=0u;channel<3u;++channel) {
       uint fog_color=(state[242]>>(16u-channel*8u))&255u;
       result[channel]=int((uint(result[channel])*(256u-factor)+fog_color*factor)>>8u);

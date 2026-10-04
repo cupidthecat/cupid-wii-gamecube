@@ -368,7 +368,8 @@ private:
   u64 cached_output_size_ = 0, cached_data_offset_ = 0;
   bool cached_partition_ = false;
   Decoded cached_;
-  std::vector<u8> encrypted_cache_;
+  std::vector<u8> encrypted_cache_, plain_cache_, hash_cache_;
+  u64 encrypted_sectors_ = 0;
 
   void physical_read(u64 offset, std::span<u8> output) {
     range(offset, output.size(), stored_size_, "container read");
@@ -768,12 +769,14 @@ private:
     const auto &tail = partition.segments[1].size ? partition.segments[1] : partition.segments[0];
     const u64 size = (tail.start + tail.size - first) / sector_bytes * plaintext_bytes;
     const u64 start = group_index * plain_group_bytes;
-    std::vector<u8> plain(static_cast<std::size_t>(plain_group_bytes));
+    plain_cache_.assign(static_cast<std::size_t>(plain_group_bytes), 0);
+    auto &plain = plain_cache_;
     if (start < size)
       read_plain_partition(index, start,
                            std::span(plain).first(static_cast<std::size_t>(
                                std::min(plain_group_bytes, size - start))));
-    std::vector<u8> hashes(64 * static_cast<std::size_t>(hash_bytes));
+    hash_cache_.assign(64 * static_cast<std::size_t>(hash_bytes), 0);
+    auto &hashes = hash_cache_;
     for (std::size_t sector = 0; sector < 64; ++sector) {
       for (std::size_t block = 0; block < 31; ++block) {
         const auto hash =
@@ -832,17 +835,24 @@ private:
       }
     }
     encrypted_cache_.resize(static_cast<std::size_t>(hash_group_bytes));
+    encrypted_sectors_ = 0;
+  }
+
+  void encrypt_sector(std::size_t index, std::size_t sector) {
+    const u64 bit = u64{1} << sector;
+    if (encrypted_sectors_ & bit)
+      return;
+    const auto &partition = partitions_.at(index);
     const detail::Aes128 aes(partition.key);
     const std::array<u8, 16> zero{};
-    for (std::size_t sector = 0; sector < 64; ++sector) {
-      auto output = std::span(encrypted_cache_).subspan(sector * sector_bytes, sector_bytes);
-      aes.encrypt_cbc(std::span(hashes).subspan(sector * hash_bytes, hash_bytes),
-                      output.first(hash_bytes), zero);
-      std::array<u8, 16> iv{};
-      std::copy_n(output.begin() + 0x3d0, 16, iv.begin());
-      aes.encrypt_cbc(std::span(plain).subspan(sector * plaintext_bytes, plaintext_bytes),
-                      output.subspan(hash_bytes), iv);
-    }
+    auto output = std::span(encrypted_cache_).subspan(sector * sector_bytes, sector_bytes);
+    aes.encrypt_cbc(std::span(hash_cache_).subspan(sector * hash_bytes, hash_bytes),
+                    output.first(hash_bytes), zero);
+    std::array<u8, 16> iv{};
+    std::copy_n(output.begin() + 0x3d0, 16, iv.begin());
+    aes.encrypt_cbc(std::span(plain_cache_).subspan(sector * plaintext_bytes, plaintext_bytes),
+                    output.subspan(hash_bytes), iv);
+    encrypted_sectors_ |= bit;
   }
 
   void read_encrypted(std::size_t index, u64 offset, std::span<u8> output) {
@@ -861,6 +871,10 @@ private:
       const u64 within = relative % hash_group_bytes;
       const auto count =
           static_cast<std::size_t>(std::min<u64>(output.size(), hash_group_bytes - within));
+      // H0/H1/H2 and exceptions cover the full group; each sector's CBC chains are independent.
+      for (u64 sector = within / sector_bytes; sector <= (within + count - 1) / sector_bytes;
+           ++sector)
+        encrypt_sector(index, static_cast<std::size_t>(sector));
       std::copy_n(encrypted_cache_.begin() + static_cast<std::ptrdiff_t>(within), count,
                   output.begin());
       offset += count;

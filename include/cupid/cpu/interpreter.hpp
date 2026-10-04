@@ -3,6 +3,7 @@
 
 #include "cupid/core/bus.hpp"
 #include "cupid/cpu/cache.hpp"
+#include "cupid/cpu/native_integer.hpp"
 #include <array>
 #include <stdexcept>
 
@@ -58,6 +59,13 @@ public:
   void reset();
   void configure_boot();
   u32 step();
+  void set_execution_backend(ExecutionBackend backend);
+
+  ExecutionBackend execution_backend() const noexcept {
+    return backend_;
+  }
+
+  NativeIntegerStatistics native_statistics() const noexcept;
 
   bool last_step_fetched_instruction() const noexcept {
     return last_step_fetched_;
@@ -80,6 +88,8 @@ private:
 
   Bus &bus_;
   Console console_;
+  ExecutionBackend backend_ = ExecutionBackend::Interpreter;
+  std::unique_ptr<NativeInteger> native_integer_;
   State state_{};
   InstructionCache instruction_cache_;
   std::array<TlbEntry, 128> instruction_tlb_{}, data_tlb_{};

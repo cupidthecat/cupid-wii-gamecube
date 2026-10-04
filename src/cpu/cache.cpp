@@ -53,20 +53,14 @@ void InstructionCache::invalidate(u32 effective) {
     line.valid = false;
 }
 
-u32 InstructionCache::read(Bus &bus, u32 physical, bool enabled, bool locked) {
-  if (!enabled) {
-    u32 value = 0;
-    bus.read_instruction_words(physical, std::span<u32>(&value, 1));
-    return value;
-  }
-  if ((physical & 3) == 0) {
-    if (auto *line = obtain(bus, physical, locked))
-      return line->words[(physical >> 2) & 7];
-    std::array<u8, 4> bytes{};
-    if (!bus.read_instruction_bytes(physical, bytes))
-      throw BusFault(physical, false, "Locked instruction-cache miss has no defined backing", true);
-    return (u32(bytes[0]) << 24) | (u32(bytes[1]) << 16) | (u32(bytes[2]) << 8) | bytes[3];
-  }
+u32 InstructionCache::read_locked_miss(Bus &bus, u32 physical) {
+  std::array<u8, 4> bytes{};
+  if (!bus.read_instruction_bytes(physical, bytes))
+    throw BusFault(physical, false, "Locked instruction-cache miss has no defined backing", true);
+  return (u32(bytes[0]) << 24) | (u32(bytes[1]) << 16) | (u32(bytes[2]) << 8) | bytes[3];
+}
+
+u32 InstructionCache::read_unaligned(Bus &bus, u32 physical, bool locked) {
   std::array<u8, 4> bytes{};
   unsigned copied = 0;
   while (copied < bytes.size()) {
@@ -87,14 +81,10 @@ u32 InstructionCache::read(Bus &bus, u32 physical, bool enabled, bool locked) {
   return (u32(bytes[0]) << 24) | (u32(bytes[1]) << 16) | (u32(bytes[2]) << 8) | bytes[3];
 }
 
-InstructionCache::Line *InstructionCache::obtain(Bus &bus, u32 physical, bool locked) {
-  const u32 address = bus.instruction_cache_key(physical) & ~31u;
+InstructionCache::Line *InstructionCache::obtain_other(Bus &bus, u32 physical, u32 address,
+                                                       bool locked) {
   const unsigned set_index = (address >> 5) & 127;
   auto &set = sets_[set_index];
-  // Any allocation or other hit replaces this hint. Repeating the last hit
-  // leaves the three replacement bits unchanged; invalidation clears validity.
-  if (recent_way_ < 8 && recent_address_ == address && set[recent_way_].valid)
-    return &set[recent_way_];
   auto &hint = lookup_[(address >> 5) & (lookup_.size() - 1)];
   unsigned way = hint;
   if (way >= 8 || !set[way].valid || set[way].address != address) {

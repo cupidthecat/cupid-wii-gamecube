@@ -566,6 +566,18 @@ void CommandProcessor::write_color(unsigned x, unsigned y, u32 value) {
 }
 
 void CommandProcessor::copy_efb(u32 control) {
+  if (hardware_ && bp_state_[0x4d] && (control & (1 << 14))) {
+    const unsigned x = bp_state_[0x49] & 1023, y = (bp_state_[0x49] >> 10) & 1023;
+    if (x >= width || y >= height)
+      return;
+    try {
+      upload_hardware();
+      if (hardware_->copy_xfb(bp_state_))
+        return;
+    } catch (const std::exception &error) {
+      unavailable(0x0c008000, true, error.what());
+    }
+  }
   synchronize_hardware();
   unsigned x = bp_state_[0x49] & 1023, y = (bp_state_[0x49] >> 10) & 1023;
   unsigned w = (bp_state_[0x4a] & 1023) + 1, h = ((bp_state_[0x4a] >> 10) & 1023) + 1;
@@ -602,7 +614,7 @@ void CommandProcessor::copy_efb(u32 control) {
   }
 }
 
-void CommandProcessor::advance(u64 cycles) {
+void CommandProcessor::advance_pending(u64 cycles) {
   if (event_remaining_) {
     if (cycles >= event_remaining_) {
       event_remaining_ = 0;
@@ -622,11 +634,14 @@ void CommandProcessor::update_interrupts() {
   const u32 count = fifo(0x30);
   const u16 control = registers_[1];
   const bool bp = (control & 2) && fifo(0x38) == fifo(0x3c);
-  devices_.set_interrupt(0x800, (control & 1) && (((control & 4) && count > fifo(0x28)) ||
-                                                  ((control & 8) && count < fifo(0x2c)) ||
-                                                  ((control & 32) && bp)));
-  devices_.set_interrupt(0x200, token_irq_ && (pixel_registers_[5] & 1));
-  devices_.set_interrupt(0x400, finish_irq_ && (pixel_registers_[5] & 2));
+  interrupt_causes_ =
+      ((control & 1) && (((control & 4) && count > fifo(0x28)) ||
+                         ((control & 8) && count < fifo(0x2c)) || ((control & 32) && bp))
+           ? 0x800u
+           : 0u) |
+      (token_irq_ && (pixel_registers_[5] & 1) ? 0x200u : 0u) |
+      (finish_irq_ && (pixel_registers_[5] & 2) ? 0x400u : 0u);
+  devices_.set_interrupts(0xe00, interrupt_causes_);
 }
 
 u16 CommandProcessor::read16(u32 address) {

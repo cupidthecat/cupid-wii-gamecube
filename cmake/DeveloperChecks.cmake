@@ -23,4 +23,5 @@ if(CUPID_CLANG_TIDY AND CMAKE_GENERATOR MATCHES "Ninja|Makefiles")
       ${cupid_sources} src/main.cpp
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "Checking project sources with Clang static analysis" VERBATIM)
+  add_dependencies(static-check cupid_core)
 endif()

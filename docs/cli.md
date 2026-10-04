@@ -11,6 +11,13 @@ cupid-wii-gamecube --game "/path/to/program.dol" --console gamecube \
 
 `--game` accepts DOL, ELF, RVZ, ISO, or GCM files. Disc metadata selects the console in `auto` mode. Executables default to GameCube mode; select `--console wii` when required. A disc's console must agree with an explicit selection.
 
+`--cpu interpreter` is the default. `--cpu native` selects experimental x86_64
+integer code generation; other operations use the interpreter. Instruction
+fetch, cache visibility, exceptions and device timing retain the same per-step
+path. Hosts without this code generator report an explicit error. The option
+also applies to `--self-test`, which returns skip code 77 on an unsupported
+host. It does not establish full-speed execution.
+
 `--graphics software` selects CPU rendering. `--graphics opengl` selects the OpenGL 4.3 compute path, with CPU execution for graphics states it cannot yet handle. A hidden context runs the graphics commands; `--headless` disables the separate game-output window. Both graphics and SDL output require a build with SDL support. A headless-only build supports software graphics. See [hardware rendering](hardware-rendering.md) for coverage and validation.
 
 `--audio sdl` resamples and mixes guest PCM into a 48 kHz stereo stream; `--audio none` leaves host audio disabled. `--remote-speakers on` includes decoded Remote packets and requires SDL audio; the default is `off`. Headless runs can enable audio. See [host audio](host-audio.md) for buffering and verified scope.
@@ -43,6 +50,11 @@ Time checks and interactive polling occur at startup and at most every 4,096 att
 Audio diagnostics count individual signed 16-bit sample values, so two values form one stereo frame. `audio_nonzero_samples` counts values with nonzero amplitude; `audio_peak` is the largest absolute value, including 32768 for the negative limit. `audio_hash` is FNV-1a over canonical big-endian sample bytes in arrival order. These measurements include headless runs with host audio disabled. A nonzero value establishes signal data in the tested span; it does not verify correct mixing or audible playback.
 
 Those fields retain the main DMA values before host mixing. Remote output leaves them unchanged. `host_audio_frames`, `host_audio_nonzero_samples` and `host_audio_dropped_granules` separately count host callback frames, signal values and queue overflow. Their wall-clock timing makes them unsuitable for deterministic guest-state comparisons.
+
+`cpu_backend` records the selected execution path. The `native_*` counters
+report emitted and fallback operations, compilations, cache hits, capacity
+fallbacks, retained entries and allocated executable bytes. They are host
+diagnostics, separate from guest CPU state; the default backend reports zeros.
 
 `page_table_write_errors` counts rejected backing writes when translation updates page-table reference/change bits. The translation and local TLB flags can remain valid even when a bounded host write rejects allocation padding. This counter is separate from PI interrupt requests and guest storage exceptions. See [memory boundaries](memory.md).
 
@@ -86,5 +98,6 @@ cupid-wii-gamecube --game "/path/to/game.rvz" --extract-file "/opening.bnr" \
 | 4 | Unsupported guest behavior or runtime failure. |
 | 5 | Filesystem operation failed. |
 | 6 | Synthetic self-test failed. |
+| 77 | Native synthetic self-test skipped on a host without x86-64 support. |
 
 An exit at a run limit does not establish that a game boots, reaches its title screen, or is playable. Guest exception loops can continue until a bound; inspect the trace and state to identify them.

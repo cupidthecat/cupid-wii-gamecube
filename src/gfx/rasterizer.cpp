@@ -413,8 +413,8 @@ void Rasterizer::rasterize(const ScreenVertex &a, const ScreenVertex &b, const S
       if (edge.dy < 0 || (edge.dy == 0 && edge.dx > 0))
         ++edge.constant;
     }
-    if (hardware &&
-        hardware({min_x, min_y, max_x, max_y, edges, depth_, w_plane, colors, textures}))
+    if (hardware && hardware({min_x, min_y, max_x, max_y, edges, depth_, w_plane, colors, textures,
+                              xf_float(xf_, 0x101a)}))
       continue;
     const auto covered = [&](int sample_x, int sample_y) {
       return std::all_of(edges.begin(), edges.end(), [&](const RasterWork::Edge &edge) {

@@ -69,6 +69,7 @@ void card_checksums(std::span<u8> block, std::size_t first, std::size_t last,
 
 Devices::Devices(Console console)
     : console_(console), clock_(console == Console::Wii ? 729000000 : 486000000),
+      disc_stream_(clock_, console == Console::Wii ? 2250 : 2248),
       aram_(console == Console::GameCube ? 16u * 1024 * 1024 : 0) {
   pi_[0] = 0x10100;
   pi_[10] = 0x1ff;
@@ -96,6 +97,16 @@ Devices::Devices(Console console)
   sram_[7] = 0xd0;
   sram_[23] = 0x2c;
   sram_[62] = sram_[63] = 0xff;
+  disc_stream_.read = [this](u64 position, std::span<u8> bytes) {
+    if (!disc_read)
+      throw std::runtime_error("Disc audio issued without an inserted disc");
+    disc_read(position, bytes);
+  };
+  disc_stream_.samples = [this](std::span<const s16> samples, u32 divisor) {
+    if (disc_audio_samples)
+      disc_audio_samples(samples, divisor, u8(ai_[1]), u8(ai_[1] >> 8));
+  };
+  disc_stream_.read_error = [this] { di_error_ = 0x31100; };
 }
 
 u32 Devices::canonical(u32 address) const {
@@ -131,8 +142,94 @@ void Devices::dsp_interrupt() {
 }
 
 void Devices::reset_disc(bool spinup) {
-  motor_stopped_ = !spinup;
+  flush_elapsed();
+  drive_state_ = !disc_read ? DriveState::CoverOpened
+                 : spinup   ? DriveState::NoId
+                            : DriveState::Changed;
+  disc_stream_.reset();
   di_error_ = 0;
+  rebuild_deadline();
+}
+
+void Devices::prepare_disc_boot(bool streaming, u8 buffer_size) {
+  flush_elapsed();
+  drive_state_ = DriveState::ReadyNoReads;
+  disc_stream_.configure(streaming, buffer_size ? buffer_size : 10);
+}
+
+u32 Devices::disc_audio_divisor() const {
+  return (console_ == Console::Wii ? 2250u : 2248u) * ((ai_[0] & 2) ? 2u : 3u) / 2;
+}
+
+bool Devices::disc_read_ready() {
+  const u32 error = !disc_read                            ? 0x23a00
+                    : drive_state_ == DriveState::Changed ? 0x62800
+                    : drive_state_ == DriveState::Stopped ? 0x20400
+                    : drive_state_ == DriveState::NoId    ? 0x20401
+                                                          : 0;
+  if (!error)
+    return true;
+  di_error_ = error;
+  di_failed_ = true;
+  return false;
+}
+
+u32 Devices::disc_status_error() const {
+  const u32 state = !disc_read && drive_state_ <= DriveState::ReadyNoReads
+                        ? u32(DriveState::NoMedium)
+                        : u32(drive_state_);
+  return di_error_ | ((state ? state - 1 : 0) << 24);
+}
+
+void Devices::disc_id_read() {
+  if (drive_state_ == DriveState::NoId)
+    drive_state_ = DriveState::ReadyNoReads;
+  else if (drive_state_ == DriveState::ReadyNoReads)
+    drive_state_ = DriveState::Ready;
+}
+
+DiscCommandResult Devices::disc_immediate(u32 command, u32 argument1, u32 argument2) {
+  flush_elapsed();
+  const u8 opcode = u8(command >> 24);
+  if (opcode != 0xab && (opcode < 0xe0 || opcode > 0xe4))
+    throw std::invalid_argument("Command is not an immediate disc operation");
+  di_[2] = command;
+  di_[3] = argument1;
+  di_[4] = argument2;
+  di_failed_ = false;
+  if (opcode != 0xe0)
+    di_error_ = 0;
+  if (opcode == 0xe0) {
+    di_[8] = disc_status_error();
+    di_error_ = 0;
+  } else if (opcode == 0xe3) {
+    if (drive_state_ == DriveState::Ready || drive_state_ == DriveState::ReadyNoReads ||
+        drive_state_ == DriveState::NoId)
+      drive_state_ = DriveState::Stopped;
+  } else if (opcode != 0xab && disc_read_ready()) {
+    u32 error = 0;
+    if (opcode == 0xe4) {
+      if (drive_state_ == DriveState::Ready)
+        error = 0x52402;
+      else
+        disc_stream_.configure((command & 0x10000) != 0, u8(command & 15));
+    } else {
+      const u8 operation = u8(command >> 16);
+      if (opcode == 0xe1) {
+        u32 streaming = 0;
+        // An enabled stream operation consumes this period before subcommand validation.
+        if (!disc_stream_.status(0, streaming))
+          drive_state_ = DriveState::Ready;
+      }
+      error = opcode == 0xe1 ? disc_stream_.command(operation, u64(argument1) << 2, argument2)
+                             : disc_stream_.status(operation, di_[8]);
+    }
+    if (error) {
+      di_failed_ = true;
+      di_error_ = error;
+    }
+  }
+  return {di_failed_, di_[8], disc_status_error()};
 }
 
 u32 Devices::read(u32 address, unsigned width) {
@@ -275,7 +372,7 @@ void Devices::write_word(u32 address, u32 value) {
     case 9:
       pi_[index] = value;
       if (console_ == Console::GameCube && (value & 4) == 0)
-        motor_stopped_ = false;
+        reset_disc(true);
       return;
     case 10:
       pi_[index] = value & 0x3ff;
@@ -335,6 +432,8 @@ void Devices::write_word(u32 address, u32 value) {
       if (index == 2)
         ai_remainder_ = 0;
     }
+    if (disc_audio_control && index <= 1)
+      disc_audio_control(disc_audio_divisor(), u8(ai_[1]), u8(ai_[1] >> 8));
     update_interrupts(interrupt_ai);
     return;
   }
@@ -712,6 +811,7 @@ void Devices::rebuild_deadline() {
   countdown(di_remaining_);
   countdown(aram_remaining_);
   countdown(audio_start_interrupt_);
+  next_deadline_ = std::min(next_deadline_, disc_stream_.next_event());
   for (const auto &card : cards_) {
     countdown(card.command_remaining);
     for (u64 transfer : card.transfer_remaining)
@@ -766,6 +866,7 @@ void Devices::advance_state(u64 amount) {
   u64 audio_packets = cupid::hw::detail::elapsed_periods(amount, audio_period, audio_remainder_);
   while (audio_packets-- != 0)
     audio_dma_block();
+  disc_stream_.advance(amount, disc_audio_divisor(), (ai_[0] & 1) != 0);
   if (ai_[0] & 1) {
     const u64 divisor = (console_ == Console::Wii ? 2250u : 2248u) * ((ai_[0] & 2) ? 2u : 3u) / 2;
     const u64 sample_cycles = clock_ * divisor / 108000000;
@@ -798,8 +899,7 @@ void Devices::start_disc_command() {
   if ((di_[7] & 4) != 0)
     fail(0x40800);
   else if (command == 0xe0) {
-    di_[8] = di_error_ | (motor_stopped_ ? 0x04000000u : (!disc_read ? 0x03000000u : 0));
-    di_error_ = 0;
+    disc_immediate(di_[2], di_[3], di_[4]);
   } else if (command == 0x12) {
     if (!dma_write)
       unavailable(di_base + 0x1c, true, "Disc DMA is not connected");
@@ -808,18 +908,20 @@ void Devices::start_disc_command() {
     put_word(std::span<u8>(di_data_).subspan(4, 4), 0x20060526);
     put_word(std::span<u8>(di_data_).subspan(8, 4), 0x41000000);
   } else if (command == 0xa8) {
-    if (!disc_read)
-      fail(0x23a00);
-    else if (motor_stopped_)
-      fail(0x20400);
-    else if ((di_[2] & 255) != 0 && (di_[2] & 255) != 0x40)
+    const bool id = (di_[2] & 255) == 0x40;
+    if (id)
+      disc_id_read();
+    else if (drive_state_ == DriveState::ReadyNoReads && (di_[2] & 255) == 0)
+      drive_state_ = DriveState::Ready;
+    if (!disc_read_ready()) {
+      // Preserve the drive-specific error set by the precondition check.
+    } else if ((di_[2] & 255) != 0 && !id)
       fail(0x52400);
     else if ((di_[7] & 2) == 0)
       fail(0x40800);
     else {
       if (!dma_write)
         unavailable(di_base + 0x1c, true, "Disc DMA is not connected");
-      const bool id = (di_[2] & 255) == 0x40;
       const u32 length = std::min(id ? 32u : di_[4], di_[6]);
       if (length > 64u * 1024 * 1024)
         unavailable(di_base + 0x1c, true, "Disc DMA exceeds supported transaction size");
@@ -834,11 +936,10 @@ void Devices::start_disc_command() {
         di_data_.clear();
       }
     }
-  } else if (command == 0xe3)
-    motor_stopped_ = true;
-  else if (command == 0xe1 || command == 0xe2 || command == 0xe4 || command == 0xab) {
-    unavailable(di_base + 0x1c, true, "Disc seek/audio command is not implemented");
-  } else
+  } else if (command == 0xe1 || command == 0xe2 || command == 0xe3 || command == 0xe4 ||
+             command == 0xab)
+    disc_immediate(di_[2], di_[3], di_[4]);
+  else
     fail(0x52000);
   di_remaining_ = 300 * (clock_ / 1000000);
 }

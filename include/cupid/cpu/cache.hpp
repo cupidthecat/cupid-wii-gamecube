@@ -21,5 +21,9 @@ private:
 
   std::array<std::array<Line, 8>, 128> sets_{};
   std::array<u8, 128> replacement_{};
+  // A host lookup hint. Tags and validity in sets_ remain authoritative.
+  std::array<u8, 4096> lookup_{};
+  u32 recent_address_ = 0;
+  u8 recent_way_ = 8;
 };
 } // namespace cupid::cpu

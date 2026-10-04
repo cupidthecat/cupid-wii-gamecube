@@ -494,7 +494,7 @@ u64 Interpreter::load(u32 effective, unsigned bytes) {
   }
 }
 
-void Interpreter::store(u32 effective, u64 value, unsigned bytes, bool reject_efb) {
+void Interpreter::store(u32 effective, u64 value, unsigned bytes) {
   if (state_.msr & msr::le)
     unsupported("Little-endian memory mode is not implemented");
   const auto transfer_pair = [&](const auto &first, const auto &second) {
@@ -519,26 +519,23 @@ void Interpreter::store(u32 effective, u64 value, unsigned bytes, bool reject_ef
     second();
   };
   if (bytes == 8) {
-    transfer_pair([&] { store(effective, static_cast<u32>(value >> 32), 4, true); },
-                  [&] { store(effective + 4, static_cast<u32>(value), 4, true); });
+    transfer_pair([&] { store(effective, static_cast<u32>(value >> 32), 4); },
+                  [&] { store(effective + 4, static_cast<u32>(value), 4); });
     return;
   }
   if (bytes <= 4 && (effective & 4095) + bytes > 4096) {
     const unsigned first = 4096 - (effective & 4095), second = bytes - first;
     transfer_pair(
         [&] {
-          store(effective, std::rotr(static_cast<u32>(value), static_cast<int>(second * 8)), first,
-                reject_efb);
+          store(effective, std::rotr(static_cast<u32>(value), static_cast<int>(second * 8)), first);
         },
-        [&] { store(effective + first, value, second, reject_efb); });
+        [&] { store(effective + first, value, second); });
     return;
   }
   const auto first = [&] {
     try {
       bool uncached = false;
       const u32 physical = translate_access(effective, false, true, uncached);
-      if (reject_efb && physical >= 0x08000000 && physical < 0x0c000000)
-        unsupported("CPU EFB binary64 writes are not implemented");
       store_physical(physical, static_cast<u32>(value), bytes, uncached);
     } catch (const BusFault &fault) {
       if (fault.unsupported_reason)
@@ -1327,7 +1324,9 @@ void Interpreter::execute_extended(u32 opcode) {
                                                                  : 0;
     const u64 sum = static_cast<u64>(left) + right + incoming;
     result = static_cast<u32>(sum);
-    if (arithmetic != 40 && arithmetic != 266)
+    if (arithmetic == 232 || arithmetic == 234)
+      carry(incoming == 0 && left != 0);
+    else if (arithmetic != 40 && arithmetic != 266)
       carry(sum >> 32);
     if (oe)
       overflow(add_overflow(left, right, result));

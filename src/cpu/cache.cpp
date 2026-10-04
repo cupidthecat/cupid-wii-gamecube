@@ -3,11 +3,49 @@
 #include <algorithm>
 
 namespace cupid::cpu {
+namespace {
+struct Replacement {
+  u8 mask = 0, value = 0;
+};
+
+constexpr auto replacement_updates = [] {
+  std::array<Replacement, 8> updates{};
+  for (unsigned way = 0; way < updates.size(); ++way) {
+    unsigned node = 0;
+    for (unsigned level = 0; level < 3; ++level) {
+      const unsigned branch = (way >> (2 - level)) & 1;
+      const u8 bit = static_cast<u8>(1u << node);
+      updates[way].mask |= bit;
+      if (!branch)
+        updates[way].value |= bit;
+      node = node * 2 + 1 + branch;
+    }
+  }
+  return updates;
+}();
+
+constexpr auto replacement_victims = [] {
+  std::array<u8, 128> victims{};
+  for (unsigned state = 0; state < victims.size(); ++state) {
+    unsigned node = 0, way = 0;
+    for (unsigned level = 0; level < 3; ++level) {
+      const unsigned branch = (state >> node) & 1;
+      way = (way << 1) | branch;
+      node = node * 2 + 1 + branch;
+    }
+    victims[state] = static_cast<u8>(way);
+  }
+  return victims;
+}();
+} // namespace
+
 void InstructionCache::reset() {
   for (auto &set : sets_)
     for (auto &line : set)
       line.valid = false;
   replacement_ = {};
+  lookup_.fill(8);
+  recent_way_ = 8;
 }
 
 void InstructionCache::invalidate(u32 effective) {
@@ -20,6 +58,14 @@ u32 InstructionCache::read(Bus &bus, u32 physical, bool enabled, bool locked) {
     u32 value = 0;
     bus.read_instruction_words(physical, std::span<u32>(&value, 1));
     return value;
+  }
+  if ((physical & 3) == 0) {
+    if (auto *line = obtain(bus, physical, locked))
+      return line->words[(physical >> 2) & 7];
+    std::array<u8, 4> bytes{};
+    if (!bus.read_instruction_bytes(physical, bytes))
+      throw BusFault(physical, false, "Locked instruction-cache miss has no defined backing", true);
+    return (u32(bytes[0]) << 24) | (u32(bytes[1]) << 16) | (u32(bytes[2]) << 8) | bytes[3];
   }
   std::array<u8, 4> bytes{};
   unsigned copied = 0;
@@ -45,12 +91,20 @@ InstructionCache::Line *InstructionCache::obtain(Bus &bus, u32 physical, bool lo
   const u32 address = bus.instruction_cache_key(physical) & ~31u;
   const unsigned set_index = (address >> 5) & 127;
   auto &set = sets_[set_index];
-  unsigned way = 8;
-  for (unsigned n = 0; n < 8; ++n)
-    if (set[n].valid && set[n].address == address) {
-      way = n;
-      break;
-    }
+  // Any allocation or other hit replaces this hint. Repeating the last hit
+  // leaves the three replacement bits unchanged; invalidation clears validity.
+  if (recent_way_ < 8 && recent_address_ == address && set[recent_way_].valid)
+    return &set[recent_way_];
+  auto &hint = lookup_[(address >> 5) & (lookup_.size() - 1)];
+  unsigned way = hint;
+  if (way >= 8 || !set[way].valid || set[way].address != address) {
+    way = 8;
+    for (unsigned n = 0; n < 8; ++n)
+      if (set[n].valid && set[n].address == address) {
+        way = n;
+        break;
+      }
+  }
   if (way == 8 && locked)
     return nullptr;
   if (way == 8) {
@@ -59,29 +113,20 @@ InstructionCache::Line *InstructionCache::obtain(Bus &bus, u32 physical, bool lo
         way = n;
         break;
       }
-    if (way == 8) {
-      unsigned node = 0;
-      way = 0;
-      for (unsigned level = 0; level < 3; ++level) {
-        const unsigned branch = (replacement_[set_index] >> node) & 1;
-        way = (way << 1) | branch;
-        node = node * 2 + 1 + branch;
-      }
-    }
+    if (way == 8)
+      way = replacement_victims[replacement_[set_index]];
     Line loaded = set[way];
     loaded.address = address;
     bus.read_instruction_words(physical & ~31u, loaded.words);
     loaded.valid = true;
     set[way] = loaded;
   }
-  unsigned node = 0;
-  for (unsigned level = 0; level < 3; ++level) {
-    const unsigned branch = (way >> (2 - level)) & 1;
-    const u8 bit = static_cast<u8>(1u << node);
-    replacement_[set_index] =
-        static_cast<u8>((replacement_[set_index] & ~bit) | (branch ? 0 : bit));
-    node = node * 2 + 1 + branch;
-  }
+  hint = static_cast<u8>(way);
+  const auto update = replacement_updates[way];
+  replacement_[set_index] =
+      static_cast<u8>((replacement_[set_index] & ~update.mask) | update.value);
+  recent_address_ = address;
+  recent_way_ = static_cast<u8>(way);
   return &set[way];
 }
 } // namespace cupid::cpu

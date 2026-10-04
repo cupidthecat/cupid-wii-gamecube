@@ -955,10 +955,236 @@ unsigned byte_backing_cases(Core::System &system) {
                   cache.read(bus, 0x201f, true, true) == value,
               cases, "locked split fallback retains missing tags");
     }
+    // Conflicting tags and changed backing distinguish a retained hit from an
+    // allocation. Many tags share the host hint slot as well as the guest set.
+    state.iCache.Reset(system.GetJitInterface());
+    cache.reset();
+    u32 sequence = 0x5713a26du;
+    constexpr unsigned sequence_cases = 65536;
+    for (unsigned n = 0; n < sequence_cases; ++n) {
+      sequence ^= sequence << 13;
+      sequence ^= sequence >> 17;
+      sequence ^= sequence << 5;
+      const u32 region = wii && (sequence & 0x80000000u) ? 0x10000000u : 0u;
+      const u32 line = 0x2000u + ((sequence >> 7) & 127u) * 0x1000u;
+      const u32 physical = region + line + (sequence & 31u);
+      const u32 alias = (sequence >> 29) & 3u;
+      const u32 address = physical | (alias << 30);
+      std::array<u8, 64> bytes{};
+      for (unsigned byte = 0; byte < bytes.size(); ++byte)
+        bytes[byte] = static_cast<u8>((sequence >> (byte & 15u)) + n + byte * 7u);
+      memory.CopyToEmu(region + line, bytes.data(), bytes.size());
+      product.copy_in(region + line, bytes);
+      if (n % 251u == 0) {
+        state.iCache.Invalidate(memory, system.GetJitInterface(), address);
+        cache.invalidate(address);
+      }
+      if (n % 1021u == 0) {
+        state.iCache.Reset(system.GetJitInterface());
+        cache.reset();
+      }
+      const bool enabled = n % 17u != 0, locked = n % 5u == 0;
+      state.spr[SPR_HID0] = (enabled ? 0x8000u : 0u) | (locked ? 0x2000u : 0u);
+      source_reads.clear();
+      target_reads.clear();
+      const u32 expected = state.iCache.ReadInstruction(memory, state, address);
+      require(cache.read(bus, address, enabled, locked) == expected, n,
+              "cache conflict sequence value and replacement visibility");
+#if defined(CUPID_OBSERVE_REFERENCE_COPY)
+      require(source_reads == target_reads, n, "cache conflict sequence ordered backing copies");
+#endif
+      require(pi == 0 && devices == 0, n, "cache conflict sequence service exclusion");
+      for (unsigned repeat = 0; repeat < 2; ++repeat) {
+        source_reads.clear();
+        target_reads.clear();
+        const u32 repeated = address + repeat * 4u;
+        require(cache.read(bus, repeated, enabled, locked) ==
+                    state.iCache.ReadInstruction(memory, state, repeated),
+                n, "cache conflict sequence repeated line hit");
+#if defined(CUPID_OBSERVE_REFERENCE_COPY)
+        require(source_reads == target_reads, n, "repeated line hit backing copies");
+#endif
+      }
+    }
+    std::cout << sequence_cases * 3u << " actual/product cache conflict sequence reads\n";
     std::cout << cache_cases << " actual/product warm/cold cache byte cases\n";
     memory.Shutdown();
     active_manager = nullptr;
   }
+  return cases;
+}
+
+unsigned integer_dispatch_cases(Core::System &system, bool carry_only) {
+  unsigned cases = 0, divergences = 0;
+  std::vector<u32> program;
+  const auto ext = [](unsigned xo, unsigned d, unsigned a, unsigned b, bool rc, bool oe = false) {
+    return (31u << 26) | (d << 21) | (a << 16) | (b << 11) | (xo << 1) |
+           (static_cast<u32>(oe) << 10) | static_cast<u32>(rc);
+  };
+  for (bool rc : {false, true}) {
+    for (bool oe : {false, true})
+      for (unsigned xo :
+           {8u, 10u, 40u, 104u, 136u, 138u, 200u, 202u, 232u, 234u, 235u, 266u, 459u, 491u})
+        program.push_back(ext(xo, 3, 4, 5, rc, oe));
+    for (unsigned xo :
+         {11u, 24u, 26u, 28u, 60u, 75u, 124u, 284u, 316u, 412u, 444u, 476u, 536u, 792u, 922u, 954u})
+      program.push_back(ext(xo, 3, 4, 5, rc));
+    for (unsigned shift = 0; shift < 32; ++shift)
+      program.push_back(ext(824, 3, 4, shift, rc));
+    for (unsigned op : {20u, 21u, 23u})
+      for (unsigned n = 0; n < 64; ++n)
+        program.push_back((op << 26) | (3u << 21) | (4u << 16) | ((n & 31u) << 11) |
+                          (((n * 7u) & 31u) << 6) | (((n * 13u) & 31u) << 1) |
+                          static_cast<u32>(rc));
+  }
+  for (unsigned op : {12u, 13u, 14u, 24u, 25u, 26u, 27u, 28u, 29u})
+    for (u32 immediate : {0u, 1u, 0x7fffu, 0x8000u, 0xffffu})
+      program.push_back((op << 26) | (3u << 21) | (4u << 16) | immediate);
+  for (unsigned field = 0; field < 8; ++field) {
+    for (unsigned op : {10u, 11u})
+      for (u32 immediate : {0u, 1u, 0x8000u, 0xffffu})
+        program.push_back((op << 26) | (field << 23) | (4u << 16) | immediate);
+    for (unsigned xo : {0u, 32u})
+      program.push_back(ext(xo, field << 2, 4, 5, false));
+  }
+  for (unsigned bo = 0; bo < 32; ++bo)
+    for (unsigned bi : {0u, 2u, 17u, 31u})
+      for (bool link : {false, true}) {
+        for (bool absolute : {false, true})
+          program.push_back((16u << 26) | (bo << 21) | (bi << 16) | 0xfff8u |
+                            (static_cast<u32>(absolute) << 1) | static_cast<u32>(link));
+        program.push_back((19u << 26) | (bo << 21) | (bi << 16) | (16u << 1) |
+                          static_cast<u32>(link));
+        if (bo & 4u)
+          program.push_back((19u << 26) | (bo << 21) | (bi << 16) | (528u << 1) |
+                            static_cast<u32>(link));
+      }
+  if (carry_only) {
+    program.clear();
+    for (unsigned xo : {232u, 234u})
+      for (bool oe : {false, true})
+        for (bool rc : {false, true})
+          program.push_back(ext(xo, 3, 4, 0, rc, oe));
+  }
+  constexpr std::array<u32, 8> carry_values{0u,          1u,          2u,          0x7fffffffu,
+                                            0x80000000u, 0x80000001u, 0xfffffffeu, 0xffffffffu};
+  constexpr std::array<u32, 16> values{0u,          1u,          2u,          31u,
+                                       32u,         33u,         63u,         64u,
+                                       0x7fffffffu, 0x80000000u, 0x80000001u, 0xffffffffu,
+                                       0xfffffffeu, 0x01020304u, 0xaaaaaaaau, 0x55555555u};
+  for (bool wii : {false, true}) {
+    system.SetIsWii(wii);
+    auto memory_owner = std::make_unique<Memory::MemoryManager>(system);
+    auto &memory = *memory_owner;
+    memory.Init();
+    auto manager = std::make_unique<PowerPC::PowerPCManager>(system);
+    active_manager = manager.get();
+    auto mmu = std::make_unique<PowerPC::MMU>(system, memory, *manager);
+    mmu->IBATUpdated();
+    mmu->DBATUpdated();
+    auto &state = manager->GetPPCState();
+    state.iCache.Cache::Init(memory);
+    ::Interpreter cpu(system, state, *mmu, manager->GetBranchWatch(), manager->GetSymbolDB());
+    cpu.Init();
+    cupid::Memory product_memory(wii ? cupid::Console::Wii : cupid::Console::GameCube);
+    BackingBus product_bus(product_memory);
+    cupid::cpu::Interpreter product_cpu(product_bus,
+                                        wii ? cupid::Console::Wii : cupid::Console::GameCube);
+    std::vector<u32> bases{0x2000u, 0x201cu, 0x017fffc0u, 0x80002000u, 0xc0002000u, 0x40002000u};
+    if (wii) {
+      bases.push_back(0x10002000u);
+      bases.push_back(0x13ffffc0u);
+    }
+    for (bool locked : {false})
+      for (bool enabled : {false})
+        for (u32 base : {0x2000u})
+          for (unsigned offset : {0u})
+            for (unsigned input = 0; input < 64; ++input)
+              for (u32 opcode : program) {
+                ++cases;
+                const u32 address = base + offset;
+                const std::array<u8, 64> empty{};
+                memory.CopyToEmu(address & ~31u, empty.data(), empty.size());
+                memory.Write_U32(opcode, address);
+                // Instruction caching is disabled throughout these private arithmetic controls.
+                state.msr.Hex = 0;
+                state.spr[SPR_HID0] = (enabled ? 0x8000u : 0u) | (locked ? 0x2000u : 0u);
+                state.spr[SPR_MMCR0] = state.spr[SPR_MMCR1] = 0;
+                state.pc = address;
+                state.npc = 0x12345678;
+                state.Exceptions = 0;
+                for (unsigned n = 0; n < 32; ++n)
+                  state.gpr[n] = values[(n + input) & 15u];
+                state.gpr[4] = carry_only ? carry_values[input & 7u] : values[input & 15u];
+                state.gpr[5] = values[(input * 7u + (input >> 4)) & 15u];
+                state.cr.Set(0xa1b2c3d4u ^ (input * 0x11111111u));
+                const u32 flags = carry_only
+                                      ? (((input >> 3) & 1u) << 29) | (((input >> 4) & 3u) << 30)
+                                      : (input & 7u) << 29;
+                state.SetXER(UReg_XER{flags | 0x0000ff7fu});
+                state.spr[SPR_LR] = 0x12345678;
+                state.spr[SPR_CTR] = values[(input + 3u) & 15u];
+                state.spr[SPR_SRR0] = 0x12345678;
+                state.spr[SPR_SRR1] = 0x56789abc;
+                std::ranges::fill(product_memory.range(address & ~31u, empty.size()), 0);
+                product_memory.write32(address, opcode);
+                product_cpu.reset();
+                auto &product = product_cpu.state();
+                product.pc = address;
+                product.spr[cupid::cpu::spr::hid0] = state.spr[SPR_HID0];
+                for (unsigned n = 0; n < 32; ++n)
+                  product.gpr[n] = state.gpr[n];
+                product.cr = state.cr.Get();
+                product.spr[cupid::cpu::spr::xer] = state.GetXER().Hex;
+                product.spr[cupid::cpu::spr::lr] = state.spr[SPR_LR];
+                product.spr[cupid::cpu::spr::ctr] = state.spr[SPR_CTR];
+                product.spr[cupid::cpu::spr::srr0] = state.spr[SPR_SRR0];
+                product.spr[cupid::cpu::spr::srr1] = state.spr[SPR_SRR1];
+                const unsigned before_hooks = hook_checks, before_pi = reference_pi_requests;
+                source_reads.clear();
+                target_reads.clear();
+                const int cycles = cpu.SingleStepInner();
+                const u32 product_cycles = product_cpu.step();
+                require_transfers(expected_transfers(address, enabled, locked), cases,
+                                  "CPU ordered backing transfers");
+                bool equal = product_cycles == static_cast<u32>(cycles) && product.pc == state.pc &&
+                             product.msr == state.msr.Hex && product.cr == state.cr.Get() &&
+                             product.spr[cupid::cpu::spr::xer] == state.GetXER().Hex &&
+                             product.spr[cupid::cpu::spr::lr] == state.spr[SPR_LR] &&
+                             product.spr[cupid::cpu::spr::ctr] == state.spr[SPR_CTR] &&
+                             product.spr[cupid::cpu::spr::srr0] == state.spr[SPR_SRR0] &&
+                             product.spr[cupid::cpu::spr::srr1] == state.spr[SPR_SRR1];
+                for (unsigned n = 0; n < 32; ++n)
+                  equal = equal && product.gpr[n] == state.gpr[n];
+                if (!equal) {
+                  ++divergences;
+                  std::cerr << "First integer divergence case " << cases << " input " << input
+                            << " opcode " << std::hex << opcode << " CR " << state.cr.Get() << "/"
+                            << product.cr << " XER " << state.GetXER().Hex << "/"
+                            << product.spr[cupid::cpu::spr::xer] << " PC " << state.pc << "/"
+                            << product.pc << " cycles " << std::dec << cycles << "/"
+                            << product_cycles << "\n";
+                  throw std::runtime_error("Integer/branch guest-state divergence");
+                }
+                require(state.Exceptions == 0 && state.pc == state.npc, cases,
+                        "actual selected table dispatch guest state");
+                require(hook_checks == before_hooks + 1 && reference_pi_requests == before_pi,
+                        cases, "actual metadata and excluded services");
+              }
+    memory.Shutdown();
+    active_manager = nullptr;
+  }
+  std::cout << cases
+            << (carry_only ? " actual-table minus-one carry cases; "
+                           : " actual-table integer/branch cases; ")
+            << divergences << " divergences; scheduler, device and other dispatch excluded\n";
+#if defined(CUPID_OBSERVE_REFERENCE_COPY)
+  std::cout << "Unchanged source backing transfers observed through forwarding link wrappers\n";
+#else
+  std::cout
+      << "Product transfer order checked; source call interception unavailable on this target\n";
+#endif
+  require(cases == (carry_only ? 1024u : 199296u), cases, "integer comparison case count");
   return cases;
 }
 
@@ -1073,6 +1299,8 @@ int main() {
     std::cout
         << "Product transfer order checked; source call interception unavailable on this target\n";
 #endif
+    integer_dispatch_cases(system, true);
+    integer_dispatch_cases(system, false);
     return divergences != 0;
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';

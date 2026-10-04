@@ -576,6 +576,52 @@ void integer_tests() {
   }
 }
 
+void minus_one_carry_tests() {
+  unsigned cases = 0;
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    Memory memory;
+    Interpreter cpu(memory, console);
+    auto &s = cpu.state();
+    for (unsigned operation : {232u, 234u})
+      for (u32 operand :
+           {0u, 1u, 2u, 0x7fffffffu, 0x80000000u, 0x80000001u, 0xfffffffeu, 0xffffffffu})
+        for (u32 prior_flags : {0u, 0x40000000u, 0x80000000u, 0xc0000000u})
+          for (bool incoming : {false, true})
+            for (bool oe : {false, true})
+              for (bool rc : {false, true}) {
+                cpu.reset();
+                const u32 opcode = ext(operation, 3, 4, 0, rc) | (static_cast<u32>(oe) << 10);
+                memory.write32(0x1000, opcode);
+                s.pc = 0x1000;
+                s.gpr[3] = 0x91827364;
+                s.gpr[4] = operand;
+                s.cr = 0xa1b2c3d4;
+                s.spr[spr::xer] = prior_flags | (static_cast<u32>(incoming) << 29) | 0x0000ff7fu;
+                const bool subtract = operation == 232;
+                const u32 result = subtract ? (incoming ? ~operand : ~operand - 1u)
+                                            : (incoming ? operand : operand - 1u);
+                const bool out_carry = !incoming && operand != (subtract ? 0xffffffffu : 0u);
+                const bool out_overflow =
+                    !incoming && operand == (subtract ? 0x7fffffffu : 0x80000000u);
+                u32 expected_xer = prior_flags | (static_cast<u32>(out_carry) << 29) | 0x0000ff7fu;
+                if (oe) {
+                  expected_xer &= ~0x40000000u;
+                  if (out_overflow)
+                    expected_xer |= 0xc0000000u;
+                }
+                const u32 condition = result == 0 ? 2u : (result & 0x80000000u) ? 8u : 4u;
+                const u32 expected_cr =
+                    rc ? 0x01b2c3d4u | ((condition | (expected_xer >> 31)) << 28) : 0xa1b2c3d4u;
+                CHECK(cpu.step() == 1);
+                CHECK(s.gpr[3] == result && s.gpr[4] == operand);
+                CHECK(s.spr[spr::xer] == expected_xer && s.cr == expected_cr);
+                CHECK(s.pc == 0x1004 && s.instructions == 1 && s.cycles == 1);
+                ++cases;
+              }
+  }
+  CHECK(cases == 1024u);
+}
+
 void branch_tests() {
   Fixture f;
   f.run(0x48000009);
@@ -1065,10 +1111,32 @@ void uncached_region_tests() {
   f.s.gpr[7] = 0x80002000;
   const auto cycles = f.s.cycles, instructions = f.s.instructions;
   const u32 dar = f.s.spr[spr::dar], dsisr = f.s.spr[spr::dsisr];
-  CHECK_THROWS(f.run(imm(54, 9, 7, 0)));
-  CHECK(f.memory.accesses.empty() && f.s.pc == 0x1000);
-  CHECK(f.s.cycles == cycles && f.s.instructions == instructions);
+  const auto registers = f.s.gpr;
+  const u64 floating = f.s.fpr[9].bits[0];
+  CHECK(f.run(imm(54, 9, 7, 0)) == 1);
+  CHECK((f.memory.accesses == std::vector<Access>{{0x08002000, 0x12345678, 4, true},
+                                                  {0x08002004, 0xa1b2c3d4, 4, true}}));
+  CHECK(f.s.pc == 0x1004 && f.s.gpr == registers && f.s.fpr[9].bits[0] == floating);
+  CHECK(f.s.cycles == cycles + 1 && f.s.instructions == instructions + 1);
   CHECK(f.s.spr[spr::dar] == dar && f.s.spr[spr::dsisr] == dsisr);
+  CHECK(f.run(imm(55, 9, 7, 8)) == 1);
+  CHECK((f.memory.accesses == std::vector<Access>{{0x08002008, 0x12345678, 4, true},
+                                                  {0x0800200c, 0xa1b2c3d4, 4, true}}));
+  CHECK(f.s.gpr[7] == 0x80002008 && f.s.fpr[9].bits[0] == floating);
+  for (u32 failed : {0x08002010u, 0x08002014u}) {
+    f.memory.fail_write = failed;
+    f.memory.unsupported_fault = true;
+    const auto before_cycles = f.s.cycles, before_instructions = f.s.instructions;
+    CHECK_THROWS(f.run(imm(55, 9, 7, 8)));
+    const std::vector<Access> expected =
+        failed == 0x08002010u
+            ? std::vector<Access>{{failed, 0x12345678, 4, true}}
+            : std::vector<Access>{{0x08002010, 0x12345678, 4, true}, {failed, 0xa1b2c3d4, 4, true}};
+    CHECK(f.memory.accesses == expected && f.s.pc == 0x1000);
+    CHECK(f.s.gpr[7] == 0x80002008 && f.s.fpr[9].bits[0] == floating);
+    CHECK(f.s.cycles == before_cycles && f.s.instructions == before_instructions);
+    CHECK(f.s.spr[spr::dar] == dar && f.s.spr[spr::dsisr] == dsisr);
+  }
 }
 
 void split_store_fault_tests() {
@@ -2641,6 +2709,73 @@ void cache_tests() {
   cpu.step();
   CHECK(state.gpr[3] == 6);
 }
+
+void bat_register_change_tests() {
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    Memory memory;
+    Interpreter cpu(memory, console);
+    auto &s = cpu.state();
+    memory.write32(0x1000, imm(32, 3, 4, 0));
+    for (unsigned n = 1; n <= 3; ++n) {
+      memory.write32(n * 0x20000u + 0x1020, n * 7u);
+      memory.write32(n * 0x20000u + 0x1000, imm(14, 3, 0, static_cast<u16>(n * 11u)));
+    }
+    s.gpr[4] = 0x80001020;
+    s.spr[536] = s.spr[528] = 0x80000003;
+    s.spr[537] = s.spr[529] = 0x00020002;
+    const auto data_read = [&](u32 expected) {
+      s.msr = msr::dr;
+      s.pc = 0x1000;
+      cpu.step();
+      CHECK(s.pc == 0x1004 && s.gpr[3] == expected);
+    };
+    const auto instruction_read = [&](u32 expected) {
+      s.msr = msr::ir;
+      s.pc = 0x80001000;
+      cpu.step();
+      CHECK(s.pc == 0x80001004 && s.gpr[3] == expected);
+    };
+    for (unsigned repeat = 0; repeat < 4; ++repeat) {
+      data_read(7);
+      instruction_read(11);
+    }
+    // Public State writes take effect on the next access, including a newly
+    // enabled higher-priority bank.
+    s.spr[537] = s.spr[529] = 0x00040002;
+    data_read(14);
+    instruction_read(22);
+    s.spr[538] = s.spr[530] = 0x80000003;
+    s.spr[539] = s.spr[531] = 0x00060002;
+    data_read(21);
+    instruction_read(33);
+    s.spr[538] = s.spr[530] = 0;
+    data_read(14);
+    instruction_read(22);
+    if (console == Console::Wii) {
+      s.spr[568] = s.spr[560] = 0x80000003;
+      s.spr[569] = s.spr[561] = 0x00060002;
+      s.spr[spr::hid4] = 0x02000000;
+      data_read(21);
+      instruction_read(33);
+      s.spr[spr::hid4] = 0;
+      data_read(14);
+      instruction_read(22);
+    }
+    s.spr[536] = 0;
+    s.pc = 0x1000;
+    s.msr = msr::dr;
+    cpu.step();
+    CHECK(s.pc == 0x300 && s.spr[spr::dar] == 0x80001020);
+    s.spr[536] = 0x80000003;
+    data_read(14);
+    cpu.reset();
+    auto &reset = cpu.state();
+    reset.pc = 0x80001000;
+    reset.msr = msr::ir;
+    cpu.step();
+    CHECK(reset.pc == 0x400 && reset.spr[spr::srr0] == 0x80001000);
+  }
+}
 } // namespace
 
 namespace {
@@ -3108,6 +3243,7 @@ void instruction_fill_failure_tests() {
 
 int main() {
   return run_tests([] {
+    minus_one_carry_tests();
     instruction_byte_bus_tests();
     odd_instruction_tests();
     fetch_diagnostic_tests();
@@ -3144,6 +3280,7 @@ int main() {
     performance_monitor_tests();
     mmu_tests();
     bat_mapping_boundary_tests();
+    bat_register_change_tests();
     floating_tests();
     paired_tests();
     cache_tests();

@@ -942,6 +942,227 @@ void bluetooth_remote_transport() {
   CHECK(packet[0] == 5 && packet[5] == 0x13);
 }
 
+namespace usage_profile {
+constexpr u32 request = 0x135e0080, vectors = 0x135e1020, path_buffer = 0x135e1040;
+constexpr u32 clusters_buffer = 0x135e1080, inodes_buffer = 0x135e10a0;
+
+struct Fixture {
+  Memory memory{Console::Wii};
+  hw::Devices devices{Console::Wii};
+  ios::Ipc ipc{memory, devices, Console::Wii};
+
+  void text(const std::string &value) {
+    auto output = memory.range(path_buffer, 64);
+    std::fill(output.begin(), output.end(), u8(0));
+    std::copy(value.begin(), value.end(), output.begin());
+  }
+
+  s32 complete() {
+    devices.write(0x0d000000, request, 4);
+    devices.write(0x0d000004, 0x31, 4);
+    ipc.advance(6000);
+    CHECK((devices.read(0x0d000004, 4) & 3) == 2);
+    devices.write(0x0d000004, 0x32, 4);
+    devices.write(0x0d000030, 0x40000000, 4);
+    ipc.advance(100000000);
+    CHECK(memory.read32(request) == 8);
+    const s32 result = s32(memory.read32(request + 4));
+    devices.write(0x0d000004, 0x34, 4);
+    devices.write(0x0d000030, 0x40000000, 4);
+    return result;
+  }
+
+  s32 open_fs() {
+    auto data = memory.range(request, 64);
+    std::fill(data.begin(), data.end(), u8(0));
+    memory.write32(request, 1);
+    text("/dev/fs");
+    memory.write32(request + 12, path_buffer);
+    memory.write32(request + 16, 3);
+    return complete();
+  }
+
+  void prepare_usage(const std::string &path) {
+    auto data = memory.range(request, 64);
+    std::fill(data.begin(), data.end(), u8(0));
+    memory.write32(request, 7);
+    memory.write32(request + 8, 2);
+    memory.write32(request + 12, 12);
+    memory.write32(request + 16, 1);
+    memory.write32(request + 20, 2);
+    memory.write32(request + 24, vectors);
+    memory.write32(vectors, path_buffer);
+    memory.write32(vectors + 4, 64);
+    memory.write32(vectors + 8, clusters_buffer);
+    memory.write32(vectors + 12, 4);
+    memory.write32(vectors + 16, inodes_buffer);
+    memory.write32(vectors + 20, 4);
+    memory.write32(clusters_buffer, 0x12345678);
+    memory.write32(inodes_buffer, 0x87654321);
+    text(path);
+  }
+
+  void expect_failure(const std::string &path, s32 error) {
+    prepare_usage(path);
+    CHECK(complete() == error);
+    CHECK(memory.read32(clusters_buffer) == 0x12345678);
+    CHECK(memory.read32(inodes_buffer) == 0x87654321);
+  }
+};
+
+void write_file(const std::filesystem::path &path, std::uintmax_t size) {
+  std::ofstream stream(path, std::ios::binary);
+  CHECK(stream.good());
+  if (size) {
+    stream.seekp(std::streamoff(size - 1));
+    stream.put('x');
+  }
+  stream.close();
+  CHECK(std::filesystem::file_size(path) == size);
+}
+
+void usage() {
+  Fixture fixture;
+  const auto parent = std::filesystem::canonical(std::filesystem::temp_directory_path());
+  const auto root =
+      parent / ("cupid-usage-check-" +
+                std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  fixture.ipc.set_user_directory(root);
+  const auto directory = root / "wii" / "tmp" / "usage";
+  std::filesystem::create_directories(directory / "nested");
+  write_file(directory / "empty.bin", 0);
+  write_file(directory / "one.bin", 1);
+  write_file(directory / "exact.bin", 16384);
+  write_file(directory / "nested" / "over.bin", 16385);
+  write_file(directory / "filename-too-long.bin", 90000);
+  std::filesystem::create_directory(directory / "invalid-long-directory");
+  write_file(directory / "invalid-long-directory" / "large.bin", 65536);
+  CHECK(fixture.open_fs() == 0);
+  CHECK(fixture.open_fs() == 1);
+  CHECK(fixture.open_fs() == 2);
+  fixture.prepare_usage("/tmp/usage");
+  CHECK(fixture.complete() == 0);
+  CHECK(fixture.memory.read32(clusters_buffer) == 4);
+  CHECK(fixture.memory.read32(inodes_buffer) == 6);
+  fixture.prepare_usage("/tmp/usage/nested");
+  CHECK(fixture.complete() == 0);
+  CHECK(fixture.memory.read32(clusters_buffer) == 2);
+  CHECK(fixture.memory.read32(inodes_buffer) == 2);
+  std::filesystem::create_directory(directory / "empty");
+  fixture.prepare_usage("/tmp/usage/empty");
+  CHECK(fixture.complete() == 0);
+  CHECK(fixture.memory.read32(clusters_buffer) == 0);
+  CHECK(fixture.memory.read32(inodes_buffer) == 1);
+  std::filesystem::remove(directory / "empty");
+  fixture.expect_failure("/tmp/missing", -106);
+  fixture.expect_failure("/tmp/usage/one.bin", -101);
+  fixture.expect_failure("/tmp/usage/", -101);
+  fixture.expect_failure("/tmp/../escape", -101);
+  fixture.expect_failure("/tmp/CON.bin", -101);
+  for (u32 offset : {16u, 20u}) {
+    fixture.prepare_usage("/tmp/usage");
+    fixture.memory.write32(request + offset, 0);
+    CHECK(fixture.complete() == -101);
+    CHECK(fixture.memory.read32(clusters_buffer) == 0x12345678);
+    CHECK(fixture.memory.read32(inodes_buffer) == 0x87654321);
+  }
+  for (u32 offset : {4u, 12u, 20u})
+    for (u32 size : {0u, 3u, 5u, 63u, 65u}) {
+      fixture.prepare_usage("/tmp/usage");
+      fixture.memory.write32(vectors + offset, size);
+      CHECK(fixture.complete() == -101);
+      CHECK(fixture.memory.read32(clusters_buffer) == 0x12345678);
+      CHECK(fixture.memory.read32(inodes_buffer) == 0x87654321);
+    }
+  fixture.prepare_usage("/tmp/usage");
+  fixture.memory.write32(vectors + 8, 0);
+  CHECK(fixture.complete() == -101);
+  CHECK(fixture.memory.read32(inodes_buffer) == 0x87654321);
+  fixture.prepare_usage("/tmp/usage");
+  std::fill(fixture.memory.range(path_buffer, 64).begin(),
+            fixture.memory.range(path_buffer, 64).end(), u8('x'));
+  CHECK(fixture.complete() == -101);
+  CHECK(fixture.memory.read32(clusters_buffer) == 0x12345678);
+  CHECK(fixture.memory.read32(inodes_buffer) == 0x87654321);
+  std::error_code link_error;
+  const auto external = root / "external";
+  std::filesystem::create_directory(external);
+  write_file(external / "private.bin", 65536);
+  std::filesystem::create_directory_symlink(external, directory / "link", link_error);
+  if (!link_error) {
+    fixture.prepare_usage("/tmp/usage");
+    CHECK(fixture.complete() == 0);
+    CHECK(fixture.memory.read32(clusters_buffer) == 4);
+    CHECK(fixture.memory.read32(inodes_buffer) == 6);
+    fixture.expect_failure("/tmp/usage/link", -101);
+  }
+  // This operation deliberately has no caller UID/GID permission check.
+  // First prove the non-root handle cannot use the same directory's ordinary read operation.
+  const u32 parameters = 0x16000;
+  std::fill(fixture.memory.range(parameters, 74).begin(),
+            fixture.memory.range(parameters, 74).end(), u8(0));
+  const std::string protected_path = "/tmp/usage";
+  for (unsigned i = 0; i < protected_path.size(); ++i)
+    fixture.memory.write8(parameters + 6 + i, u8(protected_path[i]));
+  std::fill(fixture.memory.range(request, 64).begin(), fixture.memory.range(request, 64).end(),
+            u8(0));
+  fixture.memory.write32(request, 6);
+  fixture.memory.write32(request + 8, 2);
+  fixture.memory.write32(request + 12, 5);
+  fixture.memory.write32(request + 16, parameters);
+  fixture.memory.write32(request + 20, 74);
+  CHECK(fixture.complete() == 0);
+  std::fill(fixture.memory.range(0x16000, 0x2a4).begin(),
+            fixture.memory.range(0x16000, 0x2a4).end(), u8(0));
+  std::fill(fixture.memory.range(0x17000, 0x1e4).begin(),
+            fixture.memory.range(0x17000, 0x1e4).end(), u8(0));
+  fixture.memory.write32(0x16000, 0x10001);
+  fixture.memory.write32(0x17000, 0x10001);
+  fixture.memory.write64(0x16000 + 0x1dc, 0x0001000054455354ull);
+  fixture.memory.write64(0x17000 + 0x18c, 0x0001000054455354ull);
+  CHECK(fixture.ipc.set_title_context(fixture.memory.range(0x16000, 0x2a4),
+                                      fixture.memory.range(0x17000, 0x1e4)));
+  fixture.memory.write32(request, 2);
+  fixture.memory.write32(request + 8, 2);
+  CHECK(fixture.complete() == 0);
+  CHECK(fixture.open_fs() == 2);
+  fixture.prepare_usage("/tmp/usage");
+  fixture.memory.write32(request + 12, 4);
+  fixture.memory.write32(request + 20, 1);
+  CHECK(fixture.complete() == -102);
+  fixture.prepare_usage("/tmp/usage");
+  CHECK(fixture.complete() == 0);
+  CHECK(fixture.memory.read32(clusters_buffer) == 4);
+  CHECK(fixture.memory.read32(inodes_buffer) == 6);
+  write_file(root / "wii" / "host-only", 100000);
+  fixture.prepare_usage("/");
+  CHECK(fixture.complete() == 0);
+  const u32 initial_clusters = fixture.memory.read32(clusters_buffer);
+  const u32 initial_inodes = fixture.memory.read32(inodes_buffer);
+  write_file(root / "wii" / "more-host", 200000);
+  fixture.prepare_usage("/");
+  CHECK(fixture.complete() == 0);
+  CHECK(fixture.memory.read32(clusters_buffer) == initial_clusters);
+  CHECK(fixture.memory.read32(inodes_buffer) == initial_inodes);
+  write_file(directory / "limit.bin", (u64(0x7bc0) + 20) * 16384);
+  fixture.prepare_usage("/tmp/usage");
+  CHECK(fixture.complete() == 0);
+  CHECK(fixture.memory.read32(clusters_buffer) == 0x7bc0);
+  CHECK(fixture.memory.read32(inodes_buffer) == 7);
+  std::filesystem::create_directory(directory / "many");
+  for (unsigned i = 0; i < 0x1800; ++i)
+    write_file(directory / "many" / ("n" + std::to_string(i)), 0);
+  fixture.prepare_usage("/tmp/usage/many");
+  CHECK(fixture.complete() == 0);
+  CHECK(fixture.memory.read32(clusters_buffer) == 0);
+  CHECK(fixture.memory.read32(inodes_buffer) == 0x17ff);
+  const auto resolved = std::filesystem::canonical(root);
+  CHECK(resolved.parent_path() == parent);
+  CHECK(resolved.filename().string().starts_with("cupid-usage-check-"));
+  std::filesystem::remove_all(resolved);
+}
+} // namespace usage_profile
+
 void filesystem() {
   Fixture fixture;
   const auto task_temp = std::filesystem::canonical(std::filesystem::temp_directory_path());
@@ -1440,6 +1661,7 @@ int main(int argc, char **argv) {
     bluetooth_vendor_transport();
     bluetooth_remote_transport();
     filesystem();
+    usage_profile::usage();
     disc_service();
     unfinished_service();
     title_metadata();

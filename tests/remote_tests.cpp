@@ -94,11 +94,83 @@ void remote_reports() {
   remote.update();
   packet = receive(remote, 0x32);
   CHECK(std::all_of(packet.begin() + 4, packet.end(), [](u8 byte) { return byte == 0xff; }));
-  CHECK_THROWS(send(remote, {0x12, 2, 0x3e}));
+  send(remote, {0x12, 2, 0x3e});
+  receive(remote, 0x22);
+  remote.update();
+  receive(remote, 0x3e);
   remote.set_linked(false);
   send(remote, {0x15, 0});
   remote.update();
   CHECK(!remote.take_report());
+}
+
+void full_infrared() {
+  Remote remote;
+  RemoteState state;
+  state.connected = true;
+  state.buttons = 0x0810;
+  state.acceleration = {515, 514, 518};
+  state.infrared = {{{300, 500, 3}, {700, 600, 4}, {1023, 767, 15}, {65535, 65535, 255}}};
+  remote.set_state(state);
+  remote.set_linked(true);
+  remote.receive_output(std::array<u8, 2>{0x13, 4});
+  write_register(remote, 0x58, 0x30, 8);
+  write_register(remote, 0x58, 0x33, 5);
+  remote.receive_output(std::array<u8, 3>{0x12, 2, 0x3e});
+  CHECK(receive(remote, 0x22)[5] == 0);
+  constexpr std::array<u8, 36> full{44, 244, 0x53, 41,  113, 47,  119, 0,   0,    188, 88,  0xa4,
+                                    56, 84,  64,   92,  0,   1,   255, 255, 0xbf, 112, 112, 0,
+                                    0,  0,   154,  255, 255, 255, 255, 255, 255,  255, 255, 255};
+  remote.update();
+  auto packet = receive(remote, 0x3e);
+  CHECK(packet.size() == 23 && packet[2] == 0x10 && packet[3] == 0x48 && packet[4] == 128);
+  CHECK(std::equal(packet.begin() + 5, packet.end(), full.begin()));
+  remote.receive_output(std::array<u8, 7>{0x17, 4, 0xb0, 0x12, 0x37, 0, 36});
+  packet = receive(remote, 0x21);
+  CHECK(packet[5] == 0x12 && packet[6] == 0x37);
+  CHECK(std::equal(packet.begin() + 7, packet.end(), full.begin()));
+  remote.update();
+  packet = receive(remote, 0x21);
+  CHECK(packet[6] == 0x47);
+  CHECK(std::equal(packet.begin() + 7, packet.end(), full.begin() + 16));
+  remote.update();
+  packet = receive(remote, 0x21);
+  CHECK(packet[6] == 0x57 && packet[4] == 0x30);
+  CHECK(std::equal(packet.begin() + 7, packet.begin() + 11, full.begin() + 32));
+  remote.receive_output(std::array<u8, 2>{0x15, 0});
+  receive(remote, 0x20);
+  remote.update();
+  packet = receive(remote, 0x3f);
+  CHECK(packet[2] == 0x30 && packet[3] == 0x08 && packet[4] == 128);
+  CHECK(std::equal(packet.begin() + 5, packet.end(), full.begin() + 18));
+  remote.update();
+  receive(remote, 0x3e);
+  write_register(remote, 0x58, 0x30, 1);
+  remote.update();
+  packet = receive(remote, 0x3f);
+  CHECK(std::all_of(packet.begin() + 5, packet.end(), [](u8 byte) { return byte == 255; }));
+  write_register(remote, 0x58, 0x30, 8);
+  remote.receive_output(std::array<u8, 2>{0x13, 0});
+  remote.update();
+  packet = receive(remote, 0x3e);
+  CHECK(std::all_of(packet.begin() + 5, packet.end(), [](u8 byte) { return byte == 255; }));
+  remote.receive_output(std::array<u8, 3>{0x12, 0, 0x3f});
+  remote.update();
+  receive(remote, 0x3f);
+  state.nunchuk.attached = true;
+  remote.set_state(state);
+  remote.update();
+  receive(remote, 0x20);
+  remote.update();
+  CHECK(!remote.take_report());
+  remote.set_linked(false);
+  remote.update();
+  CHECK(!remote.take_report());
+  remote.set_linked(true);
+  state.nunchuk.attached = false;
+  remote.set_state(state);
+  remote.update();
+  receive(remote, 0x30);
 }
 
 void remote_memory() {
@@ -375,6 +447,7 @@ void retained_read_slave() {
 int main() {
   return run_tests([] {
     remote_reports();
+    full_infrared();
     remote_memory();
     speaker_registers();
     speaker_processing();

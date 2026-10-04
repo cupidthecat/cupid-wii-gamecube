@@ -550,6 +550,102 @@ void audio_requested_history_tests(Console console, bool light) {
   }
 }
 
+void audio_retained_fir_tests(Console console, bool light) {
+  for (u16 count : {u16(1), u16(2), u16(20), u16(31)}) {
+    for (bool constant : {false, true}) {
+      for (unsigned filter = 0; filter < 3; ++filter) {
+        AudioFixture baseline(console, light ? 0x24b22038 : 0);
+        AudioFixture flagged(console, light ? 0x24b22038 : 0);
+        const unsigned read_only = light ? 0x40 : 0x80;
+        for (auto *fixture : {&baseline, &flagged}) {
+          fixture->configure();
+          fixture->voice(constant);
+          fixture->word(read_only + 1, 1);
+          fixture->word(read_only + 11, 128);
+          for (unsigned i = 0; i < 20; ++i) {
+            fixture->word(read_only + 0x10 + i, u16(0x1000 + i * 17));
+            if (!light)
+              fixture->word(0x40 + i, u16(0x9000 + i));
+          }
+          if (filter == 1)
+            fixture->word(read_only + 0x28, 128);
+          if (filter == 2) {
+            fixture->word(read_only + 4, 32);
+            fixture->word(read_only + 0x24, 0x4000);
+            fixture->word(read_only + 0x25, 0x1000);
+            fixture->word(read_only + 0x26, 0x0800);
+            fixture->word(read_only + 0x27, 0x0400);
+          }
+          std::array<u8, 256> source{};
+          for (unsigned i = 0; i < 128; ++i) {
+            const u16 sample = u16(s32(i) * 257 - 16000);
+            source[2 * i] = u8(sample >> 8);
+            source[2 * i + 1] = u8(sample);
+          }
+          fixture->sample_bytes(source);
+        }
+        flagged.word(read_only + 4, u16(flagged.word(read_only + 4) | count));
+        for (unsigned frame = 0; frame < 2; ++frame) {
+          if (frame && !light) {
+            send(baseline.engine, 0xcdd10003);
+            send(flagged.engine, 0xcdd10003);
+          }
+          baseline.start();
+          flagged.start();
+          baseline.synchronize();
+          flagged.synchronize();
+          CHECK((flagged.word(read_only + 4) & 31) == count);
+          CHECK(flagged.interrupts == baseline.interrupts);
+          const auto expected = baseline.memory.range(0x3000, 0x6000);
+          const auto actual = flagged.memory.range(0x3000, 0x6000);
+          for (unsigned i = 0; i < actual.size(); ++i) {
+            if (i != 0x1001 + 2 * (read_only + 4))
+              CHECK(actual[i] == expected[i]);
+          }
+          CHECK(std::any_of(actual.begin() + 0x2000, actual.begin() + 0x20a0,
+                            [](u8 byte) { return byte != 0; }));
+        }
+      }
+    }
+  }
+}
+
+void audio_parameter_command_tests(Console console) {
+  AudioFixture fixture(console);
+  fixture.configure();
+  fixture.voice();
+  for (u32 parameter : {0u, 1u, 0x80000000u, 0xffffffffu}) {
+    const auto state = fixture.memory.range(0x3000, 0x6000);
+    const std::vector<u8> before(state.begin(), state.end());
+    if (console == Console::Wii)
+      fixture.packet({0x8d120001, parameter});
+    else
+      fixture.packet({0x8d120001});
+    fixture.ack(0x8d12);
+    CHECK((fixture.engine.read16(4) & 0x8000) == 0);
+    CHECK(std::equal(before.begin(), before.end(), state.begin()));
+  }
+  fixture.start();
+  if (console == Console::Wii)
+    fixture.packet({0x8d340001, 0x12345678});
+  else
+    fixture.packet({0x8d340001});
+  CHECK((fixture.engine.read16(4) & 0x8000) == 0);
+  fixture.synchronize();
+  CHECK(fixture.memory.read16(0x5000) == 5999);
+  CHECK((fixture.engine.read16(4) & 0x8000) == 0);
+  const auto output = fixture.memory.range(0x3000, 0x6000);
+  const std::vector<u8> before(output.begin(), output.end());
+  send(fixture.engine, 0xcdd10003);
+  fixture.ack(0x8d34);
+  CHECK((fixture.engine.read16(4) & 0x8000) == 0);
+  CHECK(std::equal(before.begin(), before.end(), output.begin()));
+  if (console == Console::Wii) {
+    AudioFixture truncated(console);
+    CHECK_THROWS(truncated.packet({0x8d120001}));
+  }
+}
+
 void guest_audio_dma_tests(Console console) {
   AudioFixture fixture(console);
   hw::Devices devices(console);
@@ -650,6 +746,11 @@ int main() {
     audio_requested_history_tests(Console::GameCube, false);
     audio_requested_history_tests(Console::Wii, false);
     audio_requested_history_tests(Console::GameCube, true);
+    audio_retained_fir_tests(Console::GameCube, false);
+    audio_retained_fir_tests(Console::Wii, false);
+    audio_retained_fir_tests(Console::GameCube, true);
+    audio_parameter_command_tests(Console::GameCube);
+    audio_parameter_command_tests(Console::Wii);
     guest_audio_dma_tests(Console::GameCube);
     guest_audio_dma_tests(Console::Wii);
   });

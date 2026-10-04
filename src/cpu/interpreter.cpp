@@ -413,7 +413,8 @@ u32 Interpreter::translate_access(u32 effective, bool instruction, bool write, b
         break;
       }
       recent[set] = static_cast<u8>(way);
-      uncached = entry.uncached;
+      // Hashed-page transaction results keep the default normal-write flag.
+      uncached = false;
       return entry.physical | (effective & 4095);
     }
   }
@@ -445,7 +446,7 @@ u32 Interpreter::translate_access(u32 effective, bool instruction, bool write, b
                               (updated & 0x80) != 0,
                               (flags & 0x60) != 0};
       }
-      uncached = (flags & 0x60) != 0;
+      uncached = false;
       return (flags & 0xfffff000) | (effective & 4095);
     }
   }

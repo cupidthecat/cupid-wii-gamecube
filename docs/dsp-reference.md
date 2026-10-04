@@ -29,6 +29,26 @@ The main-memory PCM exhaustion branch was excluded after a failed comparison and
 
 On 2026-10-04, the compiled comparison was expanded to 33 cases per profile. New cases set request counts of 1, 20, 80 and 65,535 with streamed, constant and positional voices. All 693 checkpoints passed, comparing 17,031,168 RAM bytes together with mailbox words and interrupt counts. SHA-1 over the checkpoint bytes was `5bdf4ed62e68e1a0c1344be4938263ea8b150c47`. The existing upload, main-memory exhaustion and hardware-observation limits still apply.
 
+A later unchanged-source comparison checked the defined no-effect handling of variable-FIR
+requests. Paired count-on/count-off cases cover counts 1, 2, 20 and 31, nonzero coefficient and
+history data, ordinary low-pass and biquad filtering, streamed and constant input, positional
+mixing, and four profile variants. All **336 checkpoints** passed, comparing **8,257,536 RAM
+bytes**, mailbox words and interrupt counts. SHA-1 over the compared RAM was
+`19d786235a60ce05f4b1d526e2a3c81619a856d8`. The optional FIR fields remain unmodeled; no FIR
+history update or filtering was added. `ZeldaAudioRenderer::AddVoice` logs this request only
+under its strict diagnostic build and proceeds through the ordinary renderer.
+
+The named command `0x0d` was also compared through the complete unchanged mailbox and renderer
+implementation. All nine standard-protocol profiles were exercised with varying sync values,
+eight immediate commands, a command queued during rendering, completion and resume. All
+**3,475 checkpoints** passed, comparing **85,401,600 RAM bytes**, mailbox words and interrupt
+counts. SHA-1 over the compared RAM was `b530339a41384347b37e4ec848e078a9e3e69593`.
+`ZeldaUCode::RunPendingCommands` defines either a parameter-free NOP or consumption of one
+parameter followed by the ordinary acknowledgment, without an additional audio effect.
+Public regressions cover both forms, delayed acknowledgment, unchanged guest RAM and rejection
+of a missing required parameter. These compiled comparisons do not establish real-hardware
+FIR or command effects.
+
 A separate paired run held all input data constant and varied only the history request count. It compared each execution against the compiled renderer and compared flag-on RAM against its flag-off counterpart, excluding only the retained count itself. All 336 checkpoints passed over 8,257,536 RAM bytes; SHA-1 was `28b795bc017ff2106bbe0605bbe3f46994139f04`. Mailbox words and interrupt counts matched in each execution.
 
 ## Public tests and limits

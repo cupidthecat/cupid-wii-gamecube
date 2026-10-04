@@ -19,7 +19,7 @@ Memory::Memory(Console console)
 
 void Memory::clear() {
   for (auto *bytes : {&mem1_, &mem2_, &cache_})
-    std::fill(bytes->begin(), bytes->end(), 0);
+    std::fill(bytes->begin(), bytes->end(), u8(0));
 }
 
 void Memory::memory_access_error() {

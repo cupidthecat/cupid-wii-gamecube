@@ -7,6 +7,7 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <source_location>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -37,12 +38,22 @@
 // fixture. They never cast raw storage into objects or synthesize expected data.
 // Any service outside the selected RAM-load paths fails explicitly.
 namespace {
-[[noreturn]] void unused() {
-  throw std::logic_error("Unexercised reference service");
+[[noreturn]] void unused(std::source_location call = std::source_location::current()) {
+  throw std::logic_error(call.function_name());
 }
 
 std::vector<u8> physical_memory(1024 * 1024);
 std::unique_ptr<MMIO::Mapping> unused_mmio;
+unsigned reference_pi_requests = 0;
+unsigned guest_pi_requests = 0;
+std::vector<std::array<u8, 32>> reference_pi_snapshots;
+std::vector<std::array<u8, 32>> guest_pi_snapshots;
+
+std::array<u8, 32> pi_snapshot() {
+  std::array<u8, 32> snapshot{};
+  std::copy_n(physical_memory.begin() + 0x4000, 32, snapshot.begin());
+  return snapshot;
+}
 
 std::unique_ptr<MMIO::Mapping> acquire_mmio() {
   if (unused_mmio)
@@ -53,10 +64,11 @@ std::unique_ptr<MMIO::Mapping> acquire_mmio() {
 
 namespace Core {
 struct System::Impl {
-  explicit Impl(System &system) : jit(system) {
+  explicit Impl(System &system) : jit(system), pi(system) {
   }
 
   JitInterface jit;
+  ProcessorInterface::ProcessorInterfaceManager pi;
 };
 
 System::System() : m_impl(std::make_unique<Impl>(*this)), m_mmu_enabled(true) {
@@ -69,7 +81,7 @@ CPU::CPUManager &System::GetCPU() const {
 }
 
 ProcessorInterface::ProcessorInterfaceManager &System::GetProcessorInterface() const {
-  unused();
+  return m_impl->pi;
 }
 
 GPFifo::GPFifoManager &System::GetGPFifo() const {
@@ -205,7 +217,9 @@ TMemCheck *MemChecks::GetMemCheck(u32, size_t) {
 }
 
 bool MemChecks::OverlapsMemcheck(u32, u32) const {
-  unused();
+  if (HasAny())
+    unused();
+  return false;
 }
 
 bool TMemCheck::Action(Core::System &, u64, u32, bool, size_t, u32) {
@@ -369,8 +383,16 @@ std::optional<std::string> GetAsString(const Location &) {
 } // namespace Config
 
 namespace ProcessorInterface {
-void ProcessorInterfaceManager::SetInterrupt(u32, bool) {
-  unused();
+ProcessorInterfaceManager::ProcessorInterfaceManager(Core::System &system) : m_system(system) {
+}
+
+ProcessorInterfaceManager::~ProcessorInterfaceManager() = default;
+
+void ProcessorInterfaceManager::SetInterrupt(u32 cause, bool set) {
+  if (cause != 1 || !set)
+    unused();
+  ++reference_pi_requests;
+  reference_pi_snapshots.push_back(pi_snapshot());
 }
 } // namespace ProcessorInterface
 
@@ -441,6 +463,11 @@ JitInterface::~JitInterface() {
 
 class GuestBus : public cupid::Bus {
 public:
+  void memory_access_error() override {
+    ++guest_pi_requests;
+    guest_pi_snapshots.push_back(pi_snapshot());
+  }
+
   cupid::u8 read8(cupid::u32 address) override {
     if (address >= physical_memory.size())
       throw std::out_of_range("Guest read range");
@@ -621,10 +648,491 @@ unsigned compare_loads() {
   return comparisons;
 }
 
+unsigned compare_stores() {
+  struct StoreInstruction {
+    unsigned direct, indexed, width;
+    std::array<Interpreter::Instruction, 4> handlers;
+  };
+
+  constexpr std::array<StoreInstruction, 4> instructions{
+      {{38, 215, 1, {Interpreter::stb, Interpreter::stbu, Interpreter::stbx, Interpreter::stbux}},
+       {44, 407, 2, {Interpreter::sth, Interpreter::sthu, Interpreter::sthx, Interpreter::sthux}},
+       {36, 151, 4, {Interpreter::stw, Interpreter::stwu, Interpreter::stwx, Interpreter::stwux}},
+       {54,
+        727,
+        8,
+        {Interpreter::stfd, Interpreter::stfdu, Interpreter::stfdx, Interpreter::stfdux}}}};
+  auto &system = Core::System::GetInstance();
+  unsigned comparisons = 0;
+  u32 random = 0xaecc3098;
+  for (const auto &instruction : instructions)
+    for (unsigned position = 0; position < 16; ++position) {
+      if (instruction.width == 8 && (position & 3))
+        continue;
+      const u32 address = 0x40008000 + position - 8;
+      for (unsigned form = 0; form < 4; ++form)
+        for (unsigned mappings = 0; mappings < 4; ++mappings)
+          for (unsigned attributes = 0; attributes < 16; ++attributes) {
+            ++comparisons;
+            std::fill(physical_memory.begin(), physical_memory.end(), 0);
+            std::fill(physical_memory.begin() + 0x4000, physical_memory.begin() + 0xa000, 0x5a);
+            Memory::MemoryManager memory(system);
+            PowerPC::PowerPCManager manager(system);
+            PowerPC::MMU mmu(system, memory, manager);
+            auto &reference = manager.GetPPCState();
+            Interpreter executor(system, reference, mmu, manager.GetBranchWatch(),
+                                 manager.GetSymbolDB());
+            const u32 original_msr = cupid::cpu::msr::dr | cupid::cpu::msr::fp |
+                                     cupid::cpu::msr::pr | cupid::cpu::msr::ri;
+            reference.msr.Hex = original_msr;
+            reference.pc = 0x1000;
+            reference.sr[4] = 0x123;
+            reference.pagetable_base = 0x20000;
+            reference.pagetable_mask = 0xffff;
+            reference.m_enable_dcache = false;
+            reference.spr[SPR_DSISR] = 0x13579bdf;
+            reference.spr[SPR_DAR] = 0x2468ace0;
+            mmu.DBATUpdated();
+            reference.gpr[7] = address - 5;
+            reference.gpr[8] = 5;
+            random ^= random << 13;
+            random ^= random >> 17;
+            random ^= random << 5;
+            reference.gpr[9] = random;
+            reference.ps[9].SetBoth(u64{0x82765acf30149abcull}, u64{0x9abcdef012345678ull});
+            for (unsigned page = 7; page < 9; ++page) {
+              const bool mapped = (mappings & (page == 7 ? 1u : 2u)) != 0;
+              const u32 attr = (page == 7 ? attributes : (attributes * 5 + 3) & 15) << 3;
+              memory.Write_U32(mapped ? 0x80000000 | (0x123 << 7) : 0, hash_group(page));
+              memory.Write_U32((page == 7 ? 0x4000u : 0x8000u) | 3 | attr, hash_group(page) + 4);
+            }
+            const auto initial = physical_memory;
+            const u32 opcode =
+                form < 2 ? ((instruction.direct + (form & 1)) << 26) | (9u << 21) | (7u << 16) | 5
+                         : (31u << 26) | (9u << 21) | (7u << 16) | (8u << 11) |
+                               ((instruction.indexed + ((form & 1) ? 32 : 0)) << 1);
+            UGeckoInstruction decoded;
+            decoded.hex = opcode;
+            reference_pi_requests = 0;
+            reference_pi_snapshots.clear();
+            instruction.handlers[form](executor, decoded);
+            const auto expected = physical_memory;
+            const unsigned expected_pi = reference_pi_requests;
+            const auto expected_pi_snapshots = reference_pi_snapshots;
+            std::copy(initial.begin(), initial.end(), physical_memory.begin());
+            GuestBus bus;
+            cupid::cpu::Interpreter guest(bus);
+            auto &state = guest.state();
+            state.pc = 0x1000;
+            state.msr = original_msr;
+            state.sr[4] = 0x123;
+            state.spr[cupid::cpu::spr::sdr1] = 0x20000;
+            state.spr[cupid::cpu::spr::dsisr] = 0x13579bdf;
+            state.spr[cupid::cpu::spr::dar] = 0x2468ace0;
+            state.gpr[7] = address - 5;
+            state.gpr[8] = 5;
+            state.gpr[9] = random;
+            state.fpr[9].bits = {0x82765acf30149abcull, 0x9abcdef012345678ull};
+            bus.write32(0x1000, opcode);
+            guest_pi_requests = 0;
+            guest_pi_snapshots.clear();
+            guest.step();
+            require(state.pc == (reference.Exceptions ? 0x300u : 0x1004u), comparisons,
+                    "store exception");
+            require(state.gpr[7] == reference.gpr[7], comparisons, "store update");
+            require(state.spr[cupid::cpu::spr::dar] == reference.spr[SPR_DAR], comparisons,
+                    "store DAR");
+            require(state.spr[cupid::cpu::spr::dsisr] == reference.spr[SPR_DSISR], comparisons,
+                    "store DSISR");
+            if (guest_pi_requests != expected_pi)
+              std::cerr << "opcode=" << std::hex << opcode << " EA=" << address
+                        << " attrs=" << attributes << " mappings=" << mappings
+                        << " expectedPI=" << expected_pi << " actualPI=" << guest_pi_requests
+                        << " firstPTE=" << read_physical_word(hash_group(7) + 4) << std::dec
+                        << '\n';
+            require(guest_pi_requests == expected_pi, comparisons, "store PI request count");
+            require(guest_pi_snapshots == expected_pi_snapshots, comparisons,
+                    "store callback data order");
+            require(std::equal(expected.begin() + 0x4000, expected.begin() + 0xa000,
+                               physical_memory.begin() + 0x4000),
+                    comparisons, "store data/guards");
+            require(read_physical_word(hash_group(7) + 4) ==
+                        ((u32(expected[hash_group(7) + 4]) << 24) |
+                         (u32(expected[hash_group(7) + 5]) << 16) |
+                         (u32(expected[hash_group(7) + 6]) << 8) | expected[hash_group(7) + 7]),
+                    comparisons, "store first PTE");
+            require(read_physical_word(hash_group(8) + 4) ==
+                        ((u32(expected[hash_group(8) + 4]) << 24) |
+                         (u32(expected[hash_group(8) + 5]) << 16) |
+                         (u32(expected[hash_group(8) + 6]) << 8) | expected[hash_group(8) + 7]),
+                    comparisons, "store second PTE");
+          }
+    }
+  return comparisons;
+}
+
+unsigned compare_quantized_stores() {
+  constexpr std::array<Interpreter::Instruction, 4> handlers{
+      Interpreter::psq_st, Interpreter::psq_stu, Interpreter::psq_stx, Interpreter::psq_stux};
+  auto &system = Core::System::GetInstance();
+  unsigned comparisons = 0;
+  u32 random = 0xaecc3098;
+  for (unsigned type : {0u, 4u, 5u, 6u, 7u})
+    for (const bool scalar : {false, true})
+      for (unsigned scale : {0u, 31u, 32u, 63u}) {
+        if (type == 0 && scale != 0)
+          continue;
+        const unsigned width = (type == 0 ? 4 : type == 4 || type == 6 ? 1 : 2) * (scalar ? 1 : 2);
+        for (unsigned distance = 1; distance < width; ++distance) {
+          const u32 address = 0x40008000 - distance;
+          for (unsigned form = 0; form < 4; ++form)
+            for (unsigned mappings = 0; mappings < 4; ++mappings)
+              for (unsigned attributes = 0; attributes < 16; ++attributes) {
+                ++comparisons;
+                std::fill(physical_memory.begin(), physical_memory.end(), 0);
+                std::fill(physical_memory.begin() + 0x4000, physical_memory.begin() + 0xa000, 0x5a);
+                Memory::MemoryManager memory(system);
+                PowerPC::PowerPCManager manager(system);
+                PowerPC::MMU mmu(system, memory, manager);
+                auto &reference = manager.GetPPCState();
+                Interpreter executor(system, reference, mmu, manager.GetBranchWatch(),
+                                     manager.GetSymbolDB());
+                const u32 original_msr = cupid::cpu::msr::dr | cupid::cpu::msr::fp |
+                                         cupid::cpu::msr::pr | cupid::cpu::msr::ri;
+                reference.msr.Hex = original_msr;
+                reference.pc = 0x1000;
+                reference.sr[4] = 0x123;
+                reference.pagetable_base = 0x20000;
+                reference.pagetable_mask = 0xffff;
+                reference.m_enable_dcache = false;
+                reference.spr[SPR_DSISR] = 0x13579bdf;
+                reference.spr[SPR_DAR] = 0x2468ace0;
+                reference.spr[SPR_HID2] = 0xa0000000;
+                reference.spr[SPR_GQR0 + 1] = type | (scale << 8);
+                mmu.DBATUpdated();
+                reference.gpr[7] = address - 5;
+                reference.gpr[8] = 5;
+                random ^= random << 13;
+                random ^= random >> 17;
+                random ^= random << 5;
+                reference.gpr[9] = random;
+                reference.ps[9].SetPS0(3.25);
+                reference.ps[9].SetPS1(-9.5);
+                for (unsigned page = 7; page < 9; ++page) {
+                  const bool mapped = (mappings & (page == 7 ? 1u : 2u)) != 0;
+                  const u32 attr = (page == 7 ? attributes : (attributes * 5 + 3) & 15) << 3;
+                  memory.Write_U32(mapped ? 0x80000000 | (0x123 << 7) : 0, hash_group(page));
+                  memory.Write_U32((page == 7 ? 0x4000u : 0x8000u) | 3 | attr,
+                                   hash_group(page) + 4);
+                }
+                const auto initial = physical_memory;
+                const u32 opcode = form < 2 ? ((60u + (form & 1)) << 26) | (9u << 21) | (7u << 16) |
+                                                  (1u << 12) | 5 | (scalar ? 0x8000u : 0)
+                                            : (4u << 26) | (9u << 21) | (7u << 16) | (8u << 11) |
+                                                  (1u << 7) | (((form & 1) ? 39u : 7u) << 1) |
+                                                  (scalar ? 0x400u : 0);
+                UGeckoInstruction decoded;
+                decoded.hex = opcode;
+                reference_pi_requests = 0;
+                reference_pi_snapshots.clear();
+                handlers[form](executor, decoded);
+                const auto expected = physical_memory;
+                const unsigned expected_pi = reference_pi_requests;
+                const auto expected_pi_snapshots = reference_pi_snapshots;
+                std::copy(initial.begin(), initial.end(), physical_memory.begin());
+                GuestBus bus;
+                cupid::cpu::Interpreter guest(bus);
+                auto &state = guest.state();
+                state.pc = 0x1000;
+                state.msr = original_msr;
+                state.sr[4] = 0x123;
+                state.spr[cupid::cpu::spr::sdr1] = 0x20000;
+                state.spr[cupid::cpu::spr::dsisr] = 0x13579bdf;
+                state.spr[cupid::cpu::spr::dar] = 0x2468ace0;
+                state.spr[cupid::cpu::spr::hid2] = 0xa0000000;
+                state.spr[913] = type | (scale << 8);
+                state.gpr[7] = address - 5;
+                state.gpr[8] = 5;
+                state.gpr[9] = random;
+                state.fpr[9].set(3.25);
+                state.fpr[9].set(-9.5, 1);
+                bus.write32(0x1000, opcode);
+                guest_pi_requests = 0;
+                guest_pi_snapshots.clear();
+                guest.step();
+                require(state.pc == (reference.Exceptions ? 0x300u : 0x1004u), comparisons,
+                        "store exception");
+                require(state.gpr[7] == reference.gpr[7], comparisons, "store update");
+                require(state.spr[cupid::cpu::spr::dar] == reference.spr[SPR_DAR], comparisons,
+                        "store DAR");
+                require(state.spr[cupid::cpu::spr::dsisr] == reference.spr[SPR_DSISR], comparisons,
+                        "store DSISR");
+                if (guest_pi_requests != expected_pi)
+                  std::cerr << "opcode=" << std::hex << opcode << " EA=" << address
+                            << " attrs=" << attributes << " mappings=" << mappings
+                            << " expectedPI=" << expected_pi << " actualPI=" << guest_pi_requests
+                            << " firstPTE=" << read_physical_word(hash_group(7) + 4) << std::dec
+                            << '\n';
+                require(guest_pi_requests == expected_pi, comparisons, "store PI request count");
+                require(guest_pi_snapshots == expected_pi_snapshots, comparisons,
+                        "store callback data order");
+                require(std::equal(expected.begin() + 0x4000, expected.begin() + 0xa000,
+                                   physical_memory.begin() + 0x4000),
+                        comparisons, "store data/guards");
+                require(read_physical_word(hash_group(7) + 4) ==
+                            ((u32(expected[hash_group(7) + 4]) << 24) |
+                             (u32(expected[hash_group(7) + 5]) << 16) |
+                             (u32(expected[hash_group(7) + 6]) << 8) | expected[hash_group(7) + 7]),
+                        comparisons, "store first PTE");
+                require(read_physical_word(hash_group(8) + 4) ==
+                            ((u32(expected[hash_group(8) + 4]) << 24) |
+                             (u32(expected[hash_group(8) + 5]) << 16) |
+                             (u32(expected[hash_group(8) + 6]) << 8) | expected[hash_group(8) + 7]),
+                        comparisons, "store second PTE");
+              }
+        }
+      }
+
+  return comparisons;
+}
+
+unsigned compare_bat_stores() {
+  struct StoreInstruction {
+    unsigned direct, indexed, width;
+    std::array<Interpreter::Instruction, 4> handlers;
+  };
+
+  constexpr std::array<StoreInstruction, 4> instructions{
+      {{38, 215, 1, {Interpreter::stb, Interpreter::stbu, Interpreter::stbx, Interpreter::stbux}},
+       {44, 407, 2, {Interpreter::sth, Interpreter::sthu, Interpreter::sthx, Interpreter::sthux}},
+       {36, 151, 4, {Interpreter::stw, Interpreter::stwu, Interpreter::stwx, Interpreter::stwux}},
+       {54,
+        727,
+        8,
+        {Interpreter::stfd, Interpreter::stfdu, Interpreter::stfdx, Interpreter::stfdux}}}};
+  auto &system = Core::System::GetInstance();
+  unsigned comparisons = 0;
+  u32 random = 0xaecc3098;
+  for (const auto &instruction : instructions)
+    for (unsigned position = 0; position < 8; ++position) {
+      if (instruction.width == 8 && (position & 3))
+        continue;
+      const u32 address = 0x40004000 + position;
+      for (unsigned form = 0; form < 4; ++form)
+        for (unsigned mappings = 3; mappings < 4; ++mappings)
+          for (unsigned attributes = 0; attributes < 16; ++attributes) {
+            ++comparisons;
+            std::fill(physical_memory.begin(), physical_memory.end(), 0);
+            std::fill(physical_memory.begin() + 0x4000, physical_memory.begin() + 0xa000, 0x5a);
+            Memory::MemoryManager memory(system);
+            PowerPC::PowerPCManager manager(system);
+            PowerPC::MMU mmu(system, memory, manager);
+            auto &reference = manager.GetPPCState();
+            Interpreter executor(system, reference, mmu, manager.GetBranchWatch(),
+                                 manager.GetSymbolDB());
+            const u32 original_msr = cupid::cpu::msr::dr | cupid::cpu::msr::fp |
+                                     cupid::cpu::msr::pr | cupid::cpu::msr::ri;
+            reference.msr.Hex = original_msr;
+            reference.pc = 0x1000;
+            reference.sr[4] = 0x123;
+            reference.pagetable_base = 0x20000;
+            reference.pagetable_mask = 0xffff;
+            reference.m_enable_dcache = false;
+            reference.spr[SPR_DSISR] = 0x13579bdf;
+            reference.spr[SPR_DAR] = 0x2468ace0;
+            reference.spr[SPR_DBAT0U] = 0x40000003;
+            reference.spr[SPR_DBAT0L] = (attributes << 3) | 2;
+            mmu.DBATUpdated();
+            reference.gpr[7] = address - 5;
+            reference.gpr[8] = 5;
+            random ^= random << 13;
+            random ^= random >> 17;
+            random ^= random << 5;
+            reference.gpr[9] = random;
+            reference.ps[9].SetBoth(u64{0x82765acf30149abcull}, u64{0x9abcdef012345678ull});
+            for (unsigned page = 7; page < 9; ++page) {
+              const bool mapped = (mappings & (page == 7 ? 1u : 2u)) != 0;
+              const u32 attr = (page == 7 ? attributes : (attributes * 5 + 3) & 15) << 3;
+              memory.Write_U32(mapped ? 0x80000000 | (0x123 << 7) : 0, hash_group(page));
+              memory.Write_U32((page == 7 ? 0x4000u : 0x8000u) | 3 | attr, hash_group(page) + 4);
+            }
+            const auto initial = physical_memory;
+            const u32 opcode =
+                form < 2 ? ((instruction.direct + (form & 1)) << 26) | (9u << 21) | (7u << 16) | 5
+                         : (31u << 26) | (9u << 21) | (7u << 16) | (8u << 11) |
+                               ((instruction.indexed + ((form & 1) ? 32 : 0)) << 1);
+            UGeckoInstruction decoded;
+            decoded.hex = opcode;
+            reference_pi_requests = 0;
+            reference_pi_snapshots.clear();
+            instruction.handlers[form](executor, decoded);
+            const auto expected = physical_memory;
+            const unsigned expected_pi = reference_pi_requests;
+            const auto expected_pi_snapshots = reference_pi_snapshots;
+            std::copy(initial.begin(), initial.end(), physical_memory.begin());
+            GuestBus bus;
+            cupid::cpu::Interpreter guest(bus);
+            auto &state = guest.state();
+            state.pc = 0x1000;
+            state.msr = original_msr;
+            state.sr[4] = 0x123;
+            state.spr[cupid::cpu::spr::sdr1] = 0x20000;
+            state.spr[536] = 0x40000003;
+            state.spr[537] = (attributes << 3) | 2;
+            state.spr[cupid::cpu::spr::dsisr] = 0x13579bdf;
+            state.spr[cupid::cpu::spr::dar] = 0x2468ace0;
+            state.gpr[7] = address - 5;
+            state.gpr[8] = 5;
+            state.gpr[9] = random;
+            state.fpr[9].bits = {0x82765acf30149abcull, 0x9abcdef012345678ull};
+            bus.write32(0x1000, opcode);
+            guest_pi_requests = 0;
+            guest_pi_snapshots.clear();
+            guest.step();
+            require(state.pc == (reference.Exceptions ? 0x300u : 0x1004u), comparisons,
+                    "store exception");
+            require(state.gpr[7] == reference.gpr[7], comparisons, "store update");
+            require(state.spr[cupid::cpu::spr::dar] == reference.spr[SPR_DAR], comparisons,
+                    "store DAR");
+            require(state.spr[cupid::cpu::spr::dsisr] == reference.spr[SPR_DSISR], comparisons,
+                    "store DSISR");
+            if (guest_pi_requests != expected_pi)
+              std::cerr << "opcode=" << std::hex << opcode << " EA=" << address
+                        << " attrs=" << attributes << " mappings=" << mappings
+                        << " expectedPI=" << expected_pi << " actualPI=" << guest_pi_requests
+                        << " firstPTE=" << read_physical_word(hash_group(7) + 4) << std::dec
+                        << '\n';
+            require(guest_pi_requests == expected_pi, comparisons, "store PI request count");
+            require(guest_pi_snapshots == expected_pi_snapshots, comparisons,
+                    "store callback data order");
+            require(std::equal(expected.begin() + 0x4000, expected.begin() + 0xa000,
+                               physical_memory.begin() + 0x4000),
+                    comparisons, "store data/guards");
+            require(read_physical_word(hash_group(7) + 4) ==
+                        ((u32(expected[hash_group(7) + 4]) << 24) |
+                         (u32(expected[hash_group(7) + 5]) << 16) |
+                         (u32(expected[hash_group(7) + 6]) << 8) | expected[hash_group(7) + 7]),
+                    comparisons, "store first PTE");
+            require(read_physical_word(hash_group(8) + 4) ==
+                        ((u32(expected[hash_group(8) + 4]) << 24) |
+                         (u32(expected[hash_group(8) + 5]) << 16) |
+                         (u32(expected[hash_group(8) + 6]) << 8) | expected[hash_group(8) + 7]),
+                    comparisons, "store second PTE");
+          }
+    }
+  return comparisons;
+}
+
+unsigned compare_tlb_stores() {
+  auto &system = Core::System::GetInstance();
+  unsigned comparisons = 0;
+  for (unsigned attributes = 0; attributes < 16; ++attributes)
+    for (unsigned offset = 0; offset < 8; ++offset)
+      for (unsigned operation : {38u, 44u, 36u}) {
+        std::fill(physical_memory.begin(), physical_memory.end(), 0);
+        std::fill(physical_memory.begin() + 0x4000, physical_memory.begin() + 0xa000, 0x5a);
+        Memory::MemoryManager memory(system);
+        PowerPC::PowerPCManager manager(system);
+        PowerPC::MMU mmu(system, memory, manager);
+        auto &reference = manager.GetPPCState();
+        Interpreter executor(system, reference, mmu, manager.GetBranchWatch(),
+                             manager.GetSymbolDB());
+        reference.msr.Hex = cupid::cpu::msr::dr | cupid::cpu::msr::ri;
+        reference.pc = 0x1000;
+        reference.sr[4] = 0x123;
+        reference.pagetable_base = 0x20000;
+        reference.pagetable_mask = 0xffff;
+        reference.m_enable_dcache = false;
+        reference.spr[SPR_DAR] = 0x2468ace0;
+        reference.spr[SPR_DSISR] = 0x13579bdf;
+        const u32 pteg = hash_group(3), address = 0x40003000 + offset;
+        reference.gpr[7] = address - 5;
+        reference.gpr[9] = 0xa1b2c3d4;
+        memory.Write_U32(0x80000000 | (0x123 << 7), pteg);
+        memory.Write_U32(0x4003 | (attributes << 3), pteg + 4);
+        mmu.DBATUpdated();
+        auto reference_memory = physical_memory;
+        auto guest_memory = physical_memory;
+        GuestBus bus;
+        cupid::cpu::Interpreter guest(bus);
+        auto &state = guest.state();
+        state.msr = reference.msr.Hex;
+        state.sr[4] = 0x123;
+        state.spr[cupid::cpu::spr::sdr1] = 0x20000;
+        state.spr[cupid::cpu::spr::dar] = 0x2468ace0;
+        state.spr[cupid::cpu::spr::dsisr] = 0x13579bdf;
+        state.gpr[7] = address - 5;
+        state.gpr[9] = 0xa1b2c3d4;
+        const auto compare_step = [&](u32 opcode, Interpreter::Instruction handler) {
+          ++comparisons;
+          std::copy(reference_memory.begin(), reference_memory.end(), physical_memory.begin());
+          reference_pi_requests = 0;
+          UGeckoInstruction decoded;
+          decoded.hex = opcode;
+          handler(executor, decoded);
+          reference_memory = physical_memory;
+          const auto expected_pi = reference_pi_requests;
+          std::copy(guest_memory.begin(), guest_memory.end(), physical_memory.begin());
+          state.pc = 0x1000;
+          bus.write32(0x1000, opcode);
+          guest_pi_requests = 0;
+          guest.step();
+          guest_memory = physical_memory;
+          require(state.pc == (reference.Exceptions ? 0x300u : 0x1004u), comparisons,
+                  "TLB exception");
+          require(state.gpr[7] == reference.gpr[7] && state.gpr[9] == reference.gpr[9] &&
+                      state.gpr[10] == reference.gpr[10],
+                  comparisons, "TLB registers");
+          require(state.spr[cupid::cpu::spr::dar] == reference.spr[SPR_DAR] &&
+                      state.spr[cupid::cpu::spr::dsisr] == reference.spr[SPR_DSISR],
+                  comparisons, "TLB fault fields");
+          require(expected_pi == guest_pi_requests, comparisons, "TLB PI requests");
+          require(std::equal(reference_memory.begin() + 0x4000, reference_memory.begin() + 0xa000,
+                             guest_memory.begin() + 0x4000),
+                  comparisons, "TLB data");
+          require(std::equal(reference_memory.begin() + pteg, reference_memory.begin() + pteg + 8,
+                             guest_memory.begin() + pteg),
+                  comparisons, "TLB PTE fields");
+        };
+        const auto change_pte = [&](u32 high, u32 low) {
+          std::copy(reference_memory.begin(), reference_memory.end(), physical_memory.begin());
+          memory.Write_U32(high, pteg);
+          memory.Write_U32(low, pteg + 4);
+          reference_memory = physical_memory;
+          std::copy(guest_memory.begin(), guest_memory.end(), physical_memory.begin());
+          bus.write32(pteg, high);
+          bus.write32(pteg + 4, low);
+          guest_memory = physical_memory;
+        };
+        const auto read_opcode = (34u << 26) | (10u << 21) | (7u << 16) | 5;
+        const auto write_opcode = (operation << 26) | (9u << 21) | (7u << 16) | 5;
+        const auto store_handler = operation == 38   ? Interpreter::stb
+                                   : operation == 44 ? Interpreter::sth
+                                                     : Interpreter::stw;
+        const auto invalidate_opcode = (31u << 26) | (7u << 11) | (306u << 1);
+        compare_step(read_opcode, Interpreter::lbz);
+        const u32 revised = 0x8103 | ((attributes ^ 12) << 3);
+        change_pte(0x80000000 | (0x123 << 7), revised);
+        compare_step(write_opcode, store_handler);
+        compare_step(write_opcode, store_handler);
+        compare_step(invalidate_opcode, Interpreter::tlbie);
+        compare_step(write_opcode, store_handler);
+        change_pte(0x80000000 | (0x123 << 7), 0x8183 | (attributes << 3));
+        compare_step(write_opcode, store_handler);
+        compare_step(invalidate_opcode, Interpreter::tlbie);
+        change_pte(0, 0x8183 | (attributes << 3));
+        compare_step(write_opcode, store_handler);
+      }
+  return comparisons;
+}
+
 int main() {
   try {
-    const auto count = compare_loads();
-    std::cout << count << " direct source load comparisons passed\n";
+    const auto loads = compare_loads();
+    const auto stores =
+        compare_stores() + compare_quantized_stores() + compare_bat_stores() + compare_tlb_stores();
+    std::cout << loads << " direct source load comparisons and " << stores
+              << " store/BAT/TLB comparisons passed\n";
     return 0;
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';

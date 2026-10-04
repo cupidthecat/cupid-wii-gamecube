@@ -325,6 +325,23 @@ struct Ipc::Impl {
     throw std::invalid_argument("IOS string is not terminated");
   }
 
+  static bool safe_component(std::string_view name) {
+    if (name.empty() || name == "." || name == ".." || name.size() > 12 || name.back() == '.' ||
+        name.back() == ' ')
+      return false;
+    for (unsigned char byte : name)
+      if (byte < 32 || byte == '*' || byte == '?' || byte == '<' || byte == '>' || byte == '|' ||
+          byte == '"' || byte == '/' || byte == '\\' || byte == ':')
+        return false;
+    auto basename = std::string(name.substr(0, name.find('.')));
+    for (auto &byte : basename)
+      if (byte >= 'a' && byte <= 'z')
+        byte = char(byte - 'a' + 'A');
+    return basename != "CON" && basename != "PRN" && basename != "AUX" && basename != "NUL" &&
+           !(basename.size() == 4 && (basename.starts_with("COM") || basename.starts_with("LPT")) &&
+             basename[3] >= '1' && basename[3] <= '9');
+  }
+
   std::optional<std::filesystem::path> host_path(const std::string &path) const {
     if (path == "/" && !root.empty())
       return root;
@@ -336,20 +353,7 @@ struct Ipc::Impl {
     while (begin < path.size()) {
       const auto end = path.find('/', begin);
       const auto component = path.substr(begin, end == std::string::npos ? end : end - begin);
-      if (component.empty() || component == "." || component == ".." || component.size() > 12 ||
-          component.back() == '.' || component.back() == ' ')
-        return std::nullopt;
-      for (unsigned char byte : component)
-        if (byte < 32 || byte == '*' || byte == '?' || byte == '<' || byte == '>' || byte == '|' ||
-            byte == '"')
-          return std::nullopt;
-      auto basename = component.substr(0, component.find('.'));
-      for (auto &byte : basename)
-        if (byte >= 'a' && byte <= 'z')
-          byte = char(byte - 'a' + 'A');
-      if (basename == "CON" || basename == "PRN" || basename == "AUX" || basename == "NUL" ||
-          (basename.size() == 4 && (basename.starts_with("COM") || basename.starts_with("LPT")) &&
-           basename[3] >= '1' && basename[3] <= '9'))
+      if (!safe_component(component))
         return std::nullopt;
       relative /= component;
       if (end == std::string::npos)
@@ -974,6 +978,68 @@ struct Ipc::Impl {
     }
   }
 
+  Reply fs_usage(const Vectors &buffers) {
+    if (!buffers.count(1, 2) || buffers.input[0].size != 64 || buffers.output[0].size != 4 ||
+        buffers.output[1].size != 4)
+      return {fs_invalid, fs_overhead};
+    std::string path;
+    try {
+      path = string(buffers.input[0].address, 64);
+    } catch (const std::invalid_argument &) {
+      return {fs_invalid, fs_overhead};
+    }
+    const auto target = host_path(path);
+    if (!target)
+      return {fs_invalid, fs_overhead};
+    std::error_code error;
+    const bool exists = std::filesystem::exists(*target, error);
+    if (error)
+      return {fs_access, fs_overhead};
+    if (!exists)
+      return {fs_missing, fs_overhead};
+    const bool directory = std::filesystem::is_directory(*target, error);
+    if (error)
+      return {fs_access, fs_overhead};
+    if (!directory)
+      return {fs_invalid, fs_overhead};
+    // Each ordinary file owns its rounded-up clusters; directories own only inodes.
+    // Root-only host files and entries outside the guarded guest namespace are hidden.
+    constexpr u64 cluster_limit = 0x7bc0, inode_limit = 0x17ff, cluster_size = 16384;
+    u64 clusters = 0, inodes = 1;
+    std::filesystem::recursive_directory_iterator cursor(*target, error), end;
+    if (error)
+      return {fs_access, fs_overhead};
+    while (cursor != end) {
+      const auto status = cursor->symlink_status(error);
+      if (error)
+        return {fs_access, fs_overhead};
+      const bool child_directory = std::filesystem::is_directory(status);
+      const bool ordinary = child_directory || std::filesystem::is_regular_file(status);
+      const auto name = cursor->path().filename().string();
+      const bool exposed = ordinary && safe_component(name) &&
+                           !(path == "/" && cursor.depth() == 0 && !child_directory);
+      if (!exposed) {
+        if (child_directory)
+          cursor.disable_recursion_pending();
+      } else {
+        inodes = std::min(inode_limit, inodes + 1);
+        if (!child_directory) {
+          const auto size = cursor->file_size(error);
+          if (error)
+            return {fs_access, fs_overhead};
+          const u64 count = size / cluster_size + (size % cluster_size != 0 ? 1 : 0);
+          clusters = std::min(cluster_limit, clusters + std::min(cluster_limit, count));
+        }
+      }
+      cursor.increment(error);
+      if (error)
+        return {fs_access, fs_overhead};
+    }
+    memory.write32(buffers.output[0].address, u32(clusters));
+    memory.write32(buffers.output[1].address, u32(inodes));
+    return {0, fs_overhead};
+  }
+
   Reply fs_ioctlv(unsigned fd, u32 address) {
     if (handles[fd]->device != Device::Filesystem)
       return {fs_invalid, fs_overhead};
@@ -983,6 +1049,8 @@ struct Ipc::Impl {
     const auto &in = parsed->input, &out = parsed->output;
     const auto &handle = *handles[fd];
     const u32 operation = memory.read32(address + 12);
+    if (operation == 12)
+      return fs_usage(*parsed);
     if (operation != 4)
       unsupported(address, "filesystem ioctlv " + std::to_string(operation));
     if (in.empty() || in.size() > 2 || in.size() != out.size() || in[0].size != 64 ||

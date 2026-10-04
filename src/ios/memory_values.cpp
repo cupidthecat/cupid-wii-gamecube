@@ -52,7 +52,7 @@ bool initialize_ios_memory(Memory &memory, u32 version, bool reload) {
        {0x314c, reserved ? mem2_end + 0x20000 : placeholder}}};
   if (!reload) {
     auto low = memory.range(0, 0x3fff);
-    std::fill(low.begin(), low.end(), 0);
+    std::fill(low.begin(), low.end(), u8(0));
     const std::array<std::pair<u32, u32>, 20> bootstrap{
         {{0x28, 0x01800000},
          {0x30, 0},

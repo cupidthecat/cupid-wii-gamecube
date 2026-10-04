@@ -566,8 +566,8 @@ void Mixer::input(Voice &voice, Samples &samples) {
 }
 
 void Mixer::filter(Voice &voice, Samples &samples) {
-  if (voice[0x84] & 31)
-    throw std::runtime_error("DSP variable FIR voice filtering is not implemented");
+  // These named profiles retain the optional FIR fields without running that filter.
+  // Their ordinary low-pass, biquad and voice mixing behavior still applies.
   if (voice[0xa8]) {
     s32 previous_output = voice[4] ? 0 : voice.signed_word(0x68);
     s32 previous_input = voice[4] ? 0 : voice.signed_word(0x69);
@@ -821,7 +821,8 @@ struct AudioProgram::Impl {
         break;
       case 13:
         if (!profile.no_command_13)
-          throw std::runtime_error("DSP audio command 13 filtering is not implemented");
+          // The behavioral reference consumes the parameter without an additional effect.
+          pop();
         acknowledge(sync);
         break;
       case 14:

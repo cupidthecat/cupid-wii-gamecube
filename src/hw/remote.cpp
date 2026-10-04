@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cupid/hw/remote.hpp"
 #include <algorithm>
+#include <cmath>
+#include <numbers>
 #include <stdexcept>
 #include <string>
 
@@ -186,8 +188,29 @@ void Remote::refresh_peripherals() {
       camera_[base + 1] = u8(p.y);
       camera_[base + 2] = u8((p.size & 15) | (((p.x >> 8) & 3) << 4) | (((p.y >> 8) & 3) << 6));
     }
-  } else if (format == 5)
-    unfinished("full infrared camera report");
+  } else if (format == 5) {
+    for (unsigned point = 0; point < 4; ++point) {
+      const auto &p = state_.infrared[point];
+      if (p.x >= 1024)
+        continue;
+      const unsigned base = 0x37 + point * 9;
+      camera_[base] = u8(p.x);
+      camera_[base + 1] = u8(p.y);
+      camera_[base + 2] = u8((p.size & 15) | (((p.x >> 8) & 3) << 4) | (((p.y >> 8) & 3) << 6));
+      const int xmin = std::max(int(p.x) - int(p.size), 0) & 127;
+      const int ymin = std::max(int(p.y) - int(p.size), 0) & 127;
+      const int xmax = std::min(int(p.x) + int(p.size), 1024) & 127;
+      const int ymax = std::min(int(p.y) + int(p.size), 768) & 127;
+      camera_[base + 3] = u8(xmin);
+      camera_[base + 4] = u8(ymin);
+      camera_[base + 5] = u8(xmax);
+      camera_[base + 6] = u8(ymax);
+      camera_[base + 7] = 0;
+      const long intensity =
+          std::lround(((xmax - xmin) * (ymax - ymin) / 8 / 8) * (std::numbers::pi / 4));
+      camera_[base + 8] = u8(std::min(255L, intensity));
+    }
+  }
 }
 
 u8 Remote::read_extension(u16 address, std::span<u8> bytes) {
@@ -313,8 +336,6 @@ void Remote::receive_output(std::span<const u8> report) {
     if ((report[2] < 0x30 || report[2] > 0x37) && report[2] != 0x3d && report[2] != 0x3e &&
         report[2] != 0x3f)
       return;
-    if (report[2] == 0x3e || report[2] == 0x3f)
-      unfinished("interleaved acceleration and infrared report");
     mode_ = report[2];
     break;
   case 0x13:
@@ -368,6 +389,19 @@ void Remote::receive_output(std::span<const u8> report) {
 }
 
 std::vector<u8> Remote::data_report() {
+  if (mode_ == 0x3e || mode_ == 0x3f) {
+    const bool second = mode_ == 0x3f;
+    std::vector<u8> packet{0xa1, mode_};
+    buttons(packet, state_.buttons);
+    const u16 z = state_.acceleration[2];
+    packet[2] |= u8(((z >> (second ? 2 : 6)) & 3) << 5);
+    packet[3] |= u8(((z >> (second ? 4 : 8)) & 3) << 5);
+    packet.push_back(u8(state_.acceleration[second ? 1 : 0] >> 2));
+    const unsigned first = 0x37 + (second ? 18 : 0);
+    packet.insert(packet.end(), camera_.begin() + first, camera_.begin() + first + 18);
+    mode_ = second ? 0x3e : 0x3f;
+    return packet;
+  }
   const bool core = mode_ != 0x3d;
   const bool acceleration = mode_ == 0x31 || mode_ == 0x33 || mode_ == 0x35 || mode_ == 0x37;
   const unsigned ir_bytes = mode_ == 0x33 ? 12 : (mode_ == 0x36 || mode_ == 0x37 ? 10 : 0);

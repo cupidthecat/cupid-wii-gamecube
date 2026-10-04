@@ -67,19 +67,19 @@ std::string setting(std::span<const u8> bytes, std::string_view name) {
 }
 
 u8 area_code(std::string_view area) {
-  constexpr std::array<std::pair<std::string_view, u8>, 13> areas{{{"JPN", 0},
-                                                                   {"USA", 1},
-                                                                   {"EUR", 2},
-                                                                   {"AUS", 2},
-                                                                   {"BRA", 1},
-                                                                   {"TWN", 3},
-                                                                   {"ROC", 3},
-                                                                   {"KOR", 4},
-                                                                   {"HKG", 5},
-                                                                   {"ASI", 5},
-                                                                   {"LTN", 1},
-                                                                   {"SAF", 2},
-                                                                   {"CHN", 6}}};
+  constexpr std::array<std::pair<std::string_view, u8>, 13> areas{{{"JPN", u8(0)},
+                                                                   {"USA", u8(1)},
+                                                                   {"EUR", u8(2)},
+                                                                   {"AUS", u8(2)},
+                                                                   {"BRA", u8(1)},
+                                                                   {"TWN", u8(3)},
+                                                                   {"ROC", u8(3)},
+                                                                   {"KOR", u8(4)},
+                                                                   {"HKG", u8(5)},
+                                                                   {"ASI", u8(5)},
+                                                                   {"LTN", u8(1)},
+                                                                   {"SAF", u8(2)},
+                                                                   {"CHN", u8(6)}}};
   for (const auto &[name, code] : areas)
     if (name == area)
       return code;

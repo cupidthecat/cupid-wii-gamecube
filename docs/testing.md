@@ -151,6 +151,31 @@ bytes, the format failure, repaired header, complete checks and hashes remain
 in `local-artifacts/integrated-portability-collector-20261004`. Later
 compatibility and audio documentation updates have separately recorded hashes.
 
+Hosted CI at `734e26e` passes the compiler and sanitizer fixes. Its Windows
+build succeeds, but both graphics suites fail with
+`OpenGL function unavailable: glCreateShader` on the hosted driver. The original
+logs remain in `local-artifacts/ci-734e26e-20261004`. Windows CI now deploys the
+[Mesa 26.2.3 software driver](https://github.com/pal1000/mesa-dist-win/releases/tag/26.2.3)
+beside its test executables after verifying archive SHA256
+`3f3613adb43cfd0f2e665ce2400b130c275f0b3317cb3a05566320a3a67589ed`.
+The job requires a graphics context and selects llvmpipe; unavailable functions,
+shader errors and pixel differences still fail the tests. This setup needs its
+own hosted verification. Both graphics suites pass locally with this exact
+archive and the previous integrated executables, reporting llvmpipe with LLVM
+23.1.2. The renderer suite takes 29.56 seconds and the guest suite 4.45 seconds;
+their full logs and executable hashes remain beside the original CI failures.
+
+The sealed AES/Windows-driver snapshot has 215 files and manifest SHA256
+`4be9a5a5753de8f9596a7b3ef70ec93e1cd0561dcd5c3447b918667a08b3fb64`.
+MSVC and GCC Release with LTO each pass all 43 public checks and 17 compiled
+comparisons, with one private opt-in skip. Both packages pass interpreter and
+native guest execution checks. GCC and Clang Debug sanitizers each pass 38
+available public checks, with 23 explicit skips; their disc tests take 167.05
+and 177.97 seconds. All 142 format checks and Clang 18 static analysis of 42
+product translation units pass. Complete logs and frozen/current input hashes
+remain in `local-artifacts/integrated-aes-mesa-20261004`; later documentation
+updates have separately recorded hashes. Hosted Windows verification is pending.
+
 ## Sanitizers
 
 On Linux with GCC or Clang:

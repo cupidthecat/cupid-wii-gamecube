@@ -4,6 +4,16 @@
 #include <bit>
 #include <stdexcept>
 #include <vector>
+#if defined(_M_X64) || defined(__x86_64__)
+#include <wmmintrin.h>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#define CUPID_AES_TARGET
+#else
+#include <cpuid.h>
+#define CUPID_AES_TARGET __attribute__((target("aes,sse2,no-avx")))
+#endif
+#endif
 
 namespace cupid::disc::detail {
 Digest sha1(std::span<const u8> bytes) {
@@ -90,6 +100,61 @@ struct Substitutions {
   }
 };
 
+#if defined(_M_X64) || defined(__x86_64__)
+bool aes_instructions_available() {
+  static const bool available = [] {
+#if defined(_MSC_VER)
+    int registers[4]{};
+    __cpuid(registers, 1);
+    return (static_cast<unsigned>(registers[2]) & (1U << 25)) != 0;
+#else
+    unsigned eax = 0, ebx = 0, ecx = 0, edx = 0;
+    return __get_cpuid(1, &eax, &ebx, &ecx, &edx) && (ecx & (1U << 25)) != 0;
+#endif
+  }();
+  return available;
+}
+
+CUPID_AES_TARGET
+void encrypt_with_instructions(std::span<const u8> input, std::span<u8> output,
+                               std::span<const u8, 16> iv, std::span<const u8, 176> keys) {
+  __m128i rounds[11];
+  for (std::size_t i = 0; i < 11; ++i)
+    rounds[i] = _mm_loadu_si128(reinterpret_cast<const __m128i *>(keys.data() + i * 16));
+  __m128i chain = _mm_loadu_si128(reinterpret_cast<const __m128i *>(iv.data()));
+  for (std::size_t offset = 0; offset < input.size(); offset += 16) {
+    __m128i state = _mm_loadu_si128(reinterpret_cast<const __m128i *>(input.data() + offset));
+    state = _mm_xor_si128(_mm_xor_si128(state, chain), rounds[0]);
+    for (std::size_t round = 1; round < 10; ++round)
+      state = _mm_aesenc_si128(state, rounds[round]);
+    chain = _mm_aesenclast_si128(state, rounds[10]);
+    _mm_storeu_si128(reinterpret_cast<__m128i *>(output.data() + offset), chain);
+  }
+}
+
+CUPID_AES_TARGET
+void decrypt_with_instructions(std::span<const u8> input, std::span<u8> output,
+                               std::span<const u8, 16> iv, std::span<const u8, 176> keys) {
+  __m128i rounds[11];
+  rounds[0] = _mm_loadu_si128(reinterpret_cast<const __m128i *>(keys.data() + 160));
+  rounds[10] = _mm_loadu_si128(reinterpret_cast<const __m128i *>(keys.data()));
+  for (std::size_t i = 1; i < 10; ++i)
+    rounds[i] = _mm_aesimc_si128(
+        _mm_loadu_si128(reinterpret_cast<const __m128i *>(keys.data() + (10 - i) * 16)));
+  __m128i chain = _mm_loadu_si128(reinterpret_cast<const __m128i *>(iv.data()));
+  for (std::size_t offset = 0; offset < input.size(); offset += 16) {
+    const __m128i ciphertext =
+        _mm_loadu_si128(reinterpret_cast<const __m128i *>(input.data() + offset));
+    __m128i state = _mm_xor_si128(ciphertext, rounds[0]);
+    for (std::size_t round = 1; round < 10; ++round)
+      state = _mm_aesdec_si128(state, rounds[round]);
+    state = _mm_xor_si128(_mm_aesdeclast_si128(state, rounds[10]), chain);
+    _mm_storeu_si128(reinterpret_cast<__m128i *>(output.data() + offset), state);
+    chain = ciphertext;
+  }
+}
+#endif
+
 const Substitutions &substitutions() {
   static const Substitutions value;
   return value;
@@ -166,6 +231,12 @@ void Aes128::encrypt_cbc(std::span<const u8> input, std::span<u8> output,
                          std::span<const u8, 16> iv) const {
   if (input.size() != output.size() || input.size() % 16)
     throw std::runtime_error("AES-CBC requires equal block-aligned buffers");
+#if defined(_M_X64) || defined(__x86_64__)
+  if (aes_instructions_available()) {
+    encrypt_with_instructions(input, output, iv, keys_);
+    return;
+  }
+#endif
   std::array<u8, 16> chain{};
   std::copy(iv.begin(), iv.end(), chain.begin());
   for (std::size_t offset = 0; offset < input.size(); offset += 16) {
@@ -180,6 +251,12 @@ void Aes128::decrypt_cbc(std::span<const u8> input, std::span<u8> output,
                          std::span<const u8, 16> iv) const {
   if (input.size() != output.size() || input.size() % 16)
     throw std::runtime_error("AES-CBC requires equal block-aligned buffers");
+#if defined(_M_X64) || defined(__x86_64__)
+  if (aes_instructions_available()) {
+    decrypt_with_instructions(input, output, iv, keys_);
+    return;
+  }
+#endif
   std::array<u8, 16> chain{};
   std::copy(iv.begin(), iv.end(), chain.begin());
   for (std::size_t offset = 0; offset < input.size(); offset += 16) {

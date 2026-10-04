@@ -13,6 +13,7 @@ parsing, bounds checks, chunk decoder, SHA-1, AES-CBC, and cache code.
 | Padding sequence | `Source/Core/DiscIO/LaggedFibonacciGenerator.cpp`: `SetSeed`, `Initialize`, `Forward`, `GetBytes` |
 | Wii directories and sector reads | `Source/Core/DiscIO/VolumeWii.cpp`: constructor, `Read` |
 | Wii hash hierarchy and encryption | `Source/Core/DiscIO/VolumeWii.cpp`: `HashGroup`, `EncryptGroup`; `Source/Core/DiscIO/WiiEncryptionCache.cpp`: `EncryptGroup`, `EncryptGroups` |
+| AES-CBC and runtime instruction selection | `Source/Core/Common/Crypto/AES.cpp`: `ContextGeneric::Crypt`, `ContextAESNI::Crypt`, `CreateContext` |
 | IOS metadata field | `Source/Core/Core/IOS/ES/Formats.h`: `TMDHeader`; `Formats.cpp`: `TMDReader::GetIOSId` |
 | Ticket, TMD, certificate chain, and contents | `Source/Core/DiscIO/VolumeWii.cpp`: lazy metadata readers; `Source/Core/Core/IOS/ES/Formats.cpp`: `TicketReader::IsValid`, `GetTitleId`, `TMDReader::IsValid`, `GetContents` |
 | File system structure, paths, and lookup | `Source/Core/DiscIO/FileSystemGCWii.cpp`: `FileInfoGCWii` accessors and `IsValid`, `FileSystemGCWii` constructor and `FindFileInfo`; `Source/Core/Common/StringUtil.cpp`: `SHIFTJISToUTF8` |
@@ -152,3 +153,28 @@ expanded disc suite. The collector also passed Clang 18.1.3 AddressSanitizer and
 UndefinedBehaviorSanitizer with system compression libraries. Direct runs
 without a timeout took 16.168 seconds at `-O2` and 152.834 seconds at Debug `-O0`.
 Both enabled leak detection and stopped on the first sanitizer error.
+
+AES-CBC now selects AES instructions at runtime on x64 hosts that report support;
+other hosts use the portable implementation. Key expansion, object layout, buffer
+validation, and exception messages remain unchanged. GCC and Clang restrict the
+accelerated helpers to AES and SSE2 instructions, without AVX. The instruction
+semantics and CPU feature check follow the
+[Intel AES-NI reference](https://www.intel.com/content/dam/doc/white-paper/advanced-encryption-standard-new-instructions-set-paper.pdf).
+
+An isolated GCC 13.3 pair repeated the same 120 physical reads and six-process
+order above. Medians fell from 3.60026 to 2.65064 seconds, a 26.4% reduction, with
+identical bytes and SHA-1. A separate 360-sector CBC workload fell from 1.11905
+to 0.0122732 seconds at the median, a 98.9% reduction; all six runs returned
+11,796,480 bytes with SHA-1 `ea273af94653f9181e9fe49e33349219eb6c884e`.
+Host load varied, including one accelerated physical-read run of 6.97768 seconds.
+These component measurements establish no gameplay speed result.
+
+GCC 13.3, Clang 18.1.3, MSVC 19.51, and Clang sanitizers matched 3,716 checks
+covering standard vectors, unaligned buffers, in-place and partial aliases, IV
+aliases, and invalid sizes with unchanged output. The four-block vectors come
+from [NIST SP 800-38A, Appendix F.2](https://nvlpubs.nist.gov/nistpubs/legacy/sp/nistspecialpublication800-38a.pdf).
+Both builds also matched the complete pinned-reader comparison corpus above.
+The expanded public disc suite passed both builds and Clang sanitizers at `-O2`
+and Debug `-O0`; the direct Debug run took 81.132 seconds. Fallback checks forced
+feature dispatch off on the same AES-capable host, rather than using a physical
+host without AES instructions.

@@ -79,6 +79,15 @@ fields, final frame bytes and persistent files at one billion attempts, with
 actual GPU fragment execution. The long continuation is unfinished; its capture
 hooks and normal input establish no outcome beyond observed checkpoints.
 
+A completed software control uses the same integrated core, seed and immutable
+replay through field 1,050. All 35 captured checkpoints agree on every reported
+non-graphics guest state field. Frame and memory hashes first differ at field
+690, where 17 PPM bytes differ. At field 1,050, full CPU state and all 24 MiB of
+main RAM match; 28 bytes in secondary RAM and 16 PPM bytes differ. The retained
+comparison is `local-artifacts/galaxy-software-control-20261004/completed-comparison.json`.
+The rendering discrepancy is under diagnosis; these results establish no
+broader graphics-equivalence claim.
+
 The separate nine-billion-attempt Galaxy audio run uses ordinary replay input
 to advance past wrist-strap instructions. Its actual Windows endpoint samples
 match the rendered callback prefix, including nonzero music; the final 864

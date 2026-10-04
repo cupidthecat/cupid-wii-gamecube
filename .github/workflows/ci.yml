@@ -49,10 +49,34 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Configure MSVC
-        run: cmake -S . -B build/ci -G "Visual Studio 17 2022" -A x64 -DCUPID_WARNINGS_AS_ERRORS=ON -DCUPID_COMMIT=${{ github.sha }}
+        run: cmake -S . -B build/ci -G "Visual Studio 17 2022" -A x64 -DCUPID_WARNINGS_AS_ERRORS=ON -DCUPID_REQUIRE_HARDWARE_TESTS=ON -DCUPID_COMMIT=${{ github.sha }}
       - name: Build
         run: cmake --build build/ci --config Release --parallel 2
+      - name: Install software OpenGL for graphics tests
+        shell: pwsh
+        run: |
+          $mesaArchive = Join-Path $env:RUNNER_TEMP 'mesa3d-26.2.3-release-msvc.7z'
+          $mesaDirectory = Join-Path $env:RUNNER_TEMP 'mesa3d-26.2.3'
+          Invoke-WebRequest -Uri 'https://github.com/pal1000/mesa-dist-win/releases/download/26.2.3/mesa3d-26.2.3-release-msvc.7z' -OutFile $mesaArchive
+          if ((Get-FileHash -LiteralPath $mesaArchive -Algorithm SHA256).Hash -ne '3f3613adb43cfd0f2e665ce2400b130c275f0b3317cb3a05566320a3a67589ed') {
+            throw 'Software OpenGL archive checksum mismatch'
+          }
+          New-Item -ItemType Directory -Path $mesaDirectory -Force | Out-Null
+          Push-Location $mesaDirectory
+          try {
+            cmake -E tar xf $mesaArchive
+            if ($LASTEXITCODE -ne 0) { throw 'Software OpenGL extraction failed' }
+          } finally {
+            Pop-Location
+          }
+          foreach ($library in 'opengl32.dll', 'libgallium_wgl.dll') {
+            Copy-Item -LiteralPath (Join-Path $mesaDirectory "x64/$library") -Destination 'build/ci/Release'
+          }
       - name: Test
+        env:
+          GALLIUM_DRIVER: llvmpipe
+          LIBGL_ALWAYS_SOFTWARE: 1
+          LP_NUM_THREADS: 2
         run: ctest --test-dir build/ci -C Release --output-on-failure
       - name: Verify packaged executable
         run: cmake -DBUILD_DIR=build/ci -P tools/package-verify.cmake

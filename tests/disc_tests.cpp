@@ -367,20 +367,68 @@ void crypto_tests() {
   const std::array<u8, 16> key{0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6,
                                0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c};
   const std::array<u8, 16> iv{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
-  const std::array<u8, 32> plain{0x6b, 0xc1, 0xbe, 0xe2, 0x2e, 0x40, 0x9f, 0x96, 0xe9, 0x3d, 0x7e,
+  // NIST SP 800-38A F.2.1 and F.2.2 cover all four CBC blocks.
+  const std::array<u8, 64> plain{0x6b, 0xc1, 0xbe, 0xe2, 0x2e, 0x40, 0x9f, 0x96, 0xe9, 0x3d, 0x7e,
                                  0x11, 0x73, 0x93, 0x17, 0x2a, 0xae, 0x2d, 0x8a, 0x57, 0x1e, 0x03,
-                                 0xac, 0x9c, 0x9e, 0xb7, 0x6f, 0xac, 0x45, 0xaf, 0x8e, 0x51};
-  const std::array<u8, 32> cipher{0x76, 0x49, 0xab, 0xac, 0x81, 0x19, 0xb2, 0x46, 0xce, 0xe9, 0x8e,
+                                 0xac, 0x9c, 0x9e, 0xb7, 0x6f, 0xac, 0x45, 0xaf, 0x8e, 0x51, 0x30,
+                                 0xc8, 0x1c, 0x46, 0xa3, 0x5c, 0xe4, 0x11, 0xe5, 0xfb, 0xc1, 0x19,
+                                 0x1a, 0x0a, 0x52, 0xef, 0xf6, 0x9f, 0x24, 0x45, 0xdf, 0x4f, 0x9b,
+                                 0x17, 0xad, 0x2b, 0x41, 0x7b, 0xe6, 0x6c, 0x37, 0x10};
+  const std::array<u8, 64> cipher{0x76, 0x49, 0xab, 0xac, 0x81, 0x19, 0xb2, 0x46, 0xce, 0xe9, 0x8e,
                                   0x9b, 0x12, 0xe9, 0x19, 0x7d, 0x50, 0x86, 0xcb, 0x9b, 0x50, 0x72,
-                                  0x19, 0xee, 0x95, 0xdb, 0x11, 0x3a, 0x91, 0x76, 0x78, 0xb2};
+                                  0x19, 0xee, 0x95, 0xdb, 0x11, 0x3a, 0x91, 0x76, 0x78, 0xb2, 0x73,
+                                  0xbe, 0xd6, 0xb8, 0xe3, 0xc1, 0x74, 0x3b, 0x71, 0x16, 0xe6, 0x9e,
+                                  0x22, 0x22, 0x95, 0x16, 0x3f, 0xf1, 0xca, 0xa1, 0x68, 0x1f, 0xac,
+                                  0x09, 0x12, 0x0e, 0xca, 0x30, 0x75, 0x86, 0xe1, 0xa7};
   const disc::detail::Aes128 aes(key);
-  std::array<u8, 32> output{};
+  std::array<u8, 64> output{};
   aes.encrypt_cbc(plain, output, iv);
   CHECK(output == cipher);
   aes.decrypt_cbc(cipher, output, iv);
   CHECK(output == plain);
-  aes.decrypt_cbc(output, output, iv); // In-place operation must preserve the chaining bytes.
-  CHECK_THROWS(aes.encrypt_cbc(std::span(plain).first(15), std::span(output).first(15), iv));
+  aes.encrypt_cbc(output, output, iv);
+  CHECK(output == cipher);
+  aes.decrypt_cbc(output, output, iv);
+  CHECK(output == plain);
+  for (std::size_t alignment = 1; alignment < 16; ++alignment) {
+    std::array<u8, 96> input{}, unaligned{};
+    std::copy(plain.begin(), plain.end(), input.begin() + static_cast<std::ptrdiff_t>(alignment));
+    unaligned.fill(0xa5);
+    const auto before = input;
+    aes.encrypt_cbc(std::span(input).subspan(alignment, plain.size()),
+                    std::span(unaligned).subspan(alignment, plain.size()), iv);
+    CHECK(input == before);
+    CHECK(std::equal(cipher.begin(), cipher.end(),
+                     unaligned.begin() + static_cast<std::ptrdiff_t>(alignment)));
+    aes.decrypt_cbc(std::span(unaligned).subspan(alignment, plain.size()),
+                    std::span(unaligned).subspan(alignment, plain.size()), iv);
+    CHECK(std::equal(plain.begin(), plain.end(),
+                     unaligned.begin() + static_cast<std::ptrdiff_t>(alignment)));
+    CHECK(std::all_of(unaligned.begin(), unaligned.begin() + static_cast<std::ptrdiff_t>(alignment),
+                      [](u8 value) { return value == 0xa5; }));
+    CHECK(std::all_of(unaligned.begin() + static_cast<std::ptrdiff_t>(alignment + plain.size()),
+                      unaligned.end(), [](u8 value) { return value == 0xa5; }));
+  }
+  std::copy(iv.begin(), iv.end(), output.begin());
+  aes.encrypt_cbc(plain, output, std::span<const u8, 16>(output.data(), 16));
+  CHECK(output == cipher);
+  std::copy(iv.begin(), iv.end(), output.begin());
+  aes.decrypt_cbc(cipher, output, std::span<const u8, 16>(output.data(), 16));
+  CHECK(output == plain);
+  aes.encrypt_cbc(std::span(plain).first(0), std::span(output).first(0), iv);
+  aes.decrypt_cbc(std::span(cipher).first(0), std::span(output).first(0), iv);
+  CHECK(output == plain);
+  for (const auto &sizes :
+       {std::pair<std::size_t, std::size_t>{15, 15}, {16, 32}, {32, 16}, {0, 16}, {16, 0}}) {
+    output.fill(0xa5);
+    const auto before = output;
+    CHECK_THROWS(aes.encrypt_cbc(std::span(plain).first(sizes.first),
+                                 std::span(output).first(sizes.second), iv));
+    CHECK(output == before);
+    CHECK_THROWS(aes.decrypt_cbc(std::span(cipher).first(sizes.first),
+                                 std::span(output).first(sizes.second), iv));
+    CHECK(output == before);
+  }
 }
 
 void raw_tests() {

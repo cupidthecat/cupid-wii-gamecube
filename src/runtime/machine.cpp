@@ -312,6 +312,7 @@ void Machine::write_state(std::ostream &out, const std::string &outcome) const {
       << ",\"host_audio_nonzero_samples\":" << host_audio.nonzero_samples
       << ",\"host_audio_dropped_granules\":" << host_audio.dropped_granules
       << ",\"page_table_write_errors\":" << memory_.page_table_write_errors()
+      << ",\"instruction_backing_read_errors\":" << memory_.instruction_backing_read_errors()
       << ",\"gx_commands\":" << graphics_.command_count()
       << ",\"gx_fragments\":" << graphics_.fragment_count()
       << ",\"loaded_sections\":" << boot_.loaded_sections

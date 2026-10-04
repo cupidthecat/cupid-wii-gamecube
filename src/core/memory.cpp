@@ -20,6 +20,7 @@ Memory::Memory(Console console)
 
 void Memory::clear() {
   page_table_write_errors_ = 0;
+  instruction_backing_read_errors_ = 0;
   for (auto *bytes : {&mem1_, &mem2_, &cache_})
     std::fill(bytes->begin(), bytes->end(), u8(0));
 }
@@ -85,6 +86,29 @@ u32 Memory::instruction_cache_key(u32 physical) const {
   if (physical & 0x10000000)
     return 0x10000000 | (physical & (mem2_size - 1));
   return physical & (mem1_allocated_size - 1);
+}
+
+bool Memory::read_instruction_words(u32 physical, std::span<u32> words) {
+  if (words.size() != 1 && words.size() != 8)
+    throw std::invalid_argument("Instruction reads require one word or one cache line");
+  std::span<const u8> bytes;
+  try {
+    bytes = range(physical & 0x3fffffff, words.size_bytes());
+  } catch (const BusFault &) {
+    ++instruction_backing_read_errors_;
+    return false;
+  }
+  for (std::size_t n = 0; n < words.size(); ++n) {
+    u32 word = 0;
+    for (unsigned byte = 0; byte < 4; ++byte)
+      word = (word << 8) | bytes[n * 4 + byte];
+    words[n] = word;
+  }
+  return true;
+}
+
+u64 Memory::instruction_backing_read_errors() const {
+  return instruction_backing_read_errors_;
 }
 
 std::span<u8> Memory::cpu_range(u32 physical, unsigned byte_count) {

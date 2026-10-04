@@ -15,8 +15,11 @@ void InstructionCache::invalidate(u32 effective) {
 }
 
 u32 InstructionCache::read(Bus &bus, u32 physical, bool enabled, bool locked) {
-  if (!enabled)
-    return bus.read32(physical);
+  if (!enabled) {
+    u32 value = 0;
+    bus.read_instruction_words(physical, std::span<u32>(&value, 1));
+    return value;
+  }
   const u32 address = bus.instruction_cache_key(physical) & ~31u;
   const unsigned set_index = (address >> 5) & 127;
   auto &set = sets_[set_index];
@@ -26,8 +29,12 @@ u32 InstructionCache::read(Bus &bus, u32 physical, bool enabled, bool locked) {
       way = n;
       break;
     }
-  if (way == 8 && locked)
-    return bus.read32(physical);
+  if (way == 8 && locked) {
+    u32 value = 0;
+    if (!bus.read_instruction_words(physical, std::span<u32>(&value, 1)))
+      throw BusFault(physical, false, "Locked instruction-cache miss has no defined backing", true);
+    return value;
+  }
   if (way == 8) {
     for (unsigned n = 0; n < 8; ++n)
       if (!set[n].valid) {
@@ -43,10 +50,9 @@ u32 InstructionCache::read(Bus &bus, u32 physical, bool enabled, bool locked) {
         node = node * 2 + 1 + branch;
       }
     }
-    Line loaded;
+    Line loaded = set[way];
     loaded.address = address;
-    for (unsigned n = 0; n < 8; ++n)
-      loaded.words[n] = bus.read32((physical & ~31u) + n * 4);
+    bus.read_instruction_words(physical & ~31u, loaded.words);
     loaded.valid = true;
     set[way] = loaded;
   }

@@ -29,10 +29,12 @@ public:
   void locked_cache_dma(u32 memory_address, u32 cache_address, u32 bytes, bool load) override;
   void memory_access_error() override;
   u32 instruction_cache_key(u32 physical) const override;
+  bool read_instruction_words(u32 physical, std::span<u32> words) override;
   u64 read_cpu_data(u32 physical, unsigned byte_count) override;
   void write_cpu_data(u32 physical, u32 value, unsigned byte_count) override;
   bool write_page_table32(u32 physical, u32 value) override;
   u64 page_table_write_errors() const;
+  u64 instruction_backing_read_errors() const;
   std::span<u8> range(u32 address, std::size_t length);
   std::span<const u8> range(u32 address, std::size_t length) const;
   void copy_in(u32 physical, std::span<const u8> data);
@@ -44,6 +46,7 @@ public:
 private:
   std::vector<u8> mem1_, mem2_, cache_;
   u64 page_table_write_errors_ = 0;
+  u64 instruction_backing_read_errors_ = 0;
   std::span<u8> cpu_range(u32 physical, unsigned byte_count);
   u64 read(u32 address, unsigned width);
   void write(u32 address, u64 value, unsigned width);

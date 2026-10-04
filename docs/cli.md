@@ -42,6 +42,8 @@ Those fields retain the main DMA values before host mixing. Remote output leaves
 
 `page_table_write_errors` counts rejected backing writes when translation updates page-table reference/change bits. The translation and local TLB flags can remain valid even when a bounded host write rejects allocation padding. This counter is separate from PI interrupt requests and guest storage exceptions. See [memory boundaries](memory.md).
 
+`instruction_backing_read_errors` counts rejected whole-word or whole-line instruction copies. Such a rejection leaves the destination unchanged and raises no PI request. A later cache hit can return retained words without another backing-copy attempt. Invalid locked misses instead report an unsupported runtime condition; fetched-zero execution delivery remains under audit.
+
 ```sh
 cupid-wii-gamecube --game "/path/to/game.rvz" --headless --audio none \
   --user-dir "/path/to/test-data" --max-instructions 30000000 --run-seconds 60 \

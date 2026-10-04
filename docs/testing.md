@@ -168,3 +168,11 @@ This snapshot corrected CPU memory routing, physical aliases and instruction-cac
 Windows and GCC each passed the physical-memory comparison: 722 CPU RAM cases, 320 host-range cases, 32 DMA cases, 36 unresolved-memory error cases, padding page-table checks, and 526,736 mixed cache reads across 600,000 operations. The other twelve comparisons passed again.
 
 Clang-format 18 passed, including test adapter includes. Clang 18 static analysis checked all 37 product translation units with no project diagnostics. All 131 captured source, header, test and build input hashes remained unchanged through the corrected checks. Windows and Linux reproduced the audio coefficients. Separate package-verifier fixtures on both hosts accepted matching revision metadata and rejected deliberately mismatched metadata.
+
+## Checked snapshot after `25500396aba6`
+
+This snapshot repaired instruction-cache fills when backing memory is unavailable and added a counter for rejected instruction reads. Windows and GCC each passed 57,856 additional defined fetch and cache comparisons with no divergences or device callbacks. The earlier physical-memory cases and all twelve other direct comparisons passed again.
+
+The five configurations retained their previous counts: Windows and GCC each passed 35 public suites and thirteen comparisons; Clang passed 35 public suites; both headless sanitizer builds passed 32 public suites. Declared skips remained 1, 1, 14, 17 and 17 respectively.
+
+Clang-format 18 passed, including test adapter includes. Clang 18 static analysis checked all 37 product translation units with no project diagnostics. All 131 captured source, header, test and build input hashes remained unchanged through the final checks. These comparisons cover defined instruction-read and cache behavior; they do not prove hardware accuracy.

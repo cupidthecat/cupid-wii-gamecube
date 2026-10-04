@@ -2643,8 +2643,77 @@ void cache_tests() {
 }
 } // namespace
 
+namespace {
+void instruction_fill_failure_tests() {
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    cupid::Memory memory(console);
+    Interpreter cpu(memory, console);
+    auto &state = cpu.state();
+    unsigned pi = 0, device_reads = 0;
+    memory.memory_error = [&] { ++pi; };
+    memory.mmio_handles = [](u32 address) { return (address & 0xf8000000) == 0x08000000; };
+    memory.mmio_read = [&](u32, unsigned) {
+      ++device_reads;
+      return imm(14, 11, 0, 99);
+    };
+    const u32 retained = imm(14, 11, 0, 7);
+    memory.write32(0x4000, retained);
+    memory.write32(0x1020, ext(982, 0, 0, 4));
+    state.spr[spr::hid0] = 0x8000;
+    state.pc = 0x4000;
+    cpu.step();
+    CHECK(state.gpr[11] == 7);
+    state.gpr[4] = 0x4000;
+    state.pc = 0x1020;
+    cpu.step();
+    state.pc = 0x02004000;
+    state.gpr[11] = 0;
+    cpu.step();
+    CHECK(state.pc == 0x02004004 && state.gpr[11] == 7);
+    CHECK(state.last_opcode == retained && state.last_pc == 0x02004000);
+    CHECK(state.spr[spr::srr0] == 0 && state.spr[spr::dar] == 0);
+    CHECK(state.instructions == 3 && pi == 0 && device_reads == 0);
+    CHECK(memory.instruction_backing_read_errors() == 1);
+    // Failed fills still install the line, so a locked hit is defined.
+    state.spr[spr::hid0] = 0xa000;
+    state.pc = 0x02004000;
+    state.gpr[11] = 0;
+    cpu.step();
+    CHECK(state.pc == 0x02004004 && state.gpr[11] == 7);
+    CHECK(memory.instruction_backing_read_errors() == 1);
+    cpu.reset();
+    state.spr[spr::hid0] = 0x8000;
+    state.pc = 0x02004000;
+    cpu.step();
+    CHECK(state.pc == 0x02004004 && state.gpr[11] == 7);
+    CHECK(state.spr[spr::srr0] == 0 && pi == 0 && device_reads == 0);
+    CHECK(memory.instruction_backing_read_errors() == 2);
+
+    // A locked invalid miss has no defined initialized value in the caller.
+    cpu.reset();
+    state.spr[spr::hid0] = 0xa000;
+    state.pc = 0x01804000;
+    const auto cycles = state.cycles, instructions = state.instructions;
+    bool unsupported = false;
+    try {
+      cpu.step();
+    } catch (const UnsupportedInstruction &error) {
+      unsupported = true;
+      CHECK(error.pc == 0x01804000);
+    }
+    CHECK(unsupported && state.pc == 0x01804000);
+    CHECK(state.cycles == cycles && state.instructions == instructions);
+    CHECK(state.spr[spr::srr0] == 0 && state.spr[spr::dar] == 0);
+    CHECK(pi == 0 && device_reads == 0);
+    CHECK(memory.instruction_backing_read_errors() == 3);
+  }
+}
+
+} // namespace
+
 int main() {
   return run_tests([] {
+    instruction_fill_failure_tests();
     integer_tests();
     branch_tests();
     cache_range_loop_tests();

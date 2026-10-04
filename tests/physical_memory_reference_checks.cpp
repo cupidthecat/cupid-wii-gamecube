@@ -802,9 +802,125 @@ void cache_checks() {
   std::cout << comparisons << " mixed cache reads across 600000 operations passed\n";
 }
 
+void fetch_backing_checks() {
+  try {
+    auto &system = Core::System::GetInstance();
+    unsigned cases = 0, divergences = 0;
+    for (bool wii : {false, true}) {
+      system.SetIsWii(wii);
+      Memory::MemoryManager memory(system);
+      memory.Init();
+      PowerPC::PowerPCManager manager(system);
+      PowerPC::MMU mmu(system, memory, manager);
+      auto &state = manager.GetPPCState();
+      state.iCache.Cache::Init(memory);
+      state.msr.Hex = 0;
+      state.m_enable_dcache = false;
+      cupid::Memory bus(wii ? cupid::Console::Wii : cupid::Console::GameCube);
+      cupid::cpu::InstructionCache cache;
+      unsigned product_pi = 0, device_reads = 0;
+      bus.memory_error = [&] { ++product_pi; };
+      bus.mmio_handles = [](u32 address) { return (address & 0xf8000000) == 0x08000000; };
+      bus.mmio_read = [&](u32, unsigned) {
+        ++device_reads;
+        return 0x3860002au;
+      };
+      const auto compare = [&](u32 address, bool enabled, bool locked) {
+        ++cases;
+        state.spr[SPR_HID0] = (enabled ? 0x8000u : 0) | (locked ? 0x2000u : 0);
+        state.Exceptions = 0;
+        const unsigned pi_before = reference_pi_requests;
+        const auto diagnostic_before = reference_messages.size();
+        const auto product_diagnostic_before = bus.instruction_backing_read_errors();
+        const auto reference = mmu.TryReadInstruction(address);
+        require(reference.valid && state.Exceptions == 0 && reference_pi_requests == pi_before,
+                cases, "actual cold fetch is valid without PI/ISI");
+        try {
+          const u32 observed = cache.read(bus, address, enabled, locked);
+          require(bus.instruction_backing_read_errors() - product_diagnostic_before ==
+                      static_cast<u64>(reference_messages.size() != diagnostic_before),
+                  cases, "one product diagnostic per rejected backing copy");
+          if (observed != reference.hex) {
+            ++divergences;
+            if (divergences < 12)
+              std::cerr << "value case=" << cases << " wii=" << wii << " addr=" << std::hex
+                        << address << " expected=" << reference.hex << " got=" << observed
+                        << std::dec << '\n';
+          }
+        } catch (const cupid::BusFault &) {
+          ++divergences;
+          if (divergences < 12)
+            std::cerr << "fault case=" << cases << " wii=" << wii << " addr=" << std::hex << address
+                      << " expected=" << reference.hex << std::dec << '\n';
+        }
+      };
+      const auto reset = [&] {
+        state.iCache.Reset(system.GetJitInterface());
+        cache.reset();
+      };
+      constexpr std::array<u32, 11> invalid{0x01802000, 0x02002000, 0x04002000, 0x06002000,
+                                            0x08002000, 0x0c002000, 0x14002000, 0xe0002000,
+                                            0x20002000, 0x38002000, 0x7e002000};
+      for (unsigned set_number = 0; set_number < 128; ++set_number) {
+        const u32 set_bits = set_number << 5;
+        for (bool enabled : {false, true})
+          for (u32 address : invalid) {
+            reset();
+            for (unsigned word = 0; word < 8; ++word)
+              compare(address + set_bits + word * 4, enabled, false);
+          }
+        // Invalidation and Reset discard validity while retaining initialized words.
+        for (unsigned operation = 0; operation < 2; ++operation) {
+          reset();
+          for (unsigned word = 0; word < 8; ++word) {
+            const u32 value = 0x38600011u + word;
+            memory.Write_U32(value, 0x2000 + set_bits + word * 4);
+            bus.write32(0x2000 + set_bits + word * 4, value);
+          }
+          compare(0x2000 + set_bits, true, false);
+          if (operation == 0) {
+            state.iCache.Invalidate(memory, system.GetJitInterface(), 0x2000 + set_bits);
+            cache.invalidate(0x2000 + set_bits);
+          } else {
+            reset();
+          }
+          for (unsigned word = 0; word < 8; ++word)
+            compare(0x02002000 + set_bits + word * 4, true, false);
+          // A newly installed failed-fill line is a defined hit even while locked.
+          for (unsigned word = 0; word < 8; ++word)
+            compare(0x02002000 + set_bits + word * 4, true, true);
+        }
+        // Full-set replacement must retain the selected line after failed CopyFromEmu.
+        reset();
+        for (unsigned tag = 0; tag < 8; ++tag) {
+          const u32 address = 0x00102000 + set_bits + tag * 4096;
+          for (unsigned word = 0; word < 8; ++word) {
+            const u32 value = 0x38600020u + tag * 8 + word;
+            memory.Write_U32(value, address + word * 4);
+            bus.write32(address + word * 4, value);
+          }
+          compare(address, true, false);
+        }
+        for (unsigned word = 0; word < 8; ++word)
+          compare(0x01802000 + set_bits + word * 4, true, false);
+      }
+      require(product_pi == 0, cases, "fetch path excludes PI");
+      require(device_reads == 0, cases, "fetch backing excludes device callbacks");
+      std::cout << "wii=" << wii << " device callbacks=" << device_reads << '\n';
+      memory.Shutdown();
+    }
+    std::cout << cases << " defined fetch/cache cases, " << divergences << " divergences\n";
+    require(divergences == 0, cases, "strict instruction backing");
+  } catch (const std::exception &error) {
+    std::cerr << error.what() << '\n';
+    throw;
+  }
+}
+
 int main() {
   try {
     memory_checks();
+    fetch_backing_checks();
     cache_checks();
     return 0;
   } catch (const std::exception &error) {

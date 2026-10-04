@@ -2,6 +2,7 @@
 #pragma once
 
 #include "cupid/core/types.hpp"
+#include <span>
 #include <stdexcept>
 #include <string>
 
@@ -102,6 +103,13 @@ public:
     default:
       throw std::invalid_argument("Invalid CPU data write width");
     }
+  }
+
+  // A rejected instruction backing copy retains all destination words.
+  virtual bool read_instruction_words(u32 physical, std::span<u32> words) {
+    for (std::size_t n = 0; n < words.size(); ++n)
+      words[n] = read32(physical + static_cast<u32>(n * 4));
+    return true;
   }
 
   virtual bool write_page_table32(u32 physical, u32 value) {

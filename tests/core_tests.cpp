@@ -192,6 +192,62 @@ void strict_page_table_writes(cupid::Console console) {
   CHECK(memory.page_table_write_errors() == 0);
   CHECK(memory.read_cpu_data(0x01800004, 4) == 0 && signals == 0);
 }
+
+void instruction_backing_reads(cupid::Console console) {
+  using namespace cupid;
+  Memory memory(console);
+  unsigned signals = 0, device_reads = 0;
+  memory.memory_error = [&] { ++signals; };
+  memory.mmio_handles = [](u32 address) { return address >= 0x08000000; };
+  memory.mmio_read = [&](u32, unsigned) {
+    ++device_reads;
+    return 0xdeadbeefu;
+  };
+  const std::array<u8, 32> code{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x10, 0x20, 0x30,
+                                0x40, 0xa5, 0xa6, 0xa7, 0xa8, 0,    0,    0,    0,    0xff, 0xff,
+                                0xff, 0xff, 0x80, 0,    0,    0,    0x7f, 0xff, 0xff, 0xff};
+  const std::array<u32, 8> expected{0x01234567, 0x89abcdef, 0x10203040, 0xa5a6a7a8,
+                                    0,          0xffffffff, 0x80000000, 0x7fffffff};
+  memory.copy_in(0x1000, code);
+  if (console == Console::Wii)
+    memory.copy_in(0x10001000, code);
+  for (u32 base : {0u, 0x10000000u}) {
+    if (base != 0 && console != Console::Wii)
+      continue;
+    for (u32 alias : {0u, 0x40000000u, 0x80000000u, 0xc0000000u}) {
+      std::array<u32, 8> line{};
+      CHECK(memory.read_instruction_words(alias | base | 0x1000, line));
+      CHECK(line == expected);
+      for (unsigned word = 0; word < expected.size(); ++word) {
+        std::array<u32, 1> single{0xdeadbeef};
+        CHECK(memory.read_instruction_words(alias | base | (0x1000 + word * 4), single));
+        CHECK(single[0] == expected[word]);
+      }
+    }
+  }
+  CHECK(memory.instruction_backing_read_errors() == 0 && signals == 0 && device_reads == 0);
+  std::array<u32, 8> line;
+  line.fill(0xaabbccdd);
+  const auto guard = line;
+  const std::array<u32, 9> invalid{0x01800000, 0x02001000, 0x017ffff0, 0x08000000, 0x0c003000,
+                                   0xe0000000, 0x60001000, 0x14000000, 0x13fffff0};
+  for (u32 address : invalid) {
+    CHECK(!memory.read_instruction_words(address, line));
+    CHECK(line == guard);
+  }
+  std::array<u32, 1> single{0xfeedface};
+  CHECK(!memory.read_instruction_words(0x017ffffe, single));
+  CHECK(single[0] == 0xfeedface);
+  CHECK(memory.instruction_backing_read_errors() == 10);
+  CHECK_THROWS(memory.read_instruction_words(0, std::span<u32>{}));
+  CHECK_THROWS(memory.read_instruction_words(0, std::span<u32>(line).first(3)));
+  CHECK(memory.instruction_backing_read_errors() == 10);
+  CHECK(memory.page_table_write_errors() == 0 && signals == 0 && device_reads == 0);
+  memory.clear();
+  CHECK(memory.instruction_backing_read_errors() == 0);
+  CHECK(memory.read_instruction_words(0x1000, line));
+  CHECK(std::all_of(line.begin(), line.end(), [](u32 word) { return word == 0; }));
+}
 } // namespace
 
 int main() {
@@ -206,6 +262,8 @@ int main() {
     cpu_ram_and_host_bounds(cupid::Console::Wii);
     strict_page_table_writes(cupid::Console::GameCube);
     strict_page_table_writes(cupid::Console::Wii);
+    instruction_backing_reads(cupid::Console::GameCube);
+    instruction_backing_reads(cupid::Console::Wii);
     cupid::Memory gc(cupid::Console::GameCube);
     gc.write32(8, 0x12345678);
     CHECK(gc.read8(8) == 0x12);

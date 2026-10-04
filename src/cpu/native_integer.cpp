@@ -303,7 +303,7 @@ bool NativeInteger::execute_other(State &state, u32 opcode) {
     statistics_.executable_bytes = impl_->pages.size() * page_bytes;
   }
   hint = {opcode, operation};
-  operation(&state);
+  invoke_operation(state, operation);
   ++statistics_.executed;
   return true;
 #else

@@ -18,9 +18,11 @@ stride. A six-point cubic Hermite interpolator produces output samples.
 The configured 80 ms buffer adjusts the bounded queue; excess backlog is
 trimmed and queue overflow drops a granule while retaining incoming history.
 During shortages, the normal running setting repeats the buffered tail and
-fades it with the defined 8 ms rise and 64 ms fall. Every source is mixed and
-clipped in order, retaining its quantization error. This behavior does not
-establish useful playback speed when guest execution is slow.
+fades it with the defined 8 ms rise and 64 ms fall. Active sources are mixed and
+clipped in order, retaining their quantization error. The callback skips the
+four permanently empty speaker queues when Remote playback is disabled.
+This behavior does not establish useful playback speed when guest execution
+is slow.
 
 The symmetric window is generated from the 129-element Slepian eigenproblem
 with time-bandwidth product four, convolved with a 128-element rectangle and
@@ -215,6 +217,108 @@ An input-free run at sixteen billion attempts also remained silent at
 the wrist-strap instructions. The input gate therefore matters when choosing
 an audio observation span. Its separate receipts and PCM hashes remain under
 `galaxy-16b/`; neither silent run establishes nonzero Galaxy playback.
+
+A separate Galaxy run used the same frozen Windows executable and an
+immutable copy of the ordinary startup input replay. At nine billion CPU
+attempts it reached 737 VI fields and delivered 791,552 guest DMA values,
+including 65,602 nonzero values, with peak 19,112 and hash
+`11697351465341683324`. Its input replay SHA-256 is
+`74f03aa39e1a1eeb902769257cc8dfdfb79e934aeab523cb39bbbd5cc781e7d7`.
+The earlier input-free observations remain separate evidence of the startup
+input gate.
+
+After a constant 1,568-frame alignment, the first 35,178,656 callback frames
+match WASAPI's float PCM exactly after division by 32,768: 70,357,312 sample
+values, gain one and zero residual in both channels. All 7,409,720 nonzero
+endpoint values belong to this exact callback prefix. All other endpoint
+values are zero, and no monitored foreign rendering session has a nonzero
+peak. The final 864 callback frames, or 18 ms, were not rendered; they contain
+1,723 nonzero values. They follow the final host-stat snapshot. The strict
+whole-callback comparison therefore failed, and its original failure is
+preserved. SDL's WASAPI close path stops the client without draining its last
+buffer, which is consistent with this canceled tail.
+
+The receipts are under
+`local-artifacts/commercial-endpoint-20261004/galaxy-replay-9b/`:
+`completed.json`, `rendered-prefix-analysis.json`,
+`waveform-tail-diagnosis.json` and the failed `full-callback-comparison.stderr`.
+Callback PCM SHA-256 is
+`74784afea804c92a2dc2092d7b87b3ec157d7b25fdb48e44d7396ddb5186f99e`;
+loopback WAV SHA-256 is
+`2192e2373728fbd2f95a9994f2f3292d194bb68c53e101cea78e38ab1c92b3d8`.
+This verifies the rendered commercial waveform prefix through the Windows
+audio engine. It does not establish complete callback rendering or physical
+listening. About 12.46 emulated seconds took 735.19 wall-clock seconds, so it
+also does not establish full-speed playback or playable gameplay.
+
+A later coherent Linux build of the frozen `949784e21ac6-graphics-working`
+runtime attempted Sunshine through SDL PulseAudio and the actual shared
+WSLg `RDPSink`. Strict GCC 13.3 Release with link-time optimization used
+system SDL 2.30.0 and libpulse 16.1, with headless OpenGL through llvmpipe.
+All 203 frozen inputs match their hashes before and after execution. The
+observation executable SHA-256 is
+`406a01dc420a8def892e62cf567d9dcd7edf18f9885c00826d11fcf337873f7f`.
+
+Before playback, PulseAudio `17.0-25-gc3305` answered queries and had no sink
+inputs. The first live query identified only the observation process's
+48 kHz stereo stream. Subsequent queries timed out seven times and then
+reported connection refusal 324 times. The guest still reached its normal
+three-billion-attempt limit, with the same CPU, memory, frame and guest DMA
+hashes as the stock Sunshine observation. Its host callback stopped after
+62,464 silent frames and reported 1,069 dropped granules. The process then
+remained in audio shutdown until the owned wrapper's configured 680-second
+outer bound; termination did not finish within its five-second grace period,
+so the wrapper killed that process. The wrapper's measured wall duration was
+737.01 seconds. The wrapper signaled only its own game and recorder; it
+issued no shared service restart.
+
+The retained callback file contains 61,440 silent frames; forced termination
+left one 1,024-frame observer buffer unflushed relative to the final snapshot.
+The Pulse monitor retained 78,255 silent frames. A simultaneous 730-second
+Windows loopback observation received no packets, and all monitored session
+peaks were zero. This does not establish a full-duration zero waveform,
+alignment, gain or successful Linux commercial endpoint playback. The final
+read-only server query still reported connection refusal. Process inspection
+preserves the main and SDL audio threads' futex waits and the Pulse mainloop's
+poll wait after the guest's normal stop message; it does not establish the
+cause of the shared server failure.
+
+These failed-attempt receipts are under
+`local-artifacts/commercial-endpoint-20261004/linux-sunshine/`:
+`completed.json`, `windows-completed.json`, `failure-analysis.json` and
+`stalled-shutdown-inspection.json`. The analysis records binary, helper,
+receipt and PCM hashes, the contemporaneous WSLg transport process and the
+observer's incomplete final buffer. Callback PCM SHA-256 is
+`9eb8fa54d87a9b9775dd55c07b3d164453884695bd1ed83fe2f63259ee9e6afc`;
+Pulse monitor PCM SHA-256 is
+`08bb3bbd1fbdb0cd7722cff1ec0f664ccc8dc9af7fc4988f625d57d4a0d3695e`.
+The earlier synthetic partial capture and transport timeouts remain intact.
+The separate `environment-after.json` records installed library versions
+and ELF hashes. It also records a later PID 1 start and newly created Pulse
+socket after the attempt ended; this later environment epoch is not evidence
+that the failed playback recovered.
+
+The callback's disabled-Remote branch was then checked against the complete
+32,314-event Sunshine trace. The speaker setting is fixed for an Output's
+lifetime, and disabled routing rejects all speaker packets. Its four empty
+speaker FIFOs therefore add no signal or quantization error. Skipping their
+interpolation leaves all 22,855,680 captured sample values and all drop counts
+exact against the unchanged pinned mixer on both MSVC and GCC. This separate
+trace replay measured callback mixing work at 0.451 seconds on Windows and
+0.314 seconds on Linux, compared with 5.317 and 4.741 seconds in earlier
+replays that processed the empty queues. These timings cover the recorded
+mixer calls, not guest execution, endpoint latency or whole-runtime speed.
+
+The guarded callback was also built from a coherent snapshot of
+`62db09ec8438d963edb4458b1a6d9174be9aad09` plus the speaker-loop change.
+The `host_mixer`, `output` and `host_audio` checks pass on strict MSVC and GCC.
+They retain enabled-Remote coverage for all four ports and both channels,
+main DMA channel order at all four divisors, and independent disc-audio
+callback coverage. These later checks use SDL's dummy backend and do not
+change the earlier endpoint observations. Their source manifest and native
+and Linux logs remain under `local-artifacts/remote-loop-20261004/`, with hashes
+in `completed.json`. Complete guarded trace comparisons remain under
+`local-artifacts/commercial-endpoint-20261004/replay-remote-off/`.
 
 ## Behavior mapping
 

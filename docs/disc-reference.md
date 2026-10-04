@@ -27,6 +27,14 @@ the 2 MiB encrypted group. Changing partitions or groups invalidates the cache;
 plaintext reads can replace the decoded chunk without changing retained sectors.
 An invalid exception elsewhere in the group still rejects the physical read.
 
+The plaintext chunk walk also collects the exception records needed by that
+group. It preserves list and record order, then validates their group coordinates
+and applies them after the complete plaintext walk and hash computation. This
+avoids decoding the same chunks again for exceptions. A malformed later chunk
+still takes precedence over an earlier exception with an invalid group
+coordinate. The temporary collector uses 32 bytes per record, plus vector
+capacity; groups without exceptions allocate no record storage.
+
 On 2026-10-03, a separate Linux GCC 13.3 test executable compiled the actual
 pinned reader, compression, padding, sector hash, and encryption sources. It
 compared their bytes with `disc::Image` from this working tree. The harness and
@@ -117,3 +125,30 @@ ended with 999,994,000 executed instructions and identical values for all 44 fin
 state fields. Their final frame bytes and all six persisted user files (33,958
 bytes) matched exactly. This is a bounded state comparison. The changing host
 load made the two elapsed times unsuitable for a gameplay performance comparison.
+
+A second isolated pair tested collecting exceptions during the plaintext walk.
+Profiling the same 120 physical reads found that the old exception pass decoded
+2,000 chunks and consumed 182,063,899 stored bytes, repeating the plaintext pass.
+The collector eliminated those second-pass decodes. Six uninstrumented GCC 13.3
+Release processes ran in before/current/current/before/before/current order.
+Before times were 3.640, 3.600, and 3.629 seconds; current times were 2.830, 2.806,
+and 3.076 seconds. Their medians fell from 3.629 to 2.830 seconds, a 22.0%
+reduction. All six returned the same 7,864,320 bytes and the SHA-1 above. This is
+another physical reconstruction measurement under shared host load.
+
+The actual pinned reader also matched both implementations on six larger
+generated fixtures: uncompressed, WIA purge, Bzip2, LZMA, LZMA2, and Zstandard.
+Each uses 4 MiB chunks, 194 Wii sectors, and a segment split after sector 128.
+The fixtures contain multiple exception lists and overlapping records that
+change a later sector's data IV. Each codec's 41 physical and plaintext reads
+compared 775,504 bytes with SHA-1 `3059bd47c7a8b551f6a64b537a0ac384b41349aa`.
+The earlier generated and supplied-image comparisons remained identical.
+
+Public tests decrypt all 194 physical sectors and check the overlapping records
+against literal expected bytes. Additional malformed fixtures check error
+precedence, three failed retries with an unchanged output buffer, and valid
+physical and plaintext reads between failures. Both implementations passed the
+expanded disc suite. The collector also passed Clang 18.1.3 AddressSanitizer and
+UndefinedBehaviorSanitizer with system compression libraries. Direct runs
+without a timeout took 16.168 seconds at `-O2` and 152.834 seconds at Debug `-O0`.
+Both enabled leak detection and stopped on the first sanitizer error.

@@ -109,6 +109,48 @@ both attempts remain preserved. Concurrent builds, captures and continuations
 share the host, so these timings establish no isolated backend speedup or
 full-speed gameplay.
 
+Hosted CI at `62db09e` passes its Linux Release configurations but rejects the
+single 20,261-byte shader literal on its older Windows compiler. Splitting it
+into adjacent 9,569-byte and 10,692-byte literals preserves every concatenated
+GLSL byte while meeting the documented [compiler limit](https://learn.microsoft.com/en-us/cpp/error-messages/compiler-errors-1/compiler-error-c2026?view=msvc-170).
+The same CI finds a Clang sanitizer failure at a generated-code call and a
+60-second disc-test timeout. Original logs remain in
+`local-artifacts/ci-62db09e-20261004`; fixes need separate verification.
+
+The generated-code failure is reproduced locally under Clang 18: its function
+sanitizer probes eight bytes before a compiler-generated function entry, where
+the emitted leaf code has no type metadata. Both cold and cached calls now use
+one helper that excludes only this intentional call from the function-prefix
+check. Address and other undefined-behavior checks remain enabled, and an
+ordinary incorrectly typed C++ function-pointer control still fails. The full
+2,752,512-case suite passes Debug sanitizers in 24.86 seconds with the original
+60-second test budget.
+
+Expanded multi-codec disc tests pass Clang Debug sanitizers in 152.83 seconds
+when run directly without a timeout. Their sanitizer-only CTest budget is now
+300 seconds; Release and every other test retain their existing budgets. The
+direct measurement uses installed compression libraries, while hosted CI builds
+the pinned dependencies. The original timeout and complete passing execution
+are retained separately.
+
+The next integrated 215-file snapshot has manifest SHA256
+`202aa48bb55d0713dbb0b77d5cb8056c7029ef9d4ab7c200133d52d925be1964`.
+It includes the sanitizer helper, shader literal split, one-pass disc metadata
+collector and disabled-speaker callback guard. MSVC and GCC Release with LTO
+each pass 43 public checks and 17 compiled comparisons, with the private opt-in
+test skipped; both extracted packages pass both guest execution backends.
+GCC and Clang Debug sanitizers each pass all 38 available public checks with
+23 explicit skips. Under concurrent builds and continuations, their disc tests
+take 287.62 and 296.25 seconds, and native tests take 42.11 and 40.81 seconds.
+The complete sanitizer runs take 557.29 and 547.59 seconds respectively.
+
+The first format gate catches helper whitespace; the repair preserves all 317
+C++ tokens, and all 142 checked files pass. Clang 18 static analysis passes all
+42 product translation units with no project diagnostics. Original frozen
+bytes, the format failure, repaired header, complete checks and hashes remain
+in `local-artifacts/integrated-portability-collector-20261004`. Later
+compatibility and audio documentation updates have separately recorded hashes.
+
 ## Sanitizers
 
 On Linux with GCC or Clang:

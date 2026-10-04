@@ -68,6 +68,16 @@ struct Exception {
   detail::Digest digest;
 };
 
+struct CollectedException {
+  u64 sector;
+  Exception value;
+};
+
+struct ExceptionCollector {
+  u64 start;
+  std::vector<CollectedException> entries;
+};
+
 struct Segment {
   u64 start, size;
   u32 first_group, groups;
@@ -716,7 +726,7 @@ private:
   }
 
   void read_segment(const Segment &segment, u64 offset, std::span<u8> output, bool partition,
-                    u64 base) {
+                    u64 base, ExceptionCollector *collector = nullptr) {
     const u64 sector = partition ? plaintext_bytes : sector_bytes;
     const u64 chunk_bytes = partition ? chunk_size_ / sector_bytes * plaintext_bytes : chunk_size_;
     const u64 skipped = segment.start % sector;
@@ -733,6 +743,18 @@ private:
       const auto count = static_cast<std::size_t>(std::min<u64>(output.size(), expected - within));
       const auto &decoded = chunk(static_cast<std::size_t>(segment.first_group + index), expected,
                                   partition, index * chunk_bytes + base);
+      if (collector) {
+        const u64 chunk_start = aligned_start + index * chunk_bytes;
+        for (std::size_t list = 0; list < decoded.exceptions.size(); ++list) {
+          const u64 list_start = chunk_start + list * plain_group_bytes;
+          if (list_start >= collector->start + plain_group_bytes ||
+              list_start + plain_group_bytes <= collector->start)
+            continue;
+          for (const auto &exception : decoded.exceptions[list])
+            collector->entries.push_back(
+                {list_start / plaintext_bytes + exception.offset / hash_bytes, exception});
+        }
+      }
       std::copy_n(decoded.data.begin() + static_cast<std::ptrdiff_t>(within), count,
                   output.begin());
       offset += count;
@@ -740,7 +762,8 @@ private:
     }
   }
 
-  void read_plain_partition(std::size_t index, u64 offset, std::span<u8> output) {
+  void read_plain_partition(std::size_t index, u64 offset, std::span<u8> output,
+                            ExceptionCollector *collector = nullptr) {
     const auto &partition = partitions_.at(index);
     const u64 first = partition.segments[0].start;
     for (const auto &physical_segment : partition.segments) {
@@ -756,7 +779,7 @@ private:
       require(offset >= segment.start, "game partition read crosses a missing segment");
       const auto count = static_cast<std::size_t>(
           std::min<u64>(output.size(), segment.size - (offset - segment.start)));
-      read_segment(segment, offset, output.first(count), true, 0);
+      read_segment(segment, offset, output.first(count), true, 0, collector);
       offset += count;
       output = output.subspan(count);
     }
@@ -771,10 +794,12 @@ private:
     const u64 start = group_index * plain_group_bytes;
     plain_cache_.assign(static_cast<std::size_t>(plain_group_bytes), 0);
     auto &plain = plain_cache_;
+    ExceptionCollector collector{start, {}};
     if (start < size)
       read_plain_partition(index, start,
-                           std::span(plain).first(static_cast<std::size_t>(
-                               std::min(plain_group_bytes, size - start))));
+                           std::span(plain).first(
+                               static_cast<std::size_t>(std::min(plain_group_bytes, size - start))),
+                           &collector);
     hash_cache_.assign(64 * static_cast<std::size_t>(hash_bytes), 0);
     auto &hashes = hash_cache_;
     for (std::size_t sector = 0; sector < 64; ++sector) {
@@ -799,40 +824,14 @@ private:
                   hashes.begin() +
                       static_cast<std::ptrdiff_t>(copy * hash_bytes + 0x340 + subgroup * 20));
     }
-    // Exception coordinates are relative to each chunk's hash stream. Large chunks contain one list
-    // per 64 sectors.
-    for (const auto &segment : partition.segments) {
-      if (!segment.size)
-        continue;
-      const u64 segment_start = (segment.start - first) / sector_bytes * plaintext_bytes;
-      const u64 segment_size = segment.size / sector_bytes * plaintext_bytes;
-      const u64 chunk_bytes = chunk_size_ / sector_bytes * plaintext_bytes;
-      const u64 end = std::min(start + plain_group_bytes, segment_start + segment_size);
-      if (end <= segment_start || end <= start)
-        continue;
-      const u64 begin = std::max(start, segment_start);
-      for (u64 local = (begin - segment_start) / chunk_bytes; local < segment.groups; ++local) {
-        const u64 chunk_start = segment_start + local * chunk_bytes;
-        if (chunk_start >= end)
-          break;
-        const u64 expected = std::min(chunk_bytes, segment_size - local * chunk_bytes);
-        const auto &decoded = chunk(static_cast<std::size_t>(segment.first_group + local), expected,
-                                    true, local * chunk_bytes);
-        for (std::size_t list = 0; list < decoded.exceptions.size(); ++list) {
-          const u64 list_start = chunk_start + list * plain_group_bytes;
-          if (list_start >= start + plain_group_bytes || list_start + plain_group_bytes <= start)
-            continue;
-          for (const auto &exception : decoded.exceptions[list]) {
-            const u64 sector = list_start / plaintext_bytes + exception.offset / hash_bytes;
-            require(sector >= group_index * 64 && sector < (group_index + 1) * 64,
-                    "hash exception lies outside its reconstructed group");
-            const u64 where =
-                (sector - group_index * 64) * hash_bytes + exception.offset % hash_bytes;
-            std::copy(exception.digest.begin(), exception.digest.end(),
-                      hashes.begin() + static_cast<std::ptrdiff_t>(where));
-          }
-        }
-      }
+    // Validate and apply after the complete plaintext walk and hash computation.
+    for (const auto &exception : collector.entries) {
+      require(exception.sector >= group_index * 64 && exception.sector < (group_index + 1) * 64,
+              "hash exception lies outside its reconstructed group");
+      const u64 where =
+          (exception.sector - group_index * 64) * hash_bytes + exception.value.offset % hash_bytes;
+      std::copy(exception.value.digest.begin(), exception.value.digest.end(),
+                hashes.begin() + static_cast<std::ptrdiff_t>(where));
     }
     encrypted_cache_.resize(static_cast<std::size_t>(hash_group_bytes));
     encrypted_sectors_ = 0;

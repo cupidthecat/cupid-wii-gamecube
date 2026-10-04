@@ -108,8 +108,9 @@ struct Output::Impl {
       const audio::MixerOptions mixing;
       self.dma->mix(destination, mixing);
       self.disc->mix(destination, mixing);
-      for (auto &speaker : self.speakers)
-        speaker->mix(destination, mixing);
+      if (self.options.remote_speakers)
+        for (auto &speaker : self.speakers)
+          speaker->mix(destination, mixing);
       self.host_stats.mixed_frames += destination.size() / 2;
       for (std::size_t n = 0; n < destination.size(); n += 2) {
         self.host_stats.left_nonzero += destination[n] != 0;

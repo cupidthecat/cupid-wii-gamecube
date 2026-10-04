@@ -5,8 +5,8 @@ Complete playability and full-speed execution remain unverified. Both supplied g
 | Game | Platform | Strongest observed behavior | Still unverified |
 | --- | --- | --- | --- |
 | Super Mario Sunshine, USA (`GMSE01`) | Windows, MSVC Release | Accepted Start, menu movement, jumping and slot A; rendered opening movie. A separate GPU run's actual SDL samples match Windows endpoint capture. | Controllable level gameplay, guest save creation and reopening, full speed. |
-| Super Mario Sunshine, USA (`GMSE01`) | Linux, GCC Release | Accepted menu controls and slot A; the 48-billion-step run progresses through the opening airstrip/movie scenes. | Same playability requirements as Windows. |
-| Super Mario Galaxy, USA (`RMGE01`) | Windows, MSVC Release | Guest-created files reopen exactly, the restored slot launches, and opening-story input reaches the outdoor plaza. Ordinary Nunchuk forward, right and left input and A produce visible movement and jumping. | Broader gameplay controls, complete gameplay save/load behavior, commercial host playback, full speed. |
+| Super Mario Sunshine, USA (`GMSE01`) | Linux, GCC Release | Accepted menu controls and slot A; the 48-billion-step run progresses through the opening airstrip/movie scenes. | Controllable level gameplay, save/load, commercial host playback, full speed. |
+| Super Mario Galaxy, USA (`RMGE01`) | Windows, MSVC Release | Guest-created files reopen exactly, the restored slot launches, and opening-story input reaches the outdoor plaza. Ordinary Nunchuk forward, right and left input and A produce visible movement and jumping. A separate replay run's nonzero SDL samples match Windows endpoint capture. | Broader gameplay controls, complete gameplay save/load behavior, full speed. |
 | Super Mario Galaxy, USA (`RMGE01`) | Linux, GCC Release | Title, pointer, file-slot hover and slot selection accepted; file-creation confirmation reached. | Accepted live controls through gameplay, complete save creation/reload, commercial host playback, full speed. |
 
 The menu and gameplay observations use software graphics, headless output,
@@ -63,6 +63,31 @@ zero. Every original seed file remains byte-identical. The retained file trace
 contains an unchanged SYSCONF write and no game-file write, so this run adds no
 gameplay save/reload result. Final hashes and input windows are recorded in
 `final-gameplay-movement-audit.json` beside the earlier proofs.
+
+The separate Sunshine GPU continuation built from the earlier graphics snapshot
+ends with an explicit raster-coordinate error at field 6,717 and instruction
+54,146,047,965, during the opening transition. Its last frame is black; DAR,
+DSISR and both memory-error counters remain zero. Original source and binary
+hashes, input, final state and RAM are preserved in
+`local-artifacts/gameplay-hardware-fixed-native-20261004`. This observed
+rendering failure is under diagnosis and prevents a level-playability claim.
+
+A new Galaxy GPU continuation uses the sealed integrated source described in
+[testing](testing.md), the default interpreter and copied restored-slot data.
+The stock CLI and rebuilt forwarding observer match all 52 reported state
+fields, final frame bytes and persistent files at one billion attempts, with
+actual GPU fragment execution. The long continuation is unfinished; its capture
+hooks and normal input establish no outcome beyond observed checkpoints.
+
+The separate nine-billion-attempt Galaxy audio run uses ordinary replay input
+to advance past wrist-strap instructions. Its actual Windows endpoint samples
+match the rendered callback prefix, including nonzero music; the final 864
+callback frames are cancelled at shutdown and are excluded from that exact
+prefix claim. An input-free run remains at the wrist-strap screen with silent
+guest PCM. The Linux Sunshine endpoint attempt instead fails: guest execution
+and PCM match the stock CLI, but the Pulse transport stops callbacks and hangs
+during shutdown. [Host audio](host-audio.md) preserves both successful and failed
+capture scopes, final-buffer limits and attribution controls.
 
 ## Firmware and performance
 

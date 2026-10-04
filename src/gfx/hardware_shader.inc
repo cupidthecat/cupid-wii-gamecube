@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Separate literals retain the shader bytes while meeting older compiler size limits.
 R"glsl(#version 430 core
 layout(local_size_x=8, local_size_y=8) in;
 layout(std430, binding=0) buffer Efb { uint efb[]; };
@@ -206,7 +207,8 @@ ivec2 indirect_coordinates(uint control, ivec2 source, ivec2 previous, ivec4 map
 uint pack_rgba(ivec4 value) {
   return (uint(value.r)<<24u)|(uint(value.g)<<16u)|(uint(value.b)<<8u)|uint(value.a);
 }
-bool shade(ivec2 pixel, inout uint depth, out ivec4 result) {
+)glsl"
+R"glsl(bool shade(ivec2 pixel, inout uint depth, out ivec4 result) {
   RegisterFile registers;
   registers.r0=ivec4(state[256],state[257],state[258],state[259]);
   registers.r1=ivec4(state[260],state[261],state[262],state[263]);

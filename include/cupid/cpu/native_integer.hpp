@@ -28,7 +28,7 @@ public:
   bool execute(State &state, u32 opcode) {
     auto &hint = hints_[(opcode ^ (opcode >> 11) ^ (opcode >> 21)) & 2047];
     if (hint.opcode == opcode && hint.operation) {
-      hint.operation(&state);
+      invoke_operation(state, hint.operation);
       ++statistics_.executed;
       ++statistics_.cache_hits;
       return true;
@@ -40,6 +40,16 @@ public:
   NativeIntegerStatistics statistics() const noexcept;
 
 private:
+  // Emitted entries have no compiler function-type prefix. Exclude only this
+  // intentional call from Clang's prefix check; other sanitizers stay enabled.
+#if defined(__clang__)
+  __attribute__((no_sanitize("function")))
+#endif
+  static void
+  invoke_operation(State &state, void (*operation)(State *)) {
+    operation(&state);
+  }
+
   struct Hint {
     u32 opcode = 0;
     void (*operation)(State *) = nullptr;

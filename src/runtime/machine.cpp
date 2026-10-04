@@ -67,6 +67,7 @@ Machine::Machine(Console console)
     devices_.write(a, v, w);
   };
   memory_.fifo_write = [this](u8 value) { graphics_.gather(value); };
+  memory_.memory_error = [this] { devices_.set_interrupt(1, true); };
   devices_.graphics_read = [this](u32 a, unsigned w) { return graphics_.read(a, w); };
   devices_.graphics_write = [this](u32 a, u32 v, unsigned w) { graphics_.write(a, v, w); };
   devices_.fifo_reset = [this] { graphics_.reset_fifo(); };

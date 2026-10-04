@@ -22,7 +22,43 @@ void bp(Memory &memory, unsigned index, u32 value) {
   }
   bytes.resize(32);
   for (u8 byte : bytes)
-    memory.write8(0x0c008000, byte);
+    memory.write8(0x0c008fe0, byte);
+}
+
+void display_list_guest(Console console) {
+  runtime::Machine machine(console);
+  machine.load_executable(runtime::self_test_dol());
+  auto &memory = machine.memory();
+  memory.write32(0x0c00300c, 0x10000);
+  memory.write32(0x0c003010, 0x11000);
+  memory.write32(0x0c003014, 0x10000);
+  for (unsigned offset : {0x20u, 0x34u, 0x38u})
+    fifo_pointer(memory, offset, 0x10000);
+  fifo_pointer(memory, 0x24, 0x11000);
+  memory.write16(0x0c000002, 17);
+  const std::array<u8, 32> list{0x61, 0x43, 0,    0,    0,    0x61, 0x41, 0,    0,
+                                24,   0x61, 0x4f, 0,    0xff, 0x11, 0x61, 0x50, 0,
+                                0x22, 0x33, 0x61, 0x52, 0,    8,    0};
+  memory.copy_in(0x00f863a0, list);
+  std::array<u8, 32> command{0x40, 0x80, 0xf8, 0x63, 0xa0, 0, 0, 0, 32};
+  memory.copy_in(0x7000, command);
+  auto &state = machine.cpu().state();
+  state.pc = 0x80006000;
+  state.gpr[3] = 0xcc008fe0;
+  state.gpr[4] = 0x80007000;
+  for (u32 i = 0; i < command.size(); ++i) {
+    memory.write32(0x6000 + i * 8, (34u << 26) | (5 << 21) | (4 << 16) | i);
+    memory.write32(0x6004 + i * 8, (38u << 26) | (5 << 21) | (3 << 16));
+  }
+  const auto instructions = state.instructions;
+  for (unsigned i = 0; i < 64; ++i)
+    machine.step();
+  CHECK(state.pc == 0x80006100 && state.instructions == instructions + 64);
+  CHECK(state.spr[cpu::spr::dar] == 0 && state.spr[cpu::spr::dsisr] == 0);
+  CHECK(memory.read32(0x08000000) == 0x00112233);
+  std::array<u8, 32> after{};
+  memory.copy_out(0x00f863a0, after);
+  CHECK(after == list);
 }
 
 void efb_access(Console console) {
@@ -138,5 +174,7 @@ int main() {
   return run_tests([] {
     efb_access(Console::GameCube);
     efb_access(Console::Wii);
+    display_list_guest(Console::GameCube);
+    display_list_guest(Console::Wii);
   });
 }

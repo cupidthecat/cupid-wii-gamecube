@@ -171,7 +171,7 @@ std::size_t CommandProcessor::decode(std::span<const u8> bytes) {
       return 0;
     if (display_list_)
       unavailable(0x0c008000, true, "Recursive display lists are unsupported");
-    const u32 address = word(bytes, 1) & ~u32{31}, size = word(bytes, 5) & ~u32{31};
+    const u32 address = word(bytes, 1) & 0x3fffffe0, size = word(bytes, 5) & ~u32{31};
     auto list = memory_.range(address, size);
     display_list_ = true;
     std::size_t cursor = 0;

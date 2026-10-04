@@ -240,6 +240,46 @@ void uploads() {
   CHECK(graphics.command_count() == commands);
 }
 
+void display_list_aliases(Console console) {
+  Memory memory(console);
+  hw::Devices devices(console);
+  for (u32 physical : {0x00f863a0u, Memory::mem1_size - 32, 0x10020000u}) {
+    if (console == Console::GameCube && physical >= 0x10000000)
+      continue;
+    for (u32 alias : {0u, 0x40000000u, 0x80000000u, 0xc0000000u}) {
+      gfx::CommandProcessor graphics(memory, devices, console);
+      std::vector<u8> list{0x61};
+      put(list, 0x22123456);
+      list.resize(32);
+      memory.copy_in(physical, list);
+      std::vector<u8> call{0x40};
+      put(call, (physical | alias) + 7);
+      put(call, 63);
+      graphics.submit(std::span<const u8>(call).first(6));
+      CHECK(graphics.command_count() == 0 && graphics.bp_state(0x22) == 0);
+      graphics.submit(std::span<const u8>(call).subspan(6));
+      CHECK(graphics.bp_state(0x22) == 0x123456 && graphics.command_count() == 29);
+      std::vector<u8> after(32);
+      memory.copy_out(physical, after);
+      CHECK(after == list);
+    }
+  }
+  for (u32 address : {0x8c008000u, 0xe0000000u, 0x81800000u, 0xd4000000u}) {
+    gfx::CommandProcessor graphics(memory, devices, console);
+    std::vector<u8> call{0x40};
+    put(call, address);
+    put(call, 32);
+    CHECK_THROWS(graphics.submit(call));
+    CHECK(graphics.command_count() == 0 && graphics.bp_state(0x22) == 0);
+  }
+  gfx::CommandProcessor graphics(memory, devices, console);
+  std::vector<u8> oversized{0x40};
+  put(oversized, 0x80000000 | (Memory::mem1_size - 32));
+  put(oversized, 64);
+  CHECK_THROWS(graphics.submit(oversized));
+  CHECK(graphics.command_count() == 0);
+}
+
 void ring() {
   Memory memory(Console::GameCube);
   hw::Devices devices(Console::GameCube);
@@ -340,6 +380,8 @@ void copies() {
 int main() {
   return run_tests([] {
     uploads();
+    display_list_aliases(Console::GameCube);
+    display_list_aliases(Console::Wii);
     ring();
     interrupts();
     copies();

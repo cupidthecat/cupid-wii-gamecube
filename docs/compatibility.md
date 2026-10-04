@@ -1,6 +1,6 @@
 # Compatibility
 
-Commercial gameplay is not verified. These observations use private local dumps and the uncommitted implementation based on revision `c37e83160ce7`. That revision identifies the baseline, not a committed version containing all current changes. Executables print their configured revision in `--version` and final state.
+Commercial gameplay is not verified. These observations use private local dumps. Initial captures used development snapshots based on `c37e83160ce7`; that revision identifies their baseline. Later captures identify the integrated checkpoint where its content was preserved. Executables print their configured revision in `--version` and final state, so a revision set before later compilation must be interpreted with the recorded source snapshot.
 
 ## Local observations
 
@@ -16,6 +16,14 @@ These observations were recorded on 2026-10-04. The game captures are raw guest 
 Sunshine's startup sweeps address ranges much larger than physical RAM for cache maintenance. The first sweep returns at about 209 million guest instructions. Increasing a development bound to reach its return preserves guest execution; no game-specific skip was added.
 
 The first longer Sunshine run stopped on an unimplemented locked-cache DMA register at 2,087,239,936 instructions. The physical transfer and register rules now have focused regressions, and the matched three-billion-instruction run passes that point. Its intro card is a startup observation, not an interactive title-screen result.
+
+Longer Sunshine attempts on Windows and Linux passed the DSP history-count gate and stopped at 3,649,914,269 instructions, 4,208,382,233 cycles and 402 presented fields. They captured 425,312 signed audio values, including 98,522 nonzero values with peak magnitude 13,760 and PCM hash `17207390885358484972`. All recorded guest-state and output fields match; only the harness outcome label differs. The raw PPM SHA256 is `2f53059c4fd1b2834b33c87cba6a7b8e720c3aa222174adbfa54b2400d74b055`. The later native forwarding-only probe used the preserved runtime and headers from checkpoint `5d8d36f8287873c05d3146c321bd549009bf39de`; its build-tree revision string remained the older configured baseline.
+
+That probe captured the first FIFO callback failure at PC `0x802edf18`, opcode `0x90058000`: the graphics decoder attempted a display-list read at cached address `0x80f863a0`. The captured command supplies a 736-byte list at that address. The callback's nested memory-read fault was recorded as a guest store DSI at `0xcc008000`; a subsequent graphics retry reported the underlying read address. Display-list pointer normalization now has passing direct and guest regressions. A longer corrected game run is still required to establish progress beyond this point.
+
+Galaxy's longer Linux run reached three billion instructions and 241 presented fields with zero DAR/DSISR, the same safety-screen field hash and only zero-valued PCM. Its packet capture showed repeated virtual HID channel requests receiving guest result `3`, followed by disconnects. After the reconnect-delay correction, a native 600-second run reached 2,029,445,120 instructions and 161 fields with two requests: the initial request and one following a normal A event. Both still received result `3`; all 176,000 captured PCM values were zero. The fresh configuration had no registered peers.
+
+The corrected registration run captures a completed guest SYSCONF read at 12,523,050 instructions: all 16,384 requested bytes, 27 entries and five registered peers. The guest then accepts both control and interrupt HID channels with result `0` and starts controller memory traffic. The next explicit stop is a speaker-register write at 538,247,147 instructions, 568,318,435 cycles and 37 presented fields. The guest writes register `9` of speaker slave `0x51` with value `1`. All 43,840 captured main-AI values remain zero, and DAR/DSISR remain zero. This is controller initialization progress; button acceptance and an interactive title screen still require later runs.
 
 The three local IPL candidates each have the expected 2 MiB size, but none matches a recognized full-ROM checksum. They have not been accepted as full firmware. The USA container's font slots pass bounded decompression and glyph-layout validation and supply the EXI font reads used in Sunshine's startup. This does not authenticate its boot-ROM bytes. See [font validation](fonts.md).
 

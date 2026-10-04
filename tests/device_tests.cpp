@@ -3,6 +3,7 @@
 #include "cupid/core/memory.hpp"
 #include "cupid/cpu/interpreter.hpp"
 #include "cupid/hw/devices.hpp"
+#include "cupid/hw/period.hpp"
 #include "test_support.hpp"
 #include <algorithm>
 #include <array>
@@ -16,6 +17,56 @@ using namespace cupid::hw;
 namespace {
 constexpr u32 pi = 0x0c003000, vi = 0x0c002000, di = 0x0c006000;
 constexpr u32 si = 0x0c006400, exi = 0x0c006800, ai = 0x0c006c00, dsp = 0x0c005000;
+
+void period_accounting() {
+  const auto reference = [](u64 amount, u64 period, u64 &remainder) {
+    const u64 whole = amount / period;
+    const u64 tail = amount - whole * period;
+    const u64 accumulated = remainder + tail;
+    const u64 carry = accumulated / period;
+    remainder = accumulated - carry * period;
+    return whole + carry;
+  };
+  constexpr u64 maximum = std::numeric_limits<u64>::max();
+  constexpr std::array<u64, 14> periods{1,     2,     3,     729,   4096,   10116,  15174,
+                                        15187, 15444, 22781, 80928, 121392, 121500, 182250};
+  constexpr std::array<u64, 14> amounts{0,           1,           2,           3,       4,
+                                        31,          729,         10000,       1000000, 0xffffffff,
+                                        0x100000000, maximum / 2, maximum - 1, maximum};
+  for (u64 period : periods) {
+    for (u64 initial : {u64(0), period - 1, period, period + 1, u64(182249)})
+      for (u64 amount : amounts) {
+        u64 expected = initial, observed = initial;
+        const u64 count = reference(amount, period, expected);
+        CHECK(hw::detail::elapsed_periods(amount, period, observed) == count);
+        CHECK(observed == expected);
+      }
+    const std::array<u64, 7> pieces{0, 1, period - 1, 1, 2, period + 5, 10000000};
+    u64 expected = period - 1, observed = expected, count = 0, total = 0;
+    for (u64 piece : pieces) {
+      count += hw::detail::elapsed_periods(piece, period, observed);
+      reference(piece, period, expected);
+      CHECK(observed == expected);
+      total += piece;
+    }
+    u64 bulk = period - 1;
+    CHECK(hw::detail::elapsed_periods(total, period, bulk) == count);
+    CHECK(bulk == observed);
+  }
+  // Preserve phase across both longer and shorter rate/VI periods, including zero-cycle writes.
+  u64 expected = 0, observed = 0, state = 73;
+  for (unsigned step = 0; step < 10000; ++step) {
+    state = state * 6364136223846793005ull + 1;
+    const u64 period = periods[std::size_t(state % periods.size())];
+    const u64 amount = step % 257 == 0 ? maximum : step % 19 == 0 ? 0 : state % 1000000;
+    const u64 count = reference(amount, period, expected);
+    CHECK(hw::detail::elapsed_periods(amount, period, observed) == count);
+    CHECK(observed == expected);
+  }
+  Devices devices(Console::GameCube);
+  devices.advance(1);
+  CHECK_THROWS(devices.advance(maximum));
+}
 
 void processor_interface() {
   Devices devices(Console::GameCube);
@@ -740,6 +791,7 @@ void memory_cards() {
 
 int main() {
   return run_tests([] {
+    period_accounting();
     processor_interface();
     memory_interface();
     video_interface();

@@ -4,7 +4,7 @@ Behavioral checkout pin: `562875dd60fd0ff50b65dbbb611a2096802cd1b9`. Paths below
 
 | Product path | Behavioral files and functions | Checked behavior |
 | --- | --- | --- |
-| `src/gfx/command_processor.cpp`, `gather`, `consume_fifo`, `decode` | `Core/HW/GPFifo.cpp`, `Core/HW/CommandProcessor.cpp`; `VideoCommon/OpcodeDecoding.cpp`, `RunFifo` | Gather bursts, FIFO state, opcode lengths, fragmented uploads, indexed XF data, and display lists. |
+| `src/gfx/command_processor.cpp`, `gather`, `consume_fifo`, `decode` | `Core/HW/GPFifo.cpp`, `Core/HW/CommandProcessor.cpp`; `VideoCommon/OpcodeDecoding.cpp`, `RunFifo`, `OnDisplayList`; `Core/HW/Memmap.cpp`, `GetSpanForAddress`, `GetPointerForRange` | Gather bursts, FIFO state, opcode lengths, fragmented uploads, indexed XF data, and display lists with physical RAM pointer aliases. |
 | `CommandProcessor::write_bp`, PE register access | `VideoCommon/BPStructs.cpp`, `LoadBPReg`, `BPWritten`; `VideoCommon/PixelEngine.cpp` | One-use masks, TEV and konst register types, TLUT/preload transfers, delayed token/finish events, and interrupt acknowledgements. |
 | `src/gfx/vertex.cpp` | `VideoBackends/Software/TransformUnit.cpp`; `VideoCommon/VertexLoader*`, `XFMemory.h` | Attribute interpretation, matrices, projection, lighting, and texgen. Detailed map: [vertex transforms](vertex-reference.md). |
 | `src/gfx/rasterizer.cpp` | `VideoBackends/Software/Clipper.cpp`, `Rasterizer.cpp`; `VideoCommon/BPFunctions.cpp` | Clipping, primitive assembly, sample coverage, interpolation, culling, and scissoring. Detailed map: [rasterization](rasterizer-reference.md). |

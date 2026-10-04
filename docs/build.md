@@ -66,3 +66,5 @@ Linux packages use the host's system libraries for window, audio and graphics ac
 ## Optional source checks
 
 When `clang-format` is installed at configuration time, CMake provides a `format-check` target. When `clang-tidy` is installed and the generator provides a compilation database, it also provides `static-check`. Both targets require version 18 so local and CI checks use the same rules. CMake prefers `clang-format-18` and `clang-tidy-18`; set `CUPID_CLANG_FORMAT` or `CUPID_CLANG_TIDY` to an explicit executable path if needed. Run each with `cmake --build <directory> --target <target>`. These tools are not required for an ordinary build. CI runs both checks on Linux.
+
+The project uses header includes and disables [CMake module scanning](https://cmake.org/cmake/help/latest/variable/CMAKE_CXX_SCAN_FOR_MODULES.html). This keeps the compilation database usable by `clang-tidy` immediately after configuration, before object files are built.

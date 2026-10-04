@@ -4,6 +4,7 @@ project(cupid-wii-gamecube VERSION 0.1.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 set(CMAKE_VS_GLOBALS "VcpkgEnabled=false;VcpkgApplocalDeps=false")
@@ -71,6 +72,7 @@ set(cupid_sources
   src/ios/ipc.cpp
   src/ios/memory_values.cpp
   src/ios/network.cpp
+  src/ios/sysconf.cpp
   src/gfx/command_processor.cpp
   src/gfx/vertex.cpp
   src/gfx/rasterizer.cpp
@@ -95,7 +97,7 @@ include(cmake/DeveloperChecks.cmake)
 
 if(CUPID_BUILD_TESTS)
   enable_testing()
-  foreach(suite IN ITEMS cpu core disc device remote sdp sdp_transport runtime elf fonts dsp ios network gfx vertex texture fragment rasterizer efb_copy xfb_copy efb_access guest_video input_replay audio_stats)
+  foreach(suite IN ITEMS cpu core disc device remote sdp sdp_transport runtime elf fonts dsp ios network sysconf gfx vertex texture fragment rasterizer efb_copy xfb_copy efb_access guest_video input_replay audio_stats)
     add_executable(cupid_${suite}_tests tests/${suite}_tests.cpp)
     target_include_directories(cupid_${suite}_tests PRIVATE tests)
     target_link_libraries(cupid_${suite}_tests PRIVATE cupid_core)

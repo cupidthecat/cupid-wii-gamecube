@@ -3,9 +3,11 @@
 #include "cupid/cpu/floating.hpp"
 #include "cupid/cpu/interpreter.hpp"
 #include "test_support.hpp"
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <vector>
 
 using namespace cupid;
@@ -63,6 +65,111 @@ struct Fixture {
     s.pc = 0x1000;
     memory.write32(0x1000, opcode);
     return cpu.step();
+  }
+};
+
+struct Access {
+  u32 address, value;
+  unsigned bytes;
+  bool write;
+  bool operator==(const Access &) const = default;
+};
+
+class TransactionMemory : public Memory {
+public:
+  bool recording = false, unsupported_fault = false, change_on_read = false;
+  bool external_regions = false, unsupported_error = false;
+  unsigned memory_errors = 0;
+  std::function<void()> error_hook;
+  std::optional<u32> fail_read, fail_write, host_write_error;
+  std::vector<Access> accesses;
+
+  u8 read8(u32 address) override {
+    log(address, 0, 1, false);
+    return Memory::read8(address);
+  }
+
+  void write8(u32 address, u8 value) override {
+    log(address, value, 1, true);
+    if (external_regions && address >= 0x08000000)
+      return;
+    Memory::write8(address, value);
+  }
+
+  void write16(u32 address, u16 value) override {
+    log(address, value, 2, true);
+    if (external_regions && address >= 0x08000000)
+      return;
+    Memory::write8(address, static_cast<u8>(value >> 8));
+    Memory::write8(address + 1, static_cast<u8>(value));
+  }
+
+  u32 read32(u32 address) override {
+    log(address, 0, 4, false);
+    if (fail_read == address)
+      throw BusFault(address, false, "Authored word-read fault", unsupported_fault);
+    u32 value = 0;
+    for (unsigned n = 0; n < 4; ++n)
+      value = (value << 8) | Memory::read8(address + n);
+    if (change_on_read && address == 0x2000) {
+      const u32 updated = value + 0x01020304;
+      for (unsigned n = 0; n < 4; ++n)
+        Memory::write8(address + n, static_cast<u8>(updated >> ((3 - n) * 8)));
+    }
+    return value;
+  }
+
+  void write32(u32 address, u32 value) override {
+    log(address, value, 4, true);
+    if (fail_write == address)
+      throw BusFault(address, true, "Authored word-write fault", unsupported_fault);
+    if (host_write_error == address)
+      throw std::runtime_error("Authored host write failure");
+    if (external_regions && address >= 0x08000000)
+      return;
+    for (unsigned n = 0; n < 4; ++n)
+      Memory::write8(address + n, static_cast<u8>(value >> ((3 - n) * 8)));
+  }
+
+  void write64(u32 address, u64 value) override {
+    log(address, static_cast<u32>(value), 8, true);
+    if (external_regions && address >= 0x08000000)
+      return;
+    for (unsigned n = 0; n < 8; ++n)
+      Memory::write8(address + n, static_cast<u8>(value >> ((7 - n) * 8)));
+  }
+
+  void memory_access_error() override {
+    if (unsupported_error)
+      throw BusFault(0, true, "Authored unfinished memory interrupt", true);
+    ++memory_errors;
+    if (recording)
+      accesses.push_back({0, 0, 0, true});
+    if (error_hook)
+      error_hook();
+  }
+
+private:
+  void log(u32 address, u32 value, unsigned byte_count, bool write) {
+    if (recording && address >= 0x2000)
+      accesses.push_back({address, value, byte_count, write});
+  }
+};
+
+struct TransactionFixture {
+  TransactionMemory memory;
+  Interpreter cpu{memory};
+  State &s = cpu.state();
+
+  u32 run(u32 opcode) {
+    memory.recording = false;
+    s.pc = 0x1000;
+    memory.write32(0x1000, opcode);
+    memory.accesses.clear();
+    memory.recording = true;
+    const u32 cycles = cpu.step();
+    memory.recording = false;
+    return cycles;
   }
 };
 
@@ -149,7 +256,7 @@ void integer_tests() {
     CHECK(((f.s.spr[spr::xer] >> 29) & 1) == ((static_cast<u64>(left) + right) >> 32));
     f.run(ext(8, 7, 5, 6));
     CHECK(f.s.gpr[7] == right - left);
-    CHECK(((f.s.spr[spr::xer] >> 29) & 1) == (right >= left));
+    CHECK(((f.s.spr[spr::xer] >> 29) & 1) == static_cast<u32>(right >= left));
   }
 }
 
@@ -256,6 +363,574 @@ void memory_tests() {
     CHECK(error.pc == 0x1000 && error.opcode == imm(32, 5, 4, 0));
   }
   CHECK(caught && f.s.instructions == instructions && f.s.pc == 0x1000);
+}
+
+void cache_zero_transaction_tests() {
+  for (const bool locked : {false, true}) {
+    TransactionFixture f;
+    f.s.spr[spr::hid0] = 0x4000;
+    f.s.spr[spr::hid2] = 0x30000000;
+    f.s.cr = 0x18ab5327;
+    const u32 opcode = locked ? fp(1014, 0, 7, 8, 0, 4) : ext(1014, 0, 7, 8);
+    for (unsigned offset = 0; offset < 32; ++offset) {
+      std::fill(f.memory.bytes.begin() + 0x1ffc, f.memory.bytes.begin() + 0x2024, 0xa5);
+      f.s.gpr[7] = 0x2000;
+      f.s.gpr[8] = offset;
+      CHECK(f.run(opcode) == (locked ? 1u : 5u));
+      std::vector<Access> expected;
+      for (unsigned word = 0; word < 8; ++word)
+        expected.push_back({0x2000 + word * 4, 0, 4, true});
+      CHECK(f.memory.accesses == expected);
+      CHECK(f.s.pc == 0x1004 && f.s.cr == 0x18ab5327);
+      for (unsigned i = 0; i < 32; ++i)
+        CHECK(f.memory.bytes[0x2000 + i] == 0);
+      CHECK(f.memory.bytes[0x1fff] == 0xa5 && f.memory.bytes[0x2020] == 0xa5);
+    }
+    f.s.spr[spr::hid0] = 0;
+    f.s.gpr[8] = 7;
+    f.run(opcode);
+    CHECK(f.s.pc == 0x600 && f.s.spr[spr::dar] == 0x2007);
+    CHECK(f.memory.accesses.empty());
+  }
+
+  TransactionFixture f;
+  f.cpu.configure_boot();
+  f.s.msr = msr::dr;
+  f.s.gpr[7] = 0x80002013;
+  f.s.gpr[8] = 0;
+  f.run(ext(1014, 0, 7, 8));
+  CHECK(f.memory.accesses.size() == 8 && f.memory.accesses.front().address == 0x2000);
+  f.s.msr = 0;
+  f.s.gpr[7] = 0x2000;
+  f.memory.fail_write = 0x2008;
+  std::fill(f.memory.bytes.begin() + 0x2000, f.memory.bytes.begin() + 0x2020, 0xa5);
+  f.run(ext(1014, 0, 7, 8));
+  CHECK(f.s.pc == 0x300 && f.s.spr[spr::dar] == 0x2008);
+  CHECK(f.s.spr[spr::dsisr] == 0x42000000 && f.memory.accesses.size() == 3);
+  for (unsigned i = 0; i < 32; ++i)
+    CHECK(f.memory.bytes[0x2000 + i] == (i < 8 ? 0 : 0xa5));
+  f.memory.fail_write = 0x2000;
+  f.memory.unsupported_fault = true;
+  const auto cycles = f.s.cycles, instructions = f.s.instructions;
+  const u32 dar = f.s.spr[spr::dar], dsisr = f.s.spr[spr::dsisr];
+  CHECK_THROWS(f.run(ext(1014, 0, 7, 8)));
+  CHECK(f.s.pc == 0x1000 && f.s.cycles == cycles && f.s.instructions == instructions);
+  CHECK(f.s.spr[spr::dar] == dar && f.s.spr[spr::dsisr] == dsisr);
+}
+
+void string_store_transaction_tests() {
+  TransactionFixture f;
+  const auto check_case = [&](unsigned first, unsigned offset, unsigned count, bool indexed) {
+    std::fill(f.memory.bytes.begin() + 0x1ffc, f.memory.bytes.begin() + 0x2090, 0xa5);
+    for (unsigned reg = 0; reg < 32; ++reg)
+      f.s.gpr[reg] = 0x3927c15b ^ (0x01458329u * reg);
+    f.s.gpr[7] = 0x2000 + offset;
+    f.s.gpr[8] = 0;
+    f.s.spr[spr::xer] = count;
+    f.s.cr = 0x1734568a;
+    const auto registers = f.s.gpr;
+    std::array<u8, 144> expected_bytes;
+    expected_bytes.fill(0xa5);
+    for (unsigned byte = 0; byte < count; ++byte)
+      expected_bytes[offset + byte] =
+          static_cast<u8>(registers[(first + byte / 4) & 31] >> ((3 - (byte & 3)) * 8));
+    std::vector<Access> expected_accesses;
+    if (offset)
+      expected_accesses.push_back({0x2000, 0, 4, false});
+    const unsigned words = (offset + count + 3) / 4;
+    for (unsigned word = 0; word < words; ++word) {
+      const u32 address = 0x2000 + word * 4;
+      if (word + 1 == words && (offset + count) % 4)
+        expected_accesses.push_back({address, 0, 4, false});
+      u32 value = 0;
+      for (unsigned byte = 0; byte < 4; ++byte)
+        value = (value << 8) | expected_bytes[word * 4 + byte];
+      expected_accesses.push_back({address, value, 4, true});
+    }
+    const u32 opcode = indexed ? ext(661, first, 7, 8) : ext(725, first, 7, count & 31);
+    CHECK(f.run(opcode) == 1);
+    CHECK(f.memory.accesses == expected_accesses);
+    CHECK(f.s.gpr == registers && f.s.cr == 0x1734568a && f.s.pc == 0x1004);
+    CHECK(f.memory.bytes[0x1fff] == 0xa5);
+    for (unsigned byte = 0; byte < expected_bytes.size(); ++byte)
+      CHECK(f.memory.bytes[0x2000 + byte] == expected_bytes[byte]);
+  };
+  for (unsigned first = 0; first < 32; ++first)
+    for (unsigned offset = 0; offset < 4; ++offset) {
+      for (unsigned count = 0; count < 128; ++count)
+        check_case(first, offset, count, true);
+      for (unsigned count = 1; count <= 32; ++count)
+        check_case(first, offset, count, false);
+    }
+
+  // A misaligned zero-count store has separate prefix/suffix read side effects.
+  for (unsigned offset = 1; offset < 4; ++offset) {
+    f.memory.change_on_read = false;
+    f.memory.write32(0x2000, 0x12345678);
+    f.memory.change_on_read = true;
+    f.s.gpr[7] = 0x2000 + offset;
+    f.s.spr[spr::xer] = 0;
+    f.run(ext(661, 29, 7, 8));
+    f.memory.change_on_read = false;
+    const u32 prefix_mask = ~u32{0} << ((4 - offset) * 8);
+    const u32 merged = (0x12345678u & prefix_mask) | (0x1336597cu & ~prefix_mask);
+    CHECK(f.memory.read32(0x2000) == merged);
+    CHECK((f.memory.accesses == std::vector<Access>{{0x2000, 0, 4, false},
+                                                    {0x2000, 0, 4, false},
+                                                    {0x2000, merged, 4, true}}));
+  }
+
+  f.s.gpr[7] = 0x2001;
+  f.s.gpr[8] = 0;
+  f.s.gpr[29] = 0x12345678;
+  f.memory.fail_read = 0x2000;
+  f.run(ext(725, 29, 7, 1));
+  CHECK(f.s.pc == 0x300 && f.s.spr[spr::dar] == 0x2000);
+  CHECK(f.s.spr[spr::dsisr] == 0x40000000 && f.memory.accesses.size() == 1);
+  f.memory.fail_read = 0x2004;
+  f.s.gpr[7] = 0x2000;
+  f.s.gpr[30] = 0x87654321;
+  f.memory.write32(0x2000, 0);
+  f.memory.write32(0x2004, 0xaabbccdd);
+  f.run(ext(725, 29, 7, 5));
+  CHECK(f.s.pc == 0x300 && f.s.spr[spr::dar] == 0x2004);
+  CHECK(f.memory.read32(0x2000) == 0x12345678);
+  f.memory.fail_read.reset();
+  CHECK(f.memory.read32(0x2004) == 0xaabbccdd);
+  f.memory.fail_write = 0x2000;
+  f.memory.unsupported_fault = true;
+  const auto cycles = f.s.cycles, instructions = f.s.instructions;
+  const u32 dar = f.s.spr[spr::dar], dsisr = f.s.spr[spr::dsisr];
+  CHECK_THROWS(f.run(ext(725, 29, 7, 4)));
+  CHECK(f.s.pc == 0x1000 && f.s.cycles == cycles && f.s.instructions == instructions);
+  CHECK(f.s.spr[spr::dar] == dar && f.s.spr[spr::dsisr] == dsisr);
+}
+
+void uncached_write_tests() {
+  TransactionFixture f;
+  f.s.msr = msr::dr;
+  f.s.spr[536] = 0x80000003;
+  const auto rotated_word = [](u32 value, unsigned bytes) {
+    std::array<u8, 4> source{};
+    for (unsigned n = 0; n < 4; ++n)
+      source[n] = static_cast<u8>(value >> ((3 - n) * 8));
+    u32 result = 0;
+    for (unsigned n = 0; n < 4; ++n)
+      result = (result << 8) | source[(n + 4 - (bytes & 3)) & 3];
+    return result;
+  };
+  for (unsigned attributes = 0; attributes < 16; ++attributes)
+    for (unsigned width : {1u, 2u, 4u})
+      for (unsigned offset = 0; offset < 16; ++offset)
+        for (u32 value : {0xa1b2c3d4u, 0x80000001u, 0x000000ffu, 0x6e3907b4u})
+          for (const bool update : {false, true}) {
+            std::fill(f.memory.bytes.begin() + 0x1ffc, f.memory.bytes.begin() + 0x2020, 0xa5);
+            f.s.spr[537] = (attributes << 3) | 2;
+            f.s.gpr[7] = 0x80002000 + offset;
+            f.s.gpr[9] = value;
+            f.memory.memory_errors = 0;
+            std::array<u8, 32> expected_bytes;
+            expected_bytes.fill(0xa5);
+            std::vector<Access> expected_accesses;
+            const bool duplicated = (attributes & 12) && (width < 4 || (offset & 3));
+            if (duplicated) {
+              expected_accesses.push_back({0, 0, 0, true});
+              const u32 word = rotated_word(value, (offset & 3) + width);
+              for (unsigned address = offset & ~7u; address < ((offset + width + 7) & ~7u);
+                   address += 4) {
+                expected_accesses.push_back({0x2000 + address, word, 4, true});
+                for (unsigned byte = 0; byte < 4; ++byte)
+                  expected_bytes[address + byte] = static_cast<u8>(word >> ((3 - byte) * 8));
+              }
+            } else {
+              const u32 mask = width == 4 ? ~u32{0} : (u32{1} << (width * 8)) - 1;
+              expected_accesses.push_back({0x2000 + offset, value & mask, width, true});
+              for (unsigned byte = 0; byte < width; ++byte)
+                expected_bytes[offset + byte] = static_cast<u8>(value >> ((width - 1 - byte) * 8));
+            }
+            const unsigned operation = width == 1 ? 38 : width == 2 ? 44 : 36;
+            f.run(imm(operation + static_cast<unsigned>(update), 9, 7, 0));
+            CHECK(f.s.pc == 0x1004 && f.s.msr == msr::dr);
+            CHECK(f.s.gpr[7] == 0x80002000 + offset && f.s.gpr[9] == value);
+            CHECK(f.memory.memory_errors == static_cast<unsigned>(duplicated));
+            CHECK(f.memory.accesses == expected_accesses);
+            CHECK(f.memory.bytes[0x1fff] == 0xa5);
+            for (unsigned byte = 0; byte < expected_bytes.size(); ++byte)
+              CHECK(f.memory.bytes[0x2000 + byte] == expected_bytes[byte]);
+          }
+
+  f.s.spr[537] = 0x22;
+  f.s.gpr[7] = 0x80002001;
+  f.s.gpr[8] = 0;
+  f.s.gpr[9] = 0xa1b2c3d4;
+  f.run(ext(918, 9, 7, 8));
+  CHECK(f.memory.read32(0x2000) == 0xb2d4c3a1 && f.memory.read32(0x2004) == 0xb2d4c3a1);
+  CHECK((f.memory.accesses == std::vector<Access>{{0, 0, 0, true},
+                                                  {0x2000, 0xb2d4c3a1, 4, true},
+                                                  {0x2004, 0xb2d4c3a1, 4, true}}));
+
+  // A higher overlapping BAT determines both the address and its attributes.
+  f.s.spr[538] = 0x80000003;
+  f.s.spr[539] = 2;
+  f.memory.memory_errors = 0;
+  f.run(imm(38, 9, 7, 0));
+  CHECK(f.memory.memory_errors == 0);
+  f.s.spr[537] = 2;
+  f.s.spr[539] = 0x42;
+  f.run(imm(38, 9, 7, 0));
+  CHECK(f.memory.memory_errors == 1);
+  f.s.spr[538] = 0;
+
+  // An untranslated store ignores attributes in inactive BATs.
+  f.s.msr = 0;
+  f.s.gpr[7] = 0x2001;
+  f.memory.memory_errors = 0;
+  f.run(imm(38, 9, 7, 0));
+  CHECK(f.memory.memory_errors == 0);
+
+  // PI is asserted before the first duplicated physical write.
+  f.s.msr = msr::dr | msr::ee;
+  f.s.spr[537] = 0x22;
+  f.s.gpr[7] = 0x80002000;
+  std::fill(f.memory.bytes.begin() + 0x2000, f.memory.bytes.begin() + 0x2008, 0xa5);
+  f.memory.error_hook = [&] {
+    CHECK(f.memory.bytes[0x2000] == 0xa5 && f.memory.bytes[0x2007] == 0xa5);
+    f.cpu.set_external_interrupt(true);
+  };
+  f.run(imm(38, 9, 7, 0));
+  CHECK(f.s.pc == 0x1004 && f.s.msr == (msr::dr | msr::ee));
+  f.cpu.step();
+  CHECK(f.s.pc == 0x500 && f.s.spr[spr::srr0] == 0x1004);
+  CHECK(f.s.spr[spr::srr1] == (msr::dr | msr::ee));
+  f.cpu.set_external_interrupt(false);
+  f.memory.error_hook = {};
+
+  f.s.msr = msr::dr;
+  f.memory.unsupported_error = true;
+  const auto cycles = f.s.cycles, instructions = f.s.instructions;
+  const u32 dar = f.s.spr[spr::dar], dsisr = f.s.spr[spr::dsisr];
+  CHECK_THROWS(f.run(imm(38, 9, 7, 0)));
+  CHECK(f.memory.accesses.empty() && f.s.pc == 0x1000);
+  CHECK(f.s.cycles == cycles && f.s.instructions == instructions && f.s.msr == msr::dr);
+  CHECK(f.s.spr[spr::dar] == dar && f.s.spr[spr::dsisr] == dsisr);
+}
+
+void uncached_translation_tests() {
+  for (const bool old_attribute : {false, true}) {
+    TransactionFixture f;
+    f.s.msr = msr::dr;
+    f.s.spr[spr::sdr1] = 0x20000;
+    f.s.sr[4] = 0x123;
+    const u32 pteg = 0x20000 | (((0x123u ^ 3u) << 6) & 0xffff);
+    f.memory.write32(pteg, 0x80000000 | (0x123 << 7));
+    f.memory.write32(pteg + 4, 0x5002 | (old_attribute ? 0x20u : 0));
+    f.s.gpr[7] = 0x40003001;
+    f.s.gpr[9] = 0xa1b2c3d4;
+    f.run(imm(34, 6, 7, 0)); // Cache the original attributes with C clear.
+    CHECK((f.memory.read32(pteg + 4) & 0x180) == 0x100);
+    f.memory.write32(pteg + 4, 0x5102 | (old_attribute ? 0 : 0x40u));
+    const auto check_write = [&](bool uncached) {
+      std::fill(f.memory.bytes.begin() + 0x5000, f.memory.bytes.begin() + 0x5008, 0xa5);
+      f.memory.memory_errors = 0;
+      f.run(imm(38, 9, 7, 0));
+      CHECK(f.memory.memory_errors == static_cast<unsigned>(uncached));
+      CHECK(f.memory.read32(0x5000) == (uncached ? 0xc3d4a1b2u : 0xa5d4a5a5u));
+      CHECK(f.memory.read32(0x5004) == (uncached ? 0xc3d4a1b2u : 0xa5a5a5a5u));
+    };
+    check_write(!old_attribute); // C update reparses the current PTE for this access.
+    CHECK((f.memory.read32(pteg + 4) & 0x180) == 0x180);
+    check_write(old_attribute); // The cached entry retains its original attributes.
+    f.run(ext(306, 0, 0, 7));
+    check_write(!old_attribute);
+  }
+
+  TransactionFixture f;
+  f.s.msr = msr::dr;
+  f.s.spr[spr::sdr1] = 0x20000;
+  f.s.sr[4] = 0x123;
+  for (unsigned page = 7; page < 9; ++page) {
+    const u32 pteg = 0x20000 | (((0x123u ^ page) << 6) & 0xffff);
+    f.memory.write32(pteg, 0x80000000 | (0x123 << 7));
+    f.memory.write32(pteg + 4, (page == 7 ? 0x4000u : 0x8000u) | 0x1a2);
+  }
+  f.s.gpr[7] = 0x40007fff;
+  f.s.gpr[9] = 0xa1b2c3d4;
+  f.run(imm(36, 9, 7, 0));
+  std::vector<Access> data_accesses;
+  for (const auto &access : f.memory.accesses)
+    if (access.address < 0x10000)
+      data_accesses.push_back(access);
+  CHECK((data_accesses == std::vector<Access>{{0, 0, 0, true},
+                                              {0x4ff8, 0xb2c3d4a1, 4, true},
+                                              {0x4ffc, 0xb2c3d4a1, 4, true},
+                                              {0, 0, 0, true},
+                                              {0x8000, 0xb2c3d4a1, 4, true},
+                                              {0x8004, 0xb2c3d4a1, 4, true}}));
+  const u32 second_pteg = 0x20000 | (((0x123u ^ 8u) << 6) & 0xffff);
+  f.memory.write32(second_pteg, 0);
+  f.s.gpr[8] = 0x40008000;
+  f.run(ext(306, 0, 0, 8));
+  f.run(imm(37, 9, 7, 0));
+  CHECK(f.s.pc == 0x300 && f.s.spr[spr::dar] == 0x40008000);
+  CHECK(f.s.spr[spr::dsisr] == 0x42000000 && f.s.gpr[7] == 0x40007fff);
+  CHECK(f.memory.read32(0x4ff8) == 0xb2c3d4a1 && f.memory.read32(0x4ffc) == 0xb2c3d4a1);
+}
+
+void uncached_region_tests() {
+  TransactionFixture f;
+  f.memory.external_regions = true;
+  f.s.msr = msr::dr | msr::fp;
+  f.s.spr[536] = 0x80000003;
+  f.s.gpr[9] = 0xa1b2c3d4;
+  // These physical regions precede RAM duplication in the actual caller.
+  for (u32 address : {0x0c008031u, 0x0c006001u, 0x08002001u, 0xe0002001u}) {
+    f.s.spr[537] = (address & 0xfffe0000) | 0x62;
+    f.s.gpr[7] = 0x80000000 | (address & 0x1ffff);
+    f.memory.memory_errors = 0;
+    f.run(imm(38, 9, 7, 0));
+    CHECK(f.memory.memory_errors == 0);
+    CHECK((f.memory.accesses == std::vector<Access>{{address, 0xd4, 1, true}}));
+  }
+  f.s.spr[537] = 0x10000062;
+  f.s.gpr[7] = 0x80002001;
+  f.run(imm(38, 9, 7, 0));
+  CHECK((f.memory.accesses == std::vector<Access>{{0, 0, 0, true},
+                                                  {0x10002000, 0xc3d4a1b2, 4, true},
+                                                  {0x10002004, 0xc3d4a1b2, 4, true}}));
+  f.s.spr[537] = 0x62;
+  f.s.gpr[7] = 0x80002004;
+  f.s.fpr[9].bits[0] = 0x12345678a1b2c3d4ull;
+  f.run(imm(54, 9, 7, 0));
+  CHECK((f.memory.accesses ==
+         std::vector<Access>{{0x2004, 0x12345678, 4, true}, {0x2008, 0xa1b2c3d4, 4, true}}));
+  f.s.spr[537] = 0x0c000062;
+  f.s.gpr[7] = 0x80008004;
+  f.run(imm(54, 9, 7, 0));
+  CHECK((f.memory.accesses == std::vector<Access>{{0x0c008004, 0x12345678, 4, true},
+                                                  {0x0c008008, 0xa1b2c3d4, 4, true}}));
+  f.s.spr[537] = 0x08000062;
+  f.s.gpr[7] = 0x80002000;
+  const auto cycles = f.s.cycles, instructions = f.s.instructions;
+  const u32 dar = f.s.spr[spr::dar], dsisr = f.s.spr[spr::dsisr];
+  CHECK_THROWS(f.run(imm(54, 9, 7, 0)));
+  CHECK(f.memory.accesses.empty() && f.s.pc == 0x1000);
+  CHECK(f.s.cycles == cycles && f.s.instructions == instructions);
+  CHECK(f.s.spr[spr::dar] == dar && f.s.spr[spr::dsisr] == dsisr);
+}
+
+void split_store_fault_tests() {
+  TransactionFixture f;
+  f.s.msr = msr::dr | msr::fp;
+  f.s.spr[spr::sdr1] = 0x20000;
+  f.s.sr[4] = 0x123;
+  const u32 second_pteg = 0x20000 | (((0x123u ^ 8u) << 6) & 0xffff);
+  f.memory.write32(second_pteg, 0x80000000 | (0x123 << 7));
+  f.memory.write32(second_pteg + 4, 0x8003);
+  f.s.gpr[7] = 0x40007fff;
+  f.s.gpr[9] = 0xa1b2c3d4;
+  f.run(imm(37, 9, 7, 0));
+  CHECK(f.s.pc == 0x300 && f.s.spr[spr::dar] == 0x40007fff);
+  CHECK(f.s.spr[spr::dsisr] == 0x42000000 && f.s.gpr[7] == 0x40007fff);
+  CHECK(f.s.spr[spr::srr1] == (msr::dr | msr::fp));
+  CHECK(f.memory.read32(second_pteg + 4) == 0x8183);
+  CHECK(f.memory.bytes[0x8000] == 0xb2 && f.memory.bytes[0x8001] == 0xc3 &&
+        f.memory.bytes[0x8002] == 0xd4);
+
+  f.s.msr = msr::dr | msr::fp;
+  f.s.gpr[7] = 0x40007ffc;
+  f.s.fpr[9].bits[0] = 0x12345678a1b2c3d4ull;
+  f.memory.write32(0x8000, 0);
+  f.run(imm(55, 9, 7, 0));
+  CHECK(f.s.pc == 0x300 && f.s.spr[spr::dar] == 0x40007ffc);
+  CHECK(f.s.gpr[7] == 0x40007ffc && f.memory.read32(0x8000) == 0xa1b2c3d4);
+  CHECK(f.s.spr[spr::srr1] == (msr::dr | msr::fp));
+
+  f.s.msr = msr::dr;
+  f.memory.write32(second_pteg, 0);
+  f.s.gpr[8] = 0x40008000;
+  f.run(ext(306, 0, 0, 8));
+  f.s.gpr[7] = 0x40007fff;
+  f.run(imm(36, 9, 7, 0));
+  CHECK(f.s.pc == 0x300 && f.s.spr[spr::dar] == 0x40008000);
+  CHECK(f.s.spr[spr::srr1] == msr::dr);
+  f.s.msr = msr::dr | msr::fp;
+  f.s.gpr[7] = 0x40007ffc;
+  f.run(imm(54, 9, 7, 0));
+  CHECK(f.s.pc == 0x300 && f.s.spr[spr::dar] == 0x40008000);
+  CHECK(f.s.spr[spr::srr1] == (msr::dr | msr::fp));
+
+  // An unfinished bus operation and a host error stop the second half.
+  f.cpu.reset();
+  f.s.msr = msr::dr | msr::fp;
+  f.s.spr[536] = 0x80000003;
+  f.s.spr[537] = 2;
+  f.s.gpr[7] = 0x80002000;
+  f.s.fpr[9].bits[0] = 0x12345678a1b2c3d4ull;
+  f.memory.fail_write = 0x2000;
+  f.memory.unsupported_fault = true;
+  const auto cycles = f.s.cycles, instructions = f.s.instructions;
+  CHECK_THROWS(f.run(imm(54, 9, 7, 0)));
+  CHECK((f.memory.accesses == std::vector<Access>{{0x2000, 0x12345678, 4, true}}));
+  CHECK(f.s.pc == 0x1000 && f.s.cycles == cycles && f.s.instructions == instructions);
+  CHECK(f.s.spr[spr::dar] == 0 && f.s.spr[spr::dsisr] == 0);
+  f.memory.fail_write.reset();
+  f.memory.host_write_error = 0x2000;
+  CHECK_THROWS(f.run(imm(54, 9, 7, 0)));
+  CHECK((f.memory.accesses == std::vector<Access>{{0x2000, 0x12345678, 4, true}}));
+  CHECK(f.s.pc == 0x1000 && f.s.cycles == cycles && f.s.instructions == instructions);
+  CHECK(f.s.spr[spr::dar] == 0 && f.s.spr[spr::dsisr] == 0);
+  f.memory.host_write_error.reset();
+  f.memory.fail_write = 0x2000;
+  f.memory.unsupported_fault = false;
+  f.run(imm(54, 9, 7, 0));
+  CHECK(f.s.pc == 0x300 && f.s.spr[spr::dar] == 0x80002000);
+  CHECK(f.s.spr[spr::srr1] == (msr::dr | msr::fp));
+  CHECK(f.memory.read32(0x2004) == 0xa1b2c3d4);
+
+  // A storage fault after the first duplicated word retains the PI request.
+  f.cpu.reset();
+  f.s.msr = msr::dr;
+  f.s.spr[536] = 0x80000003;
+  f.s.spr[537] = 0x22;
+  f.s.gpr[7] = 0x80002001;
+  f.memory.fail_write = 0x2004;
+  f.memory.memory_errors = 0;
+  std::fill(f.memory.bytes.begin() + 0x2000, f.memory.bytes.begin() + 0x2008, 0xa5);
+  f.run(imm(38, 9, 7, 0));
+  CHECK(f.s.pc == 0x300 && f.s.spr[spr::dar] == 0x80002001);
+  CHECK(f.memory.memory_errors == 1);
+  CHECK(f.memory.read32(0x2000) == 0 && f.memory.read32(0x2004) == 0xa5a5a5a5);
+}
+
+void changed_mapping_transaction_tests() {
+  for (const bool locked : {false, true}) {
+    TransactionFixture f;
+    f.s.msr = msr::dr;
+    f.s.spr[spr::hid0] = 0x4000;
+    f.s.spr[spr::hid2] = 0x30000000;
+    f.s.spr[spr::sdr1] = 0x20000;
+    f.s.sr[4] = 0x123;
+    const u32 pteg = 0x20000 | (((0x123u ^ 3u) << 6) & 0xffff);
+    f.memory.write32(pteg, 0x80000000 | (0x123 << 7));
+    f.memory.write32(pteg + 4, 0x5002);
+    f.s.gpr[7] = 0x40003013;
+    f.run(imm(34, 6, 7, 0));
+    f.memory.write32(pteg + 4, 0x6002);
+    std::fill(f.memory.bytes.begin() + 0x5000, f.memory.bytes.begin() + 0x5020, 0xa5);
+    std::fill(f.memory.bytes.begin() + 0x6000, f.memory.bytes.begin() + 0x6020, 0xa5);
+    f.run(locked ? fp(1014, 0, 7, 8, 0, 4) : ext(1014, 0, 7, 8));
+    for (unsigned byte = 0; byte < 32; ++byte) {
+      CHECK(f.memory.bytes[0x5000 + byte] == 0xa5);
+      CHECK(f.memory.bytes[0x6000 + byte] == 0);
+    }
+  }
+
+  TransactionFixture f;
+  f.s.msr = msr::dr | msr::fp;
+  f.s.spr[spr::sdr1] = 0x20000;
+  f.s.sr[4] = 0x123;
+  const u32 pteg = 0x20000 | (((0x123u ^ 3u) << 6) & 0xffff);
+  f.memory.write32(pteg, 0x80000000 | (0x123 << 7));
+  f.memory.write32(pteg + 4, 0x5002);
+  f.s.gpr[7] = 0x40003004;
+  f.run(imm(32, 6, 7, 0));
+  f.memory.write32(pteg + 4, 0x6002);
+  f.s.fpr[9].bits[0] = 0x12345678a1b2c3d4ull;
+  f.run(imm(54, 9, 7, 0));
+  CHECK(f.memory.read32(0x6004) == 0x12345678);
+  CHECK(f.memory.read32(0x5008) == 0xa1b2c3d4);
+  CHECK(f.memory.read32(0x5004) == 0 && f.memory.read32(0x6008) == 0);
+}
+
+void paired_page_store_tests() {
+  const auto prepare = [](TransactionFixture &f, bool first_page, bool second_page, bool first_wi,
+                          bool second_wi) {
+    f.s.msr = msr::dr | msr::fp;
+    f.s.spr[spr::hid2] = 0xa0000000;
+    f.s.spr[spr::sdr1] = 0x20000;
+    f.s.sr[4] = 0x123;
+    f.s.fpr[9].set(1.0);
+    f.s.fpr[9].set(2.0, 1);
+    for (unsigned page = 7; page < 9; ++page) {
+      const bool first = page == 7, mapped = first ? first_page : second_page;
+      const bool wi = first ? first_wi : second_wi;
+      const u32 pteg = 0x20000 | (((0x123u ^ page) << 6) & 0xffff);
+      f.memory.write32(pteg, mapped ? 0x80000000 | (0x123 << 7) : 0);
+      f.memory.write32(pteg + 4, (first ? 0x4000u : 0x8000u) | 2 | (wi ? 0x20u : 0));
+    }
+    std::fill(f.memory.bytes.begin() + 0x4fe0, f.memory.bytes.begin() + 0x5010, 0xa5);
+    std::fill(f.memory.bytes.begin() + 0x8000, f.memory.bytes.begin() + 0x8010, 0xa5);
+  };
+  constexpr std::array<u8, 8> payload{0x3f, 0x80, 0, 0, 0x40, 0, 0, 0};
+  for (unsigned distance = 1; distance < 8; ++distance) {
+    TransactionFixture f;
+    prepare(f, true, true, false, false);
+    f.s.gpr[7] = 0x40008000 - distance;
+    f.run(imm(60, 9, 7, 0));
+    CHECK(f.s.pc == 0x1004 && f.memory.memory_errors == 0);
+    for (unsigned byte = 0; byte < payload.size(); ++byte) {
+      const u32 physical = byte < distance ? 0x5000 - distance + byte : 0x8000 + byte - distance;
+      CHECK(f.memory.bytes[physical] == payload[byte]);
+    }
+    CHECK(f.memory.bytes[0x5000] == 0xa5 && f.memory.bytes[0x8000 + 8 - distance] == 0xa5);
+  }
+
+  for (const bool first_wi : {false, true})
+    for (const bool second_wi : {false, true}) {
+      TransactionFixture f;
+      prepare(f, true, true, first_wi, second_wi);
+      f.s.gpr[7] = 0x40007ffd;
+      f.run(imm(60, 9, 7, 0));
+      CHECK(f.s.pc == 0x1004);
+      CHECK(f.memory.memory_errors ==
+            static_cast<unsigned>(first_wi) + static_cast<unsigned>(second_wi) * 2);
+      if (first_wi) {
+        CHECK(f.memory.read32(0x4ff8) == 0x003f8000 && f.memory.read32(0x4ffc) == 0x003f8000);
+      } else {
+        CHECK(f.memory.bytes[0x4ffd] == 0x3f && f.memory.bytes[0x4ffe] == 0x80 &&
+              f.memory.bytes[0x4fff] == 0);
+      }
+      if (second_wi) {
+        CHECK(f.memory.read32(0x8000) == 0x00400000 && f.memory.read32(0x8004) == 0x00400000);
+      } else {
+        for (unsigned byte = 3; byte < payload.size(); ++byte)
+          CHECK(f.memory.bytes[0x8000 + byte - 3] == payload[byte]);
+      }
+      CHECK(f.memory.bytes[0x5000] == 0xa5 && f.memory.bytes[0x8008] == 0xa5);
+    }
+
+  for (const bool second_wi : {false, true}) {
+    TransactionFixture f;
+    prepare(f, false, true, false, second_wi);
+    f.s.gpr[7] = 0x40007ffd;
+    f.run(imm(61, 9, 7, 0));
+    CHECK(f.s.pc == 0x300 && f.s.spr[spr::dar] == 0x40007ffd);
+    CHECK(f.s.gpr[7] == 0x40007ffd && f.s.spr[spr::dsisr] == 0x42000000);
+    CHECK(f.s.spr[spr::srr1] == (msr::dr | msr::fp));
+    CHECK(f.memory.memory_errors == static_cast<unsigned>(second_wi) * 2);
+    if (second_wi)
+      CHECK(f.memory.read32(0x8000) == 0x00400000 && f.memory.read32(0x8004) == 0x00400000);
+    else
+      for (unsigned byte = 3; byte < payload.size(); ++byte)
+        CHECK(f.memory.bytes[0x8000 + byte - 3] == payload[byte]);
+    const u32 pteg = 0x20000 | (((0x123u ^ 8u) << 6) & 0xffff);
+    CHECK((f.memory.read32(pteg + 4) & 0x180) == 0x180);
+  }
+  for (const bool first_page : {false, true}) {
+    TransactionFixture f;
+    prepare(f, first_page, false, false, false);
+    f.s.gpr[7] = 0x40007ffd;
+    f.run(imm(61, 9, 7, 0));
+    CHECK(f.s.pc == 0x300 && f.s.spr[spr::dar] == 0x40008001);
+    CHECK(f.s.gpr[7] == 0x40007ffd && f.s.spr[spr::dsisr] == 0x42000000);
+    CHECK(f.s.spr[spr::srr1] == (msr::dr | msr::fp));
+    if (first_page)
+      CHECK(f.memory.bytes[0x4ffd] == 0x3f && f.memory.bytes[0x4ffe] == 0x80 &&
+            f.memory.bytes[0x4fff] == 0);
+    else
+      CHECK(f.memory.read32(0x4ffc) == 0xa5a5a5a5);
+    CHECK(f.memory.bytes[0x5000] == 0xa5 && f.memory.read32(0x8000) == 0xa5a5a5a5);
+  }
 }
 
 void conditional_store_fault_tests() {
@@ -1261,6 +1936,14 @@ int main() {
     branch_tests();
     cache_range_loop_tests();
     memory_tests();
+    cache_zero_transaction_tests();
+    string_store_transaction_tests();
+    uncached_write_tests();
+    uncached_translation_tests();
+    uncached_region_tests();
+    split_store_fault_tests();
+    changed_mapping_transaction_tests();
+    paired_page_store_tests();
     conditional_store_fault_tests();
     exceptions_and_system();
     special_register_fidelity_tests();

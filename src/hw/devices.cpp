@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cupid/hw/devices.hpp"
 #include "cupid/core/bus.hpp"
+#include "cupid/hw/period.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -699,17 +700,13 @@ void Devices::advance(u64 amount) {
   const u64 dma_divisor =
       (console_ == Console::Wii ? 2250u : 2248u) * ((ai_[0] & 64) ? 3u : 2u) / 2;
   const u64 audio_period = clock_ * 8 * dma_divisor / 108000000;
-  u64 audio_packets =
-      amount / audio_period + (audio_remainder_ + amount % audio_period) / audio_period;
-  audio_remainder_ = (audio_remainder_ + amount % audio_period) % audio_period;
+  u64 audio_packets = detail::elapsed_periods(amount, audio_period, audio_remainder_);
   while (audio_packets-- != 0)
     audio_dma_block();
   if (ai_[0] & 1) {
     const u64 divisor = (console_ == Console::Wii ? 2250u : 2248u) * ((ai_[0] & 2) ? 2u : 3u) / 2;
     const u64 sample_cycles = clock_ * divisor / 108000000;
-    const u64 samples =
-        amount / sample_cycles + (ai_remainder_ + amount % sample_cycles) / sample_cycles;
-    ai_remainder_ = (ai_remainder_ + amount % sample_cycles) % sample_cycles;
+    const u64 samples = detail::elapsed_periods(amount, sample_cycles, ai_remainder_);
     if (samples != 0) {
       const u32 start = ai_[2] + 1;
       const u32 end = ai_[2] + u32(samples);
@@ -719,8 +716,7 @@ void Devices::advance(u64 amount) {
     }
   }
   const u64 period = video_period();
-  u64 halflines = amount / period + (video_remainder_ + amount % period) / period;
-  video_remainder_ = (video_remainder_ + amount % period) % period;
+  u64 halflines = detail::elapsed_periods(amount, period, video_remainder_);
   while (halflines-- != 0)
     video_halfline();
   update_interrupts(interrupt_ai | interrupt_dsp | interrupt_exi);

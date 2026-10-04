@@ -3,9 +3,71 @@
 #include "test_support.hpp"
 #include <algorithm>
 #include <array>
+#include <vector>
+
+namespace {
+void fifo_page(cupid::Console console) {
+  cupid::Memory memory(console);
+  std::vector<cupid::u8> captured, expected;
+  memory.fifo_write = [&](cupid::u8 byte) { captured.push_back(byte); };
+  const std::array<cupid::u8, 15> bytes{0xa5, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 1,
+                                        2,    3,    4,    5,    6,    7,    8};
+  auto stores = [&](cupid::u32 address) {
+    memory.write8(address + 1, 0xa5);
+    memory.write16(address + 2, 0x1234);
+    memory.write32(address + 4, 0x56789abc);
+    memory.write64(address, 0x0102030405060708);
+    expected.insert(expected.end(), bytes.begin(), bytes.end());
+    CHECK(captured == expected);
+  };
+  for (cupid::u32 offset = 0; offset < 0x1000; offset += 32)
+    stores(0x0c008000 + offset);
+  stores(0x0c008ff8);
+  memory.write8(0x0c008fff, 0x11);
+  memory.write16(0x0c008ffe, 0x2233);
+  memory.write32(0x0c008ffc, 0x44556677);
+  const std::array<cupid::u8, 7> end{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77};
+  expected.insert(expected.end(), end.begin(), end.end());
+  CHECK(captured == expected);
+  CHECK_THROWS(memory.write8(0x0c007fff, 1));
+  CHECK_THROWS(memory.write8(0x0c009000, 1));
+  CHECK_THROWS(memory.read32(0x0c008020));
+  CHECK(captured == expected);
+  memory.write32(0x8ffc, 0x12345678);
+  CHECK(memory.read32(0x8ffc) == 0x12345678 && captured == expected);
+  memory.fifo_write = {};
+  try {
+    memory.write8(0x0c008fff, 0);
+    CHECK(false);
+  } catch (const cupid::BusFault &error) {
+    CHECK(error.address == 0x0c008fff && error.write && error.unsupported_reason);
+  }
+}
+
+void memory_error_signal(cupid::Console console) {
+  cupid::Memory memory(console);
+  unsigned signals = 0;
+  try {
+    memory.memory_access_error();
+    CHECK(false);
+  } catch (const cupid::BusFault &error) {
+    CHECK(error.write && error.unsupported_reason);
+  }
+  memory.memory_error = [&] { ++signals; };
+  memory.write32(0x1000, 0x12345678);
+  CHECK(signals == 0);
+  memory.memory_access_error();
+  memory.memory_access_error();
+  CHECK(signals == 2 && memory.read32(0x1000) == 0x12345678);
+}
+} // namespace
 
 int main() {
   return run_tests([] {
+    fifo_page(cupid::Console::GameCube);
+    fifo_page(cupid::Console::Wii);
+    memory_error_signal(cupid::Console::GameCube);
+    memory_error_signal(cupid::Console::Wii);
     cupid::Memory gc(cupid::Console::GameCube);
     gc.write32(8, 0x12345678);
     CHECK(gc.read8(8) == 0x12);

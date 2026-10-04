@@ -57,5 +57,9 @@ public:
     (void)bytes;
     throw BusFault(memory_address, !load, "This bus does not implement locked-cache DMA", true);
   }
+
+  virtual void memory_access_error() {
+    throw BusFault(0, true, "This bus does not implement memory-access interrupts", true);
+  }
 };
 } // namespace cupid

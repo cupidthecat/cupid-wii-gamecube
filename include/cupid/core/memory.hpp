@@ -16,6 +16,7 @@ public:
   std::function<u32(u32, unsigned)> mmio_read;
   std::function<void(u32, u32, unsigned)> mmio_write;
   std::function<void(u8)> fifo_write;
+  std::function<void()> memory_error;
   u8 read8(u32 address) override;
   u16 read16(u32 address) override;
   u32 read32(u32 address) override;
@@ -25,6 +26,7 @@ public:
   void write32(u32 address, u32 value) override;
   void write64(u32 address, u64 value) override;
   void locked_cache_dma(u32 memory_address, u32 cache_address, u32 bytes, bool load) override;
+  void memory_access_error() override;
   std::span<u8> range(u32 address, std::size_t length);
   std::span<const u8> range(u32 address, std::size_t length) const;
   void copy_in(u32 physical, std::span<const u8> data);

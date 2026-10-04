@@ -5,6 +5,7 @@
 #include "cupid/hw/remote.hpp"
 #include "cupid/hw/sdp.hpp"
 #include "cupid/ios/network.hpp"
+#include "cupid/ios/sysconf.hpp"
 
 #include <algorithm>
 #include <array>
@@ -106,9 +107,20 @@ void append_little(std::vector<u8> &bytes, u16 value) {
   bytes.push_back(u8(value >> 8));
 }
 
+void check_storage_file(const std::filesystem::path &path) {
+  std::error_code error;
+  const auto status = std::filesystem::symlink_status(path, error);
+  if (error && error != std::errc::no_such_file_or_directory)
+    throw std::system_error(error, "Unable to inspect Wii storage destination");
+  if (!error && std::filesystem::exists(status) && !std::filesystem::is_regular_file(status))
+    throw std::runtime_error("Unsafe Wii storage destination");
+}
+
 void replace_storage(const std::filesystem::path &path, std::span<const u8> bytes) {
   auto temporary = path;
   temporary += ".pending";
+  check_storage_file(path);
+  check_storage_file(temporary);
   {
     std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
     output.write(reinterpret_cast<const char *>(bytes.data()), std::streamsize(bytes.size()));
@@ -456,6 +468,52 @@ struct Ipc::Impl {
       entry.gid = directory.gid;
       entry.modes = directory.modes;
       entry.attribute = 0;
+    }
+    save_metadata();
+  }
+
+  void initialize_system_config() {
+    constexpr const char *guest_path = "/shared2/sys/SYSCONF";
+    const auto target = host_path(guest_path);
+    if (!target)
+      throw SysconfError("Unsafe Wii system configuration path");
+    std::error_code error;
+    const bool exists = std::filesystem::exists(*target, error);
+    if (error)
+      throw std::system_error(error, "Unable to inspect Wii system configuration");
+    std::vector<u8> original;
+    if (exists) {
+      check_storage_file(*target);
+      if (std::filesystem::file_size(*target) != 16384)
+        throw SysconfError("Invalid Wii system configuration size");
+      std::ifstream input(*target, std::ios::binary);
+      if (!input)
+        throw SysconfError("Unable to open existing Wii system configuration");
+      original.resize(16384);
+      input.read(reinterpret_cast<char *>(original.data()), std::streamsize(original.size()));
+      if (!input)
+        throw SysconfError("Unable to read existing Wii system configuration");
+    }
+    const auto replacement = update_bluetooth_peers(original);
+    if (replacement != original) {
+      std::filesystem::create_directories(target->parent_path());
+      if (!host_path(guest_path))
+        throw SysconfError("Unsafe Wii system configuration path");
+      if (exists) {
+        const auto backup = root.parent_path() / "wii-sysconf-backup.bin";
+        check_storage_file(backup);
+        const bool backed_up = std::filesystem::exists(backup, error);
+        if (error)
+          throw std::system_error(error, "Unable to inspect Wii system configuration backup");
+        if (!backed_up)
+          replace_storage(backup, original);
+      }
+      replace_storage(*target, replacement);
+    }
+    for (const std::string &path : {std::string("/shared2/sys"), std::string(guest_path)}) {
+      const auto [record, inserted] = nodes.try_emplace(path, Metadata{0x1000, 1, {3, 3, 3}});
+      if (inserted)
+        record->second.order = next_node++;
     }
     save_metadata();
   }
@@ -2184,6 +2242,8 @@ void Ipc::set_user_directory(const std::filesystem::path &directory) {
   std::filesystem::create_directories(target);
   impl_->root = std::filesystem::canonical(target);
   impl_->load_metadata();
+  if (impl_->console == Console::Wii)
+    impl_->initialize_system_config();
   impl_->load_uids();
   impl_->save_title_metadata();
   impl_->network.reset_storage();

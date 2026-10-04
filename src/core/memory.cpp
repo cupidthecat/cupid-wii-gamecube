@@ -22,6 +22,12 @@ void Memory::clear() {
     std::fill(bytes->begin(), bytes->end(), 0);
 }
 
+void Memory::memory_access_error() {
+  if (!memory_error)
+    Bus::memory_access_error();
+  memory_error();
+}
+
 u32 Memory::boot_physical(u32 address) {
   if ((address & 0xc0000000) == 0x80000000 || (address & 0xc0000000) == 0xc0000000)
     return address & 0x3fffffff;
@@ -101,7 +107,7 @@ u64 Memory::read(u32 address, unsigned width) {
 }
 
 void Memory::write(u32 address, u64 value, unsigned width) {
-  if ((address & ~u32{0x1f}) == 0x0c008000) {
+  if ((address & 0xfffff000) == 0x0c008000) {
     if (!fifo_write)
       throw BusFault(address, true, "Graphics FIFO has no command processor", true);
     for (unsigned i = width; i > 0; --i)

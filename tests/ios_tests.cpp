@@ -4,6 +4,7 @@
 #include "cupid/hw/devices.hpp"
 #include "cupid/hw/remote.hpp"
 #include "cupid/ios/ipc.hpp"
+#include "cupid/ios/sysconf.hpp"
 #include "test_support.hpp"
 #include <algorithm>
 #include <chrono>
@@ -356,6 +357,131 @@ void network_storage_permissions() {
   const auto resolved = std::filesystem::canonical(task_root);
   CHECK(resolved.parent_path() == task_temp);
   CHECK(resolved.filename().string().starts_with("cupid-ios-test-network-"));
+  std::filesystem::remove_all(resolved);
+}
+
+void system_configuration_storage() {
+  const auto task_temp = std::filesystem::canonical(std::filesystem::temp_directory_path());
+  const auto task_root =
+      task_temp / ("cupid-ios-sysconf-" +
+                   std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  const auto target = task_root / "wii/shared2/sys/SYSCONF";
+  const auto backup = task_root / "wii-sysconf-backup.bin";
+  auto load = [](const std::filesystem::path &path) {
+    std::vector<u8> bytes(std::size_t(std::filesystem::file_size(path)));
+    std::ifstream input(path, std::ios::binary);
+    input.read(reinterpret_cast<char *>(bytes.data()), std::streamsize(bytes.size()));
+    CHECK(bool(input));
+    return bytes;
+  };
+  auto write = [](const std::filesystem::path &path, std::span<const u8> bytes) {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char *>(bytes.data()), std::streamsize(bytes.size()));
+    CHECK(bool(output));
+  };
+  auto entry = [](std::span<const u8> bytes, const std::string &name) {
+    auto read16 = [&](std::size_t at) { return unsigned((u16(bytes[at]) << 8) | bytes[at + 1]); };
+    for (unsigned i = 0; i < read16(4); ++i) {
+      const std::size_t at = read16(6 + i * 2);
+      const std::size_t name_size = (bytes[at] & 31) + 1;
+      if (std::string(reinterpret_cast<const char *>(bytes.data() + at + 1), name_size) == name) {
+        const unsigned type = bytes[at] >> 5;
+        return at + 1 + name_size + (type == 1 ? 2u : type == 2 ? 1u : 0u);
+      }
+    }
+    throw std::runtime_error("Missing system configuration fixture entry");
+  };
+  Fixture fixture;
+  fixture.ipc.set_user_directory(task_root);
+  const auto initialized = load(target);
+  CHECK(initialized.size() == 16384);
+  CHECK(initialized[entry(initialized, "BT.DINF")] == 5);
+  CHECK(!std::filesystem::exists(backup));
+  const u32 fs = u32(fixture.open("/dev/fs"));
+  for (const std::string &path :
+       {std::string("/shared2/sys"), std::string("/shared2/sys/SYSCONF")}) {
+    fixture.prepare(6, fs);
+    fixture.memory.write32(request + 12, 6);
+    fixture.memory.write32(request + 16, data_buffer);
+    fixture.memory.write32(request + 20, 64);
+    fixture.memory.write32(request + 24, output_buffer);
+    fixture.memory.write32(request + 28, 74);
+    fixture.text(data_buffer, path);
+    CHECK(fixture.complete() == 0);
+    CHECK(fixture.memory.read32(output_buffer) == 0x1000);
+    CHECK(fixture.memory.read16(output_buffer + 4) == 1);
+    for (unsigned mode = 0; mode < 3; ++mode)
+      CHECK(fixture.memory.read8(output_buffer + 70 + mode) == 3);
+  }
+  const u32 fd = u32(fixture.open("/shared2/sys/SYSCONF", 1));
+  fixture.prepare(3, fd);
+  fixture.memory.write32(request + 12, 0x20000);
+  fixture.memory.write32(request + 16, 16384);
+  CHECK(fixture.complete() == 16384);
+  const auto guest_bytes = fixture.memory.range(0x20000, 16384);
+  CHECK(std::equal(initialized.begin(), initialized.end(), guest_bytes.begin()));
+  fixture.prepare(2, fd);
+  CHECK(fixture.complete() == 0);
+  fixture.ipc.set_user_directory(task_root);
+  CHECK(load(target) == initialized && !std::filesystem::exists(backup));
+
+  auto original = initialized;
+  const auto peers = entry(original, "BT.DINF"), language = entry(original, "IPL.LNG");
+  std::fill_n(original.begin() + peers, 1121, u8(0));
+  original[language] = 4;
+  write(target, original);
+  fixture.ipc.set_user_directory(task_root);
+  CHECK(load(backup) == original);
+  const auto replacement = load(target);
+  CHECK(replacement == ios::update_bluetooth_peers(original));
+  CHECK(replacement[entry(replacement, "IPL.LNG")] == 4);
+  CHECK(replacement[entry(replacement, "BT.DINF")] == 5);
+  original[language] = 3;
+  write(target, original);
+  fixture.ipc.set_user_directory(task_root);
+  CHECK(load(backup) != original && load(backup)[language] == 4);
+  CHECK(load(target)[entry(load(target), "IPL.LNG")] == 3);
+
+  const std::vector<u8> malformed{1, 2, 3};
+  write(target, malformed);
+  CHECK_THROWS(fixture.ipc.set_user_directory(task_root));
+  CHECK(load(target) == malformed && load(backup)[language] == 4);
+  write(target, {});
+  CHECK_THROWS(fixture.ipc.set_user_directory(task_root));
+  CHECK(std::filesystem::file_size(target) == 0 && load(backup)[language] == 4);
+  write(target, replacement);
+  auto invalid_config = replacement;
+  invalid_config[0] = 'X';
+  write(target, invalid_config);
+  CHECK_THROWS(fixture.ipc.set_user_directory(task_root));
+  CHECK(load(target) == invalid_config);
+  write(target, original);
+  const auto pending = std::filesystem::path(target.string() + ".pending");
+  std::filesystem::create_directory(pending);
+  CHECK_THROWS(fixture.ipc.set_user_directory(task_root));
+  CHECK(load(target) == original && std::filesystem::is_directory(pending));
+  std::filesystem::remove(pending);
+
+  // Some Windows hosts disallow creating symbolic links; test the path when available.
+  const auto external = task_root / "external.bin";
+  write(external, initialized);
+  std::filesystem::remove(target);
+  std::error_code link_error;
+  std::filesystem::create_symlink(external, target, link_error);
+  if (!link_error) {
+    CHECK_THROWS(fixture.ipc.set_user_directory(task_root));
+    CHECK(load(external) == initialized && std::filesystem::is_symlink(target));
+    std::filesystem::remove(target);
+  }
+  write(target, original);
+  std::filesystem::create_symlink(external, pending, link_error);
+  if (!link_error) {
+    CHECK_THROWS(fixture.ipc.set_user_directory(task_root));
+    CHECK(load(external) == initialized && load(target) == original);
+  }
+  const auto resolved = std::filesystem::canonical(task_root);
+  CHECK(resolved.parent_path() == task_temp);
+  CHECK(resolved.filename().string().starts_with("cupid-ios-sysconf-"));
   std::filesystem::remove_all(resolved);
 }
 
@@ -1241,6 +1367,7 @@ int main(int argc, char **argv) {
     system_management();
     network_scheduler_queries();
     network_storage_permissions();
+    system_configuration_storage();
     bluetooth_controller();
     bluetooth_reconnect_cooldown();
     bluetooth_vendor_transport();

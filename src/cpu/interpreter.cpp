@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cupid/cpu/interpreter.hpp"
 #include "cupid/cpu/floating.hpp"
+#include <algorithm>
 #include <bit>
 #include <iomanip>
 #include <sstream>
@@ -375,6 +376,12 @@ void Interpreter::invalidate_tlb(u32 effective) {
 }
 
 u32 Interpreter::translate(u32 effective, bool instruction, bool write) {
+  bool uncached = false;
+  return translate_access(effective, instruction, write, uncached);
+}
+
+u32 Interpreter::translate_access(u32 effective, bool instruction, bool write, bool &uncached) {
+  uncached = false;
   if (!(state_.msr & (instruction ? msr::ir : msr::dr)))
     return effective;
   // Higher numbered overlapping BATs win, including the extended bank when enabled.
@@ -386,8 +393,10 @@ u32 Interpreter::translate(u32 effective, bool instruction, bool write) {
     if (!(upper & 3))
       continue;
     const u32 mask = ((upper & 0x1ffc) << 15) | 0x1ffff;
-    if ((effective & ~mask) == (upper & 0xfffe0000))
+    if ((effective & ~mask) == (upper & 0xfffe0000)) {
+      uncached = (lower & 0x60) != 0;
       return (lower & 0xfffe0000) | (effective & mask);
+    }
   }
   const u32 segment = state_.sr[effective >> 28], vsid = segment & 0xffffff;
   auto &tlb = instruction ? instruction_tlb_ : data_tlb_;
@@ -404,6 +413,7 @@ u32 Interpreter::translate(u32 effective, bool instruction, bool write) {
         break;
       }
       recent[set] = static_cast<u8>(way);
+      uncached = entry.uncached;
       return entry.physical | (effective & 4095);
     }
   }
@@ -427,9 +437,15 @@ u32 Interpreter::translate(u32 effective, bool instruction, bool write) {
       if (!updating_changed_bit) {
         const unsigned way = recent[set] == 0 && tlb[set * 2].valid ? 1 : 0;
         recent[set] = static_cast<u8>(way);
-        tlb[set * 2 + way] = {page,        vsid, flags & 0xfffff000,
-                              address + 4, true, (updated & 0x80) != 0};
+        tlb[set * 2 + way] = {page,
+                              vsid,
+                              flags & 0xfffff000,
+                              address + 4,
+                              true,
+                              (updated & 0x80) != 0,
+                              (flags & 0x60) != 0};
       }
+      uncached = (flags & 0x60) != 0;
       return (flags & 0xfffff000) | (effective & 4095);
     }
   }
@@ -466,37 +482,107 @@ u64 Interpreter::load(u32 effective, unsigned bytes) {
   }
 }
 
-void Interpreter::store(u32 effective, u64 value, unsigned bytes) {
+void Interpreter::store(u32 effective, u64 value, unsigned bytes, bool reject_efb) {
   if (state_.msr & msr::le)
     unsupported("Little-endian memory mode is not implemented");
+  const auto transfer_pair = [&](const auto &first, const auto &second) {
+    const u32 original_msr = state_.msr;
+    try {
+      first();
+    } catch (const GuestFault &) {
+      // Split transfers finish before the instruction delivers a guest DSI.
+      const u32 exception_msr = state_.msr;
+      state_.msr = original_msr;
+      try {
+        second();
+      } catch (const GuestFault &) {
+        throw;
+      } catch (...) {
+        state_.msr = exception_msr;
+        throw;
+      }
+      state_.msr = exception_msr;
+      throw;
+    }
+    second();
+  };
+  if (bytes == 8) {
+    transfer_pair([&] { store(effective, static_cast<u32>(value >> 32), 4, true); },
+                  [&] { store(effective + 4, static_cast<u32>(value), 4, true); });
+    return;
+  }
+  if (bytes <= 4 && (effective & 4095) + bytes > 4096) {
+    const unsigned first = 4096 - (effective & 4095), second = bytes - first;
+    transfer_pair(
+        [&] {
+          store(effective, std::rotr(static_cast<u32>(value), static_cast<int>(second * 8)), first,
+                reject_efb);
+        },
+        [&] { store(effective + first, value, second, reject_efb); });
+    return;
+  }
+  const auto first = [&] {
+    try {
+      bool uncached = false;
+      const u32 physical = translate_access(effective, false, true, uncached);
+      if (reject_efb && physical >= 0x08000000 && physical < 0x0c000000)
+        unsupported("CPU EFB binary64 writes are not implemented");
+      store_physical(physical, static_cast<u32>(value), bytes, uncached);
+    } catch (const BusFault &fault) {
+      if (fault.unsupported_reason)
+        unsupported(fault.what());
+      storage_fault(effective, false, true);
+    }
+  };
+  first();
+}
+
+void Interpreter::store_physical(u32 physical, u32 value, unsigned bytes, bool uncached) {
+  const bool device = (physical & 0xf8000000) == 0x08000000;
+  const bool locked = physical >= 0xe0000000 && physical < 0xe0040000;
+  if (uncached && !device && !locked && (bytes < 4 || (physical & 3))) {
+    bus_.memory_access_error();
+    const u32 word = std::rotr(value, static_cast<int>(((physical & 3) + bytes) * 8));
+    const unsigned blocks = ((physical & 7) + bytes + 7) / 8;
+    for (unsigned block = 0; block < blocks; ++block) {
+      const u32 address = (physical & ~7u) + block * 8;
+      bus_.write32(address, word);
+      bus_.write32(address + 4, word);
+    }
+    return;
+  }
+  switch (bytes) {
+  case 1:
+    bus_.write8(physical, static_cast<u8>(value));
+    break;
+  case 2:
+    bus_.write16(physical, static_cast<u16>(value));
+    break;
+  case 4:
+    bus_.write32(physical, static_cast<u32>(value));
+    break;
+  case 3:
+    for (unsigned n = 0; n < bytes; ++n)
+      bus_.write8(physical + n, static_cast<u8>(value >> ((bytes - 1 - n) * 8)));
+    break;
+  default:
+    throw std::logic_error("Invalid CPU store width");
+  }
+}
+
+void Interpreter::clear_cache_line(u32 effective) {
+  if (state_.msr & msr::le)
+    unsupported("Little-endian memory mode is not implemented");
+  effective &= ~31u;
+  unsigned offset = 0;
   try {
     const u32 physical = translate(effective, false, true);
-    if ((effective & 4095) + bytes > 4096) {
-      for (unsigned n = 0; n < bytes; ++n)
-        bus_.write8(translate(effective + n, false, true),
-                    static_cast<u8>(value >> ((bytes - 1 - n) * 8)));
-      return;
-    }
-    switch (bytes) {
-    case 1:
-      bus_.write8(physical, static_cast<u8>(value));
-      break;
-    case 2:
-      bus_.write16(physical, static_cast<u16>(value));
-      break;
-    case 4:
-      bus_.write32(physical, static_cast<u32>(value));
-      break;
-    case 8:
-      bus_.write64(physical, value);
-      break;
-    default:
-      throw std::logic_error("Invalid CPU store width");
-    }
+    for (; offset < 32; offset += 4)
+      bus_.write32(physical + offset, 0);
   } catch (const BusFault &fault) {
     if (fault.unsupported_reason)
       unsupported(fault.what());
-    storage_fault(effective, false, true);
+    storage_fault(effective + offset, false, true);
   }
 }
 
@@ -1051,8 +1137,7 @@ void Interpreter::execute_extended(u32 opcode) {
   case 1014: {
     if (!(state_.spr[spr::hid0] & 0x4000))
       alignment(ea);
-    for (unsigned n = 0; n < 32; ++n)
-      store((ea & ~31u) + n, 0, 1);
+    clear_cache_line(ea);
     return;
   }
   case 20: {
@@ -1118,7 +1203,7 @@ void Interpreter::execute_extended(u32 opcode) {
     if (xo == 662)
       value = swap32(value);
     if (xo == 918)
-      value = swap16(static_cast<u16>(value));
+      value = (value & 0xffff0000) | swap16(static_cast<u16>(value));
     store(address, value, xo == 215 || xo == 247 ? 1 : xo == 407 || xo == 439 || xo == 918 ? 2 : 4);
     if (update)
       state_.gpr[a] = address;
@@ -1144,14 +1229,35 @@ void Interpreter::execute_extended(u32 opcode) {
     const u32 address = (a ? av : 0) + (immediate ? 0 : bv);
     if (state_.msr & msr::le)
       alignment(address);
+    if (!read) {
+      u32 word_address = address & ~3u;
+      unsigned leading = address & 3, remaining = count, source_byte = 0;
+      u32 prefix =
+          leading ? static_cast<u32>(load(word_address, 4)) & (~u32{0} << ((4 - leading) * 8)) : 0;
+      while (remaining || leading) {
+        const unsigned copied = std::min(4 - leading, remaining), used = leading + copied;
+        u32 word = prefix;
+        if (used < 4)
+          word |= static_cast<u32>(load(word_address, 4)) & ((u32{1} << ((4 - used) * 8)) - 1);
+        for (unsigned byte = 0; byte < copied; ++byte) {
+          const unsigned index = source_byte + byte;
+          const u32 value = state_.gpr[(d + index / 4) & 31] >> ((3 - (index & 3)) * 8);
+          word |= (value & 255) << ((3 - leading - byte) * 8);
+        }
+        store(word_address, word, 4);
+        remaining -= copied;
+        source_byte += copied;
+        leading = 0;
+        prefix = 0;
+        word_address += 4;
+      }
+      return;
+    }
     for (unsigned n = 0; n < count; ++n) {
       const unsigned reg = (d + n / 4) & 31, shift = 24 - (n & 3) * 8;
-      if (read) {
-        if (!(n & 3))
-          state_.gpr[reg] = 0;
-        state_.gpr[reg] |= static_cast<u32>(load(address + n, 1)) << shift;
-      } else
-        store(address + n, state_.gpr[reg] >> shift, 1);
+      if (!(n & 3))
+        state_.gpr[reg] = 0;
+      state_.gpr[reg] |= static_cast<u32>(load(address + n, 1)) << shift;
     }
     return;
   }

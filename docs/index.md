@@ -20,6 +20,7 @@
 - [Disc formats](disc-format.md) and [disc mappings](disc-reference.md).
 - [ELF loader](elf-loader.md) and [ELF mappings](elf-reference.md).
 - [Devices and system-service mappings](device-reference.md).
+- [Wii system configuration](system-config.md): checked settings and controller registration.
 - [Network services](network.md) and [network mappings](network-reference.md).
 - [DSP audio](dsp.md) and [DSP mappings](dsp-reference.md).
 - [Graphics](graphics.md) and [graphics mappings](graphics-reference.md).
@@ -34,4 +35,5 @@
 ## Validation and licensing
 
 - [Tests](testing.md): public fixtures, sanitizers, private comparisons, and packages.
+- [Performance measurements](performance.md): measured startup scope and device scheduling.
 - [Licensing](licensing.md): project license, genuine third-party dependencies, and private assets.

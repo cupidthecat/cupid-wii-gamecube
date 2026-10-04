@@ -413,8 +413,7 @@ void Interpreter::execute_paired(u32 opcode) {
     const u32 ea = (a ? state_.gpr[a] : 0) + state_.gpr[b];
     if (!(state_.spr[spr::hid0] & 0x4000))
       alignment(ea);
-    for (unsigned n = 0; n < 32; ++n)
-      store((ea & ~31u) + n, 0, 1);
+    clear_cache_line(ea);
     return;
   }
   if (!(state_.msr & msr::fp)) {

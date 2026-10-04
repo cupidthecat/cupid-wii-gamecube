@@ -4,9 +4,34 @@
 #include <array>
 #include <sstream>
 
+namespace {
+void memory_error_interrupt(cupid::Console console) {
+  cupid::runtime::Machine machine(console);
+  auto &memory = machine.memory();
+  auto &devices = machine.devices();
+  const auto initial = memory.read32(0x0c003000);
+  const auto cause = memory.read32(0x0c00301c);
+  const auto address = memory.read32(0x0c003020);
+  CHECK(!devices.external_interrupt_pending());
+  memory.memory_access_error();
+  CHECK(memory.read32(0x0c003000) == (initial | 1));
+  CHECK(!devices.external_interrupt_pending());
+  memory.write32(0x0c003004, 1);
+  CHECK(devices.external_interrupt_pending());
+  memory.memory_access_error();
+  CHECK(memory.read32(0x0c003000) == (initial | 1));
+  CHECK(memory.read32(0x0c00301c) == cause && memory.read32(0x0c003020) == address);
+  memory.write32(0x0c003000, 1);
+  CHECK(memory.read32(0x0c003000) == initial);
+  CHECK(!devices.external_interrupt_pending());
+}
+} // namespace
+
 int main() {
   return run_tests([] {
     using namespace cupid;
+    memory_error_interrupt(Console::GameCube);
+    memory_error_interrupt(Console::Wii);
     runtime::Machine machine(Console::GameCube);
     machine.load_executable(runtime::self_test_dol());
     for (unsigned i = 0; i < 7; ++i)

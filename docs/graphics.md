@@ -6,6 +6,8 @@ The software backend executes GX commands and renders into a 640 by 528 EFB. Gue
 
 PI write gathering feeds the CP ring, including linked pointers, wrapping, watermarks, and breakpoints. The parser handles fragmented commands, CP and XF uploads, indexed XF loads, display lists, BP masks, texture-memory transfers, and draw commands. Token and draw-finish events set PE interrupt state after a scheduled delay.
 
+Display-list addresses are aligned to 32 bytes and normalized to their physical RAM address by clearing the top two bits. All four pointer aliases reach the same MEM1 bytes, and Wii MEM2 uses the same rule. Lists cannot read the FIFO, MMIO, locked cache, or a range beyond physical RAM. The CPU memory interface continues to use physical addresses supplied by its MMU.
+
 Vertices can use direct or indexed attributes. The vertex stage applies transforms, lighting, projection, and texture-coordinate generation. The rasterizer assembles triangles, strips, fans, quads, lines, and points, clips them, applies culling and scissoring, and interpolates fragment inputs. Multisample rendering is still unsupported.
 
 The texture stage decodes I4, I8, IA4, IA8, RGB565, RGB5A3, RGBA8, C4, C8, C14X2, and CMPR. Paletted formats use uploaded TLUT data. RAM textures support mip layouts and point or bilinear sampling; manual TMEM supports base-level sampling and split RGBA8 banks. Manual mip chains remain unsupported.
@@ -29,3 +31,5 @@ VI presents YUYV data according to its field and framebuffer registers and deriv
 Public tests check command fragmentation, register side effects, texture uploads, blending, depth, masks, and format reinterpretation. Optional comparisons compile the actual pinned transform, rasterizer, texture, shader, and encoder functions separately from the runtime. The shader comparison checks 500,000 generated fragments; the texture-copy comparison checks 267,659,520 bytes across 180,480 cases. XFB comparisons check 43,255,200 bytes across 5,487 defined cases. See [the mappings](graphics-reference.md), [texture-copy details](efb-copy.md), [XFB details](xfb-copy.md), and [tests](testing.md) for their scope.
 
 The [authored guest-video program](guest-video.md) checks the integrated CPU-to-VI path in both console modes. Synthetic rendering evidence does not establish commercial-game rendering or playability.
+
+The framebuffer access fixture also executes a cached display list through guest byte stores to a translated FIFO alias and checks its visible EFB clear. Direct command tests check all RAM pointer aliases, MEM2, fragmented calls, preserved source bytes, and invalid ranges. These regressions passed after the previous implementation rejected cached display-list pointers and incorrectly allowed GPU locked-cache reads.

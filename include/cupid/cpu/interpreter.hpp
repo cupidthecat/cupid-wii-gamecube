@@ -71,7 +71,7 @@ private:
 
   struct TlbEntry {
     u32 effective = 0, vsid = 0, physical = 0, pte_address = 0;
-    bool valid = false, changed = false;
+    bool valid = false, changed = false, uncached = false;
   };
 
   Bus &bus_;
@@ -97,7 +97,10 @@ private:
   void execute_paired(u32 opcode);
   void quantized(u32 opcode, bool indexed);
   u64 load(u32 effective, unsigned bytes);
-  void store(u32 effective, u64 value, unsigned bytes);
+  void store(u32 effective, u64 value, unsigned bytes, bool reject_efb = false);
+  u32 translate_access(u32 effective, bool instruction, bool write, bool &uncached);
+  void store_physical(u32 physical, u32 value, unsigned bytes, bool uncached);
+  void clear_cache_line(u32 effective);
   void field(unsigned index, u32 value);
   void record(u32 value);
   void compare(unsigned index, u32 a, u32 b, bool signed_values);

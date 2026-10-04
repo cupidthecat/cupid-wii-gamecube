@@ -3,6 +3,7 @@
 #include "cupid/dsp/engine.hpp"
 #include "cupid/hw/devices.hpp"
 #include "test_support.hpp"
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <string>

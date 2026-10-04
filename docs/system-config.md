@@ -1,0 +1,15 @@
+# Wii system configuration
+
+The checked SYSCONF module updates the virtual controller records before the guest reads its system configuration. The format is a 16,384-byte file with `SCv0` and `SCed` signatures, a big-endian offset table, named typed entries and a final entry-end offset.
+
+`update_bluetooth_peers` is a pure transformation. Empty input means the caller established that the file is absent. It creates 27 default settings, uses `Cupid` as the console nickname and supplies the controller records. Nonempty input must have valid signatures, bounded increasing offsets, complete names, recognized scalar types and complete array values. Malformed input throws `SysconfError` without producing replacement bytes. Storage access, permissions, backups and replacement belong to the IPC layer.
+
+Existing unrelated entry names, types, values and order are preserved. Serialization rebuilds the offset table and padding. The first `BT.DINF` entry is replaced with the defined 1,121-byte controller section, or appended if absent. Its count is five; registered and active records contain reversed virtual device addresses and the corresponding remote or board profile names. Unused records are zero. The fifth profile is an inactive board identity; it does not add a fifth host controller port or enable board input.
+
+The behavioral reference is pinned at `562875dd60fd0ff50b65dbbb611a2096802cd1b9`. The relevant files are `Source/Core/Core/SysConf.{h,cpp}` (`LoadFromFile`, `Save`, entry access and default insertion) and `Source/Core/Core/IOS/USB/Bluetooth/BTEmu.{h,cpp}` (constructor and controller-record layout). These paths are relative to the pinned checkout.
+
+Public tests cover missing configurations, exact peer records, idempotence, unrelated array and scalar preservation, missing sections, malformed signatures and offsets, truncated arrays, wrong peer-section type and insufficient output space. MSVC with warnings treated as errors, strict GCC and Clang 18 with address and undefined-behavior sanitizers passed the focused suite.
+
+A separate executable compiled the full pinned SYSCONF parser and serializer with a controlled in-memory filesystem. It compared 129 complete files: defaults with an explicitly selected `Cupid` nickname, 127 generated valid configurations and the previous local Wii startup configuration. Peer fields were supplied from the inspected constructor layout; that constructor was not compiled in this comparison. All 2,113,536 bytes matched. SHA-1 over the files in comparison order was `ed0a4c717b2e0cbed43300498f327b2822c2cf46`.
+
+The format permits 256 bytes in a small array. The behavioral reference's serializer narrows that length to eight bits before copying and therefore emits an empty payload for that boundary. That malformed serialization case is excluded from the differential fixtures. This implementation preserves all 256 bytes, with a public regression for the boundary. This is a format-preservation choice; no hardware result is claimed.

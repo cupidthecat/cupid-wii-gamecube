@@ -140,11 +140,162 @@ void remote_memory() {
   CHECK_THROWS(send(remote, {0x17, 4, 0xa4, 0, 0xfa, 0, 6}));
   CHECK_THROWS(remote.set_eeprom(std::array<u8, 1>{0}));
 }
+
+void write_bytes(Remote &remote, u8 slave, u8 address, std::span<const u8> bytes, u8 error = 0) {
+  std::array<u8, 22> packet{};
+  packet[0] = 0x16;
+  packet[1] = 4;
+  packet[2] = u8(slave << 1);
+  packet[4] = address;
+  packet[5] = u8(bytes.size());
+  std::copy(bytes.begin(), bytes.end(), packet.begin() + 6);
+  remote.receive_output(packet);
+  CHECK(receive(remote, 0x22)[5] == error);
+}
+
+std::vector<u8> read_bytes(Remote &remote, u8 slave, u8 address, u8 count) {
+  send(remote, {0x17, 4, u8(slave << 1), 0, address, 0, count});
+  return receive(remote, 0x21);
+}
+
+void speaker_registers() {
+  Remote remote;
+  remote.set_linked(true);
+  // The guest setup write uses only its declared byte, regardless of unused payload.
+  write_register(remote, 0x51, 9, 1);
+  CHECK(read_bytes(remote, 0x51, 9, 1)[7] == 1);
+  std::array<u8, 256> expected{};
+  expected[9] = 1;
+  for (unsigned address = 1; address < 256; ++address) {
+    for (unsigned count = 1; count <= 16; ++count) {
+      std::array<u8, 16> bytes{};
+      for (unsigned i = 0; i < count; ++i)
+        bytes[i] = u8(address * 31 + i * 13);
+      const unsigned copied = std::min(count, 256 - address);
+      std::copy_n(bytes.begin(), copied, expected.begin() + address);
+      write_bytes(remote, 0x51, u8(address), std::span<const u8>(bytes).first(count),
+                  copied == count ? 0 : 7);
+      const auto packet = read_bytes(remote, 0x51, u8(address), u8(count));
+      CHECK(packet[4] == (copied == count ? u8((count - 1) << 4) : u8(0xf7)));
+      CHECK(std::equal(expected.begin() + address, expected.begin() + address + copied,
+                       packet.begin() + 7));
+      CHECK(std::all_of(packet.begin() + 7 + copied, packet.end(),
+                        [](u8 value) { return value == 0; }));
+    }
+  }
+  remote.set_linked(false);
+  remote.set_linked(true);
+  const auto cleared = read_bytes(remote, 0x51, 0, 16);
+  CHECK(std::all_of(cleared.begin() + 7, cleared.end(), [](u8 value) { return value == 0; }));
+}
+
+void speaker_processing() {
+  Remote remote;
+  remote.set_linked(true);
+  const std::array<u8, 4> pcm_config{0x40, 0xb8, 0x0b, 255};
+  write_bytes(remote, 0x51, 2, pcm_config);
+  std::array<u8, 22> samples{0x18, 0x20, 0x80, 0xff, 0, 0x7f};
+  unsigned calls = 0;
+  std::vector<audio::RemoteSpeakerPacket> packets;
+  remote.speaker_samples = [&](const audio::RemoteSpeakerPacket &packet) {
+    ++calls;
+    packets.push_back(packet);
+  };
+  send(remote, {0x14, 6});
+  receive(remote, 0x22);
+  send(remote, {0x15, 0});
+  CHECK((receive(remote, 0x20)[4] & 4) != 0);
+  remote.receive_output(samples);
+  CHECK(calls == 0 && !remote.take_report());
+  // Host processing is independent of the guest's speaker-status bit.
+  send(remote, {0x14, 2});
+  receive(remote, 0x22);
+  remote.set_speaker_processing(true, 0.5f);
+  remote.receive_output(samples);
+  CHECK(calls == 1 && packets.back().count == 4 && packets.back().rate_divisor == 13500);
+  CHECK(packets.back().left_volume == 128 && packets.back().right_volume == 255);
+  CHECK(std::equal(packets.back().mono.begin(), packets.back().mono.begin() + 4,
+                   std::array<s16, 4>{-32768, -256, 0, 32512}.begin()));
+  send(remote, {0x19, 6});
+  receive(remote, 0x22);
+  remote.receive_output(samples);
+  CHECK(calls == 1);
+  // Raw I2C samples bypass the HID mute flag, and do not alter register zero.
+  write_bytes(remote, 0x51, 0, std::span<const u8>(samples).subspan(2, 4));
+  CHECK(calls == 2 && read_bytes(remote, 0x51, 0, 1)[7] == 0);
+  samples[1] = 0xa8;
+  remote.receive_output(samples);
+  CHECK(calls == 2);
+  remote.receive_output(std::span<const u8>(samples).first(21));
+  CHECK(calls == 2);
+  write_register(remote, 0x51, 2, 0);
+  const std::array<u8, 1> adpcm{0x12};
+  write_bytes(remote, 0x51, 0, adpcm);
+  const auto first = packets.back();
+  write_bytes(remote, 0x51, 0, adpcm);
+  CHECK(packets.back().mono[0] != first.mono[0]);
+  remote.set_linked(false);
+  remote.set_linked(true);
+  // Link reset clears both the register bank and decoder history, preserving host settings.
+  const std::array<u8, 4> adpcm_config{0, 0xb8, 0x0b, 255};
+  write_bytes(remote, 0x51, 2, adpcm_config);
+  write_bytes(remote, 0x51, 0, adpcm);
+  CHECK(packets.back().count == first.count && packets.back().mono == first.mono);
+  remote.set_speaker_processing(false);
+  write_register(remote, 0x51, 2, 0xff);
+  write_bytes(remote, 0x51, 0, adpcm);
+  remote.set_speaker_processing(true);
+  CHECK_THROWS(write_bytes(remote, 0x51, 0, adpcm));
+  remote.speaker_samples = {};
+  write_register(remote, 0x51, 2, 0);
+  CHECK_THROWS(write_bytes(remote, 0x51, 0, adpcm));
+}
+
+void nunchuk_reset() {
+  Remote remote;
+  RemoteState state;
+  state.connected = true;
+  state.nunchuk.attached = true;
+  remote.set_state(state);
+  remote.set_linked(true);
+  remote.update();
+  receive(remote, 0x20);
+  write_register(remote, 0x52, 0x40, 0x19);
+  write_register(remote, 0x52, 0xf0, 0xaa);
+  write_register(remote, 0x51, 9, 1);
+  const auto eeprom = std::vector<u8>(remote.eeprom().begin(), remote.eeprom().end());
+  remote.set_linked(false);
+  remote.set_linked(true);
+  remote.update();
+  receive(remote, 0x20);
+  CHECK(read_bytes(remote, 0x52, 0x40, 1)[7] == 0);
+  CHECK(read_bytes(remote, 0x52, 0xf0, 1)[7] == 0);
+  CHECK(read_bytes(remote, 0x51, 9, 1)[7] == 0);
+  CHECK(std::equal(eeprom.begin(), eeprom.end(), remote.eeprom().begin()));
+  write_register(remote, 0x52, 0x40, 0x19);
+  write_register(remote, 0x52, 0xf0, 0xaa);
+  state.nunchuk.attached = false;
+  remote.set_state(state);
+  remote.update();
+  receive(remote, 0x20);
+  state.nunchuk.attached = true;
+  remote.set_state(state);
+  remote.update();
+  receive(remote, 0x20);
+  CHECK(read_bytes(remote, 0x52, 0x40, 1)[7] == 0);
+  CHECK(read_bytes(remote, 0x52, 0xf0, 1)[7] == 0);
+  const auto calibration = read_bytes(remote, 0x52, 0x20, 16);
+  CHECK(calibration[7] == 0x80 && calibration[11] == 0xb3 && calibration[15] == 0xe0);
+}
+
 } // namespace
 
 int main() {
   return run_tests([] {
     remote_reports();
     remote_memory();
+    speaker_registers();
+    speaker_processing();
+    nunchuk_reset();
   });
 }

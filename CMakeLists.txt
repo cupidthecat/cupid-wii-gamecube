@@ -83,6 +83,7 @@ set(cupid_sources
   src/runtime/boot.cpp
   src/runtime/elf.cpp
   src/runtime/fonts.cpp
+  src/audio/remote_speaker.cpp
   src/dsp/engine.cpp
   src/dsp/audio.cpp
   src/runtime/machine.cpp
@@ -97,7 +98,7 @@ include(cmake/DeveloperChecks.cmake)
 
 if(CUPID_BUILD_TESTS)
   enable_testing()
-  foreach(suite IN ITEMS cpu core disc device remote sdp sdp_transport runtime elf fonts dsp ios network sysconf gfx vertex texture fragment rasterizer efb_copy xfb_copy efb_access guest_video input_replay audio_stats)
+  foreach(suite IN ITEMS cpu core disc device remote remote_speaker sdp sdp_transport runtime elf fonts dsp ios network sysconf gfx vertex texture fragment rasterizer efb_copy xfb_copy efb_access guest_video input_replay audio_stats)
     add_executable(cupid_${suite}_tests tests/${suite}_tests.cpp)
     target_include_directories(cupid_${suite}_tests PRIVATE tests)
     target_link_libraries(cupid_${suite}_tests PRIVATE cupid_core)

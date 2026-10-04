@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
+#include "cupid/audio/remote_speaker.hpp"
 #include "cupid/core/types.hpp"
 #include <array>
 #include <deque>
@@ -58,7 +59,9 @@ public:
   std::optional<std::vector<u8>> take_report();
   std::span<const u8> eeprom() const;
   void set_eeprom(std::span<const u8> bytes);
+  void set_speaker_processing(bool enabled, float pan = 0);
   std::function<void(bool)> rumble;
+  std::function<void(const audio::RemoteSpeakerPacket &)> speaker_samples;
 
 private:
   struct Read {
@@ -69,14 +72,19 @@ private:
   RemoteState state_;
   bool linked_ = false, extension_present_ = false, ir_enabled_ = false;
   bool speaker_enabled_ = false, speaker_muted_ = false;
+  bool speaker_processing_ = false;
+  float speaker_pan_ = 0;
+  audio::RemoteSpeakerDecoder speaker_decoder_;
   u8 mode_ = 0x30, leds_ = 0;
   std::array<u8, 0x1700> eeprom_{};
-  std::array<u8, 256> extension_{}, camera_{};
+  std::array<u8, 256> extension_{}, camera_{}, speaker_{};
   std::optional<Read> read_;
   std::deque<std::vector<u8>> reports_;
   void ack(u8 operation, u8 error = 0);
   void status();
   void refresh_peripherals();
+  void reset_extension();
+  void process_speaker(std::span<const u8> bytes);
   void process_read();
   u8 memory_read(u8 space, u8 slave, u16 address, std::span<u8> bytes);
   u8 memory_write(u8 space, u8 slave, u16 address, std::span<const u8> bytes);

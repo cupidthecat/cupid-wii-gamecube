@@ -933,6 +933,106 @@ void paired_page_store_tests() {
   }
 }
 
+void external_control_tests() {
+  for (const bool write : {false, true})
+    for (u32 ear : {0u, 0x01234567u, 0x7fffffffu})
+      for (unsigned offset = 0; offset < 4; ++offset)
+        for (const bool user : {false, true})
+          for (const bool relocation : {false, true}) {
+            TransactionFixture f;
+            const u32 original_msr = (user ? msr::pr : 0) | (relocation ? msr::dr : 0);
+            f.s.msr = original_msr;
+            f.s.spr[282] = ear;
+            f.s.spr[spr::dsisr] = 0x13579bdf;
+            f.s.gpr[7] = 0x2000;
+            f.s.gpr[8] = offset;
+            f.s.gpr[9] = 0x8ac12467;
+            f.s.cr = 0x8d6152af;
+            CHECK(f.run(ext(write ? 438 : 310, 9, 7, 8)) == 1);
+            CHECK(f.s.pc == 0x300 && f.s.spr[spr::dar] == 0x2000 + offset);
+            CHECK(f.s.spr[spr::dsisr] == 0x13579bdf && f.s.spr[spr::srr1] == original_msr);
+            CHECK(f.s.gpr[9] == 0x8ac12467 && f.s.cr == 0x8d6152af);
+            CHECK(f.memory.accesses.empty());
+          }
+
+  for (const bool write : {false, true}) {
+    TransactionFixture f;
+    f.s.spr[282] = 0x80000000;
+    f.s.msr = msr::pr;
+    f.s.spr[spr::dsisr] = 0x13579bdf;
+    f.s.gpr[7] = 0x2001;
+    f.s.gpr[9] = 0x8ac12467;
+    f.run(ext(write ? 438 : 310, 9, 7));
+    CHECK(f.s.pc == 0x600 && f.s.spr[spr::dar] == 0x2001);
+    CHECK(f.s.spr[spr::dsisr] == 0x13579bdf && f.s.gpr[9] == 0x8ac12467);
+    CHECK(f.memory.accesses.empty());
+
+    f.s.msr = msr::dr | msr::pr;
+    f.s.gpr[7] = 0x40003000;
+    f.run(ext(write ? 438 : 310, 9, 7));
+    CHECK(f.s.pc == 0x300 && f.s.spr[spr::dar] == 0x40003000);
+    CHECK(f.s.spr[spr::dsisr] == (write ? 0x42000000u : 0x40000000u));
+    CHECK(f.s.gpr[9] == (write ? 0x8ac12467u : 0u));
+
+    f.s.msr = msr::pr;
+    f.s.gpr[7] = 0x3000;
+    f.s.gpr[9] = 0x8ac12467;
+    if (write)
+      f.memory.fail_write = 0x3000;
+    else
+      f.memory.fail_read = 0x3000;
+    f.run(ext(write ? 438 : 310, 9, 7));
+    CHECK(f.s.pc == 0x300 && f.s.spr[spr::dar] == 0x3000);
+    CHECK(f.s.gpr[9] == (write ? 0x8ac12467u : 0u));
+
+    f.s.msr = msr::pr;
+    f.s.gpr[9] = 0x8ac12467;
+    f.memory.unsupported_fault = true;
+    const auto cycles = f.s.cycles, instructions = f.s.instructions;
+    const u32 dar = f.s.spr[spr::dar], dsisr = f.s.spr[spr::dsisr];
+    CHECK_THROWS(f.run(ext(write ? 438 : 310, 9, 7)));
+    CHECK(f.s.pc == 0x1000 && f.s.gpr[9] == 0x8ac12467 && f.s.msr == msr::pr);
+    CHECK(f.s.cycles == cycles && f.s.instructions == instructions);
+    CHECK(f.s.spr[spr::dar] == dar && f.s.spr[spr::dsisr] == dsisr);
+  }
+
+  for (const bool write : {false, true}) {
+    Fixture f;
+    f.s.msr = msr::pr;
+    f.s.spr[spr::dsisr] = 0x13579bdf;
+    f.s.gpr[7] = 0x2000;
+    f.s.gpr[9] = 0x8ac12467;
+    f.s.cr = 0x81abce37;
+    f.memory.write32(0x2000, 0x10325476);
+    const u32 opcode = ext(write ? 438 : 310, 9, 7);
+    f.run(opcode);
+    CHECK(f.s.pc == 0x300 && f.s.gpr[9] == 0x8ac12467);
+    // The guest handler enables EAR and retries after returning to user mode.
+    const std::array<u32, 3> handler{imm(14, 6, 0, 0xffff), special(467, 6, 282), 0x4c000064};
+    for (unsigned n = 0; n < handler.size(); ++n)
+      f.memory.write32(0x300 + n * 4, handler[n]);
+    for (unsigned n = 0; n < handler.size(); ++n)
+      f.cpu.step();
+    CHECK(f.s.pc == 0x1000 && f.s.msr == msr::pr && f.s.spr[282] == 0xffffffff);
+    f.cpu.step();
+    CHECK(f.s.pc == 0x1004 && f.s.cr == 0x81abce37);
+    CHECK(f.s.spr[spr::dsisr] == 0x13579bdf);
+    CHECK(f.s.gpr[9] == (write ? 0x8ac12467u : 0x10325476u));
+    CHECK(f.memory.read32(0x2000) == (write ? 0x8ac12467u : 0x10325476u));
+  }
+
+  Fixture f;
+  f.s.spr[282] = 0x80000000;
+  f.s.gpr[0] = 0xffffffff;
+  f.s.gpr[7] = 0x2000;
+  f.memory.write32(0x2000, 0x10325476);
+  f.run(ext(310, 7, 0, 7));
+  CHECK(f.s.gpr[7] == 0x10325476); // RD may alias the indexed address register.
+  f.s.gpr[7] = 0x2000;
+  f.run(ext(438, 7, 0, 7));
+  CHECK(f.memory.read32(0x2000) == 0x2000 && f.s.gpr[7] == 0x2000);
+}
+
 void conditional_store_fault_tests() {
   for (const bool summary_overflow : {false, true}) {
     Fixture f;
@@ -1944,6 +2044,7 @@ int main() {
     split_store_fault_tests();
     changed_mapping_transaction_tests();
     paired_page_store_tests();
+    external_control_tests();
     conditional_store_fault_tests();
     exceptions_and_system();
     special_register_fidelity_tests();

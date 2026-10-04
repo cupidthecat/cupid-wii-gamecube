@@ -10,6 +10,10 @@
 namespace cupid {
 class Memory;
 
+namespace audio {
+struct RemoteSpeakerPacket;
+} // namespace audio
+
 namespace hw {
 class Devices;
 struct RemoteState;
@@ -33,6 +37,9 @@ public:
   void press_power_button();
   void set_remote(unsigned index, const hw::RemoteState &state);
   void set_remote_rumble_handler(std::function<void(unsigned, bool)> handler);
+  void set_remote_speaker_processing(unsigned index, bool enabled, float pan = 0);
+  void set_remote_speaker_handler(
+      std::function<void(unsigned, const audio::RemoteSpeakerPacket &)> handler);
   // Parses the selected disc's original metadata; does not authenticate signatures.
   bool set_title_context(std::span<const u8> ticket, std::span<const u8> tmd,
                          u64 partition_offset = 0);

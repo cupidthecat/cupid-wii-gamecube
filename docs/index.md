@@ -23,6 +23,7 @@
 - [Wii system configuration](system-config.md): checked settings and controller registration.
 - [Network services](network.md) and [network mappings](network-reference.md).
 - [DSP audio](dsp.md) and [DSP mappings](dsp-reference.md).
+- [Wii Remote speaker decoding](remote-speaker.md): registers, packet decoding and the separate host processing setting.
 - [Graphics](graphics.md) and [graphics mappings](graphics-reference.md).
 - [Vertex transforms](vertex-reference.md).
 - [Rasterization](rasterizer-reference.md).

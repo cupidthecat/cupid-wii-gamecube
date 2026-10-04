@@ -51,6 +51,11 @@ Remote::Remote() {
     }
     checksum(calibration, 1);
   }
+  reset_extension();
+}
+
+void Remote::reset_extension() {
+  extension_.fill(u8(0));
   auto calibration = std::span<u8>(extension_).subspan(0x20, 16);
   for (unsigned axis = 0; axis < 3; ++axis) {
     calibration[axis] = 0x80;
@@ -90,6 +95,9 @@ void Remote::set_linked(bool linked) {
   mode_ = 0x30;
   leds_ = 0;
   camera_.fill(u8(0));
+  speaker_.fill(u8(0));
+  speaker_decoder_.reset();
+  reset_extension();
   read_.reset();
   reports_.clear();
   if (rumble)
@@ -108,6 +116,21 @@ void Remote::set_eeprom(std::span<const u8> bytes) {
   if (bytes.size() != eeprom_.size())
     throw std::invalid_argument("Wii Remote EEPROM requires 5888 bytes");
   std::copy(bytes.begin(), bytes.end(), eeprom_.begin());
+}
+
+void Remote::set_speaker_processing(bool enabled, float pan) {
+  speaker_processing_ = enabled;
+  speaker_pan_ = pan;
+}
+
+void Remote::process_speaker(std::span<const u8> bytes) {
+  const u16 divisor = u16(u16(speaker_[3]) | (u16(speaker_[4]) << 8));
+  if (speaker_processing_ && divisor != 0 && !bytes.empty() && !speaker_samples)
+    unfinished("host speaker output");
+  const auto packet = speaker_decoder_.decode(
+      {speaker_[2], divisor, speaker_[5], speaker_processing_, speaker_pan_}, bytes);
+  if (packet.count != 0)
+    speaker_samples(packet);
 }
 
 void Remote::ack(u8 operation, u8 error) {
@@ -192,8 +215,12 @@ u8 Remote::memory_read(u8 space, u8 slave, u16 address, std::span<u8> bytes) {
     std::copy_n(camera_.begin() + offset, bytes.size(), bytes.begin());
     return 0;
   }
-  if (slave == 0x51)
-    unfinished("speaker register read");
+  if (slave == 0x51) {
+    const std::size_t offset = u8(address);
+    const auto count = std::min(bytes.size(), speaker_.size() - offset);
+    std::copy_n(speaker_.begin() + offset, count, bytes.begin());
+    return count == bytes.size() ? 0 : 7;
+  }
   return 7;
 }
 
@@ -221,8 +248,15 @@ u8 Remote::memory_write(u8 space, u8 slave, u16 address, std::span<const u8> byt
     std::copy(bytes.begin(), bytes.end(), camera_.begin() + offset);
     return 0;
   }
-  if (slave == 0x51)
-    unfinished("speaker register write");
+  if (slave == 0x51) {
+    if (offset == 0) {
+      process_speaker(bytes);
+      return 0;
+    }
+    const auto count = std::min(bytes.size(), speaker_.size() - offset);
+    std::copy_n(bytes.begin(), count, speaker_.begin() + offset);
+    return count == bytes.size() ? 0 : 7;
+  }
   return 7;
 }
 
@@ -305,8 +339,10 @@ void Remote::receive_output(std::span<const u8> report) {
       read_.reset();
     return;
   case 0x18:
+    if (report.size() < 22 || (flags >> 3) == 0 || (flags >> 3) > 20)
+      return;
     if (!speaker_muted_)
-      unfinished("speaker sample decoding");
+      process_speaker(report.subspan(2, flags >> 3));
     return;
   case 0x19:
     speaker_muted_ = (flags & 4) != 0;
@@ -361,6 +397,8 @@ void Remote::update() {
   refresh_peripherals();
   if (extension_present_ != state_.nunchuk.attached) {
     extension_present_ = state_.nunchuk.attached;
+    if (extension_present_)
+      reset_extension();
     mode_ = 0;
     status();
     return;

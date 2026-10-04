@@ -835,11 +835,54 @@ void bluetooth_remote_transport() {
   CHECK(packet ==
         std::vector<u8>({0, 0x21, 16, 0, 12, 0, 1, 0, 4, 4, 8, 0, 0x61, 0, 0, 0, 1, 2, 185, 0}));
   CHECK(output({0, 0x21, 14, 0, 10, 0, 1, 0, 5, 4, 6, 0, 0x40, 0, 0, 0, 0, 0}) == 0);
+  std::vector<audio::RemoteSpeakerPacket> speaker_packets;
+  fixture.ipc.set_remote_speaker_handler(
+      [&](unsigned index, const audio::RemoteSpeakerPacket &samples) {
+        CHECK(index == 0);
+        speaker_packets.push_back(samples);
+      });
+  CHECK_THROWS(fixture.ipc.set_remote_speaker_processing(4, true));
+  const auto speaker_output = [&](std::span<const u8> report) {
+    std::vector<u8> bytes{0, 0x21, u8(report.size() + 5), 0, u8(report.size() + 1), 0, 0x40,
+                          0, 0xa2};
+    bytes.insert(bytes.end(), report.begin(), report.end());
+    fixture.memory.copy_in(transfer, bytes);
+    fixture.memory.write8(0x15000, 2);
+    fixture.memory.write16(0x15002, u16(bytes.size()));
+    CHECK(fixture.ioctlv(fd, 1, {{0x15000, 1}, {0x15002, 2}}, {{transfer, u32(bytes.size())}},
+                         100000) == 0);
+  };
+  const auto speaker_ack = [&](u8 operation) {
+    for (unsigned attempt = 0; attempt < 16; ++attempt) {
+      const auto response = input(0x82);
+      if (response[9] != 0x22)
+        continue;
+      CHECK(response ==
+            std::vector<u8>({0, 0x21, 10, 0, 6, 0, 0x61, 0, 0xa1, 0x22, 0x10, 0x08, operation, 0}));
+      return;
+    }
+    CHECK(false);
+  };
+  std::array<u8, 22> speaker_setup{0x16, 4, 0xa2, 0, 9, 1, 1};
+  speaker_output(speaker_setup);
+  speaker_ack(0x16);
+  speaker_setup = {0x16, 4, 0xa2, 0, 2, 4, 0x40, 0xb8, 0x0b, 0xff};
+  speaker_output(speaker_setup);
+  speaker_ack(0x16);
+  speaker_output(std::array<u8, 2>{0x14, 6});
+  speaker_ack(0x14);
+  const std::array<u8, 22> speaker_data{0x18, 8, 0x80};
+  speaker_output(speaker_data);
+  CHECK(speaker_packets.empty());
+  fixture.ipc.set_remote_speaker_processing(0, true);
+  speaker_output(speaker_data);
+  CHECK(speaker_packets.size() == 1 && speaker_packets[0].count == 1);
+  CHECK(speaker_packets[0].mono[0] == -32768 && speaker_packets[0].rate_divisor == 13500);
+  CHECK(speaker_packets[0].left_volume == 255 && speaker_packets[0].right_volume == 255);
+  fixture.ipc.set_remote_speaker_processing(0, false);
   CHECK(output({0, 0x21, 8, 0, 4, 0, 0x40, 0, 0xa2, 0x12, 3, 0x31}) == 0);
   CHECK(rumbling);
-  packet = input(0x82);
-  CHECK(packet ==
-        std::vector<u8>({0, 0x21, 10, 0, 6, 0, 0x61, 0, 0xa1, 0x22, 0x10, 0x08, 0x12, 0}));
+  speaker_ack(0x12);
   fixture.ipc.advance(3645000);
   packet = input(0x81);
   CHECK(packet[0] == 0x13);

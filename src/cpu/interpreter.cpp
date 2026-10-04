@@ -1211,13 +1211,21 @@ void Interpreter::execute_extended(u32 opcode) {
   }
   case 310:
   case 438:
-    if (!(state_.spr[282] & 0x80000000))
-      storage_fault(ea, false, xo == 438);
+    if (!(state_.spr[282] & 0x80000000)) {
+      state_.spr[spr::dar] = ea;
+      exception(0x300, state_.pc);
+      throw GuestFault{};
+    }
     if (ea & 3)
       alignment(ea);
-    if (xo == 310)
-      state_.gpr[d] = static_cast<u32>(load(ea, 4));
-    else
+    if (xo == 310) {
+      try {
+        state_.gpr[d] = static_cast<u32>(load(ea, 4));
+      } catch (const GuestFault &) {
+        state_.gpr[d] = 0;
+        throw;
+      }
+    } else
       store(ea, sv, 4);
     return;
   case 533:

@@ -12,4 +12,6 @@ Public tests cover missing configurations, exact peer records, idempotence, unre
 
 A separate executable compiled the full pinned SYSCONF parser and serializer with a controlled in-memory filesystem. It compared 129 complete files: defaults with an explicitly selected `Cupid` nickname, 127 generated valid configurations and the previous local Wii startup configuration. Peer fields were supplied from the inspected constructor layout; that constructor was not compiled in this comparison. All 2,113,536 bytes matched. SHA-1 over the files in comparison order was `ed0a4c717b2e0cbed43300498f327b2822c2cf46`.
 
+The local Linux Wii startup trace also records a completed guest IOS read of all 16,384 bytes: 27 entries and five registered peers. The guest subsequently accepts both control and interrupt HID channels with result zero. Full run conditions and the next observed stop are recorded in [compatibility](compatibility.md).
+
 The format permits 256 bytes in a small array. The behavioral reference's serializer narrows that length to eight bits before copying and therefore emits an empty payload for that boundary. That malformed serialization case is excluded from the differential fixtures. This implementation preserves all 256 bytes, with a public regression for the boundary. This is a format-preservation choice; no hardware result is claimed.

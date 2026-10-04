@@ -217,6 +217,7 @@ struct Ipc::Impl {
   // The fifth registered peer is the inactive board profile, not a host input port.
   std::array<hw::Remote, bluetooth_peers> remotes;
   std::function<void(unsigned, bool)> remote_rumble;
+  std::function<void(unsigned, const audio::RemoteSpeakerPacket &)> remote_speaker;
   Network network;
 
   struct UsbEndpoint {
@@ -2291,6 +2292,27 @@ void Ipc::set_remote_rumble_handler(std::function<void(unsigned, bool)> handler)
       if (impl_->remote_rumble)
         impl_->remote_rumble(index, active);
     };
+}
+
+void Ipc::set_remote_speaker_processing(unsigned index, bool enabled, float pan) {
+  if (index >= remote_ports)
+    throw std::out_of_range("Wii Remote speaker index");
+  impl_->remotes[index].set_speaker_processing(enabled, pan);
+}
+
+void Ipc::set_remote_speaker_handler(
+    std::function<void(unsigned, const audio::RemoteSpeakerPacket &)> handler) {
+  impl_->remote_speaker = std::move(handler);
+  for (unsigned index = 0; index < impl_->remotes.size(); ++index) {
+    if (!impl_->remote_speaker) {
+      impl_->remotes[index].speaker_samples = {};
+      continue;
+    }
+    impl_->remotes[index].speaker_samples = [this,
+                                             index](const audio::RemoteSpeakerPacket &packet) {
+      impl_->remote_speaker(index, packet);
+    };
+  }
 }
 
 bool Ipc::set_title_context(std::span<const u8> ticket, std::span<const u8> tmd,

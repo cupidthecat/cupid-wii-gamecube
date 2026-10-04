@@ -8,6 +8,8 @@ PI write gathering feeds the CP ring, including linked pointers, wrapping, water
 
 Display-list addresses are aligned to 32 bytes and normalized to their physical RAM address by clearing the top two bits. All four pointer aliases reach the same MEM1 bytes, and Wii MEM2 uses the same rule. Lists cannot read the FIFO, MMIO, locked cache, or a range beyond physical RAM. The CPU memory interface continues to use physical addresses supplied by its MMU.
 
+Invalid memory ranges inside a graphics command or FIFO transfer produce an explicit graphics diagnostic. They retain the failing graphics address instead of turning a nested graphics read into a guest storage exception on the CPU's FIFO store. An unsupported command can already have consumed FIFO bytes or completed earlier graphics work; the diagnostic does not promise to roll that work back.
+
 Vertices can use direct or indexed attributes. The vertex stage applies transforms, lighting, projection, and texture-coordinate generation. The rasterizer assembles triangles, strips, fans, quads, lines, and points, clips them, applies culling and scissoring, and interpolates fragment inputs. Multisample rendering is still unsupported.
 
 The texture stage decodes I4, I8, IA4, IA8, RGB565, RGB5A3, RGBA8, C4, C8, C14X2, and CMPR. Paletted formats use uploaded TLUT data. RAM textures support mip layouts and point or bilinear sampling; manual TMEM supports base-level sampling and split RGBA8 banks. Manual mip chains remain unsupported.
@@ -33,3 +35,5 @@ Public tests check command fragmentation, register side effects, texture uploads
 The [authored guest-video program](guest-video.md) checks the integrated CPU-to-VI path in both console modes. Synthetic rendering evidence does not establish commercial-game rendering or playability.
 
 The framebuffer access fixture also executes a cached display list through guest byte stores to a translated FIFO alias and checks its visible EFB clear. Direct command tests check all RAM pointer aliases, MEM2, fragmented calls, preserved source bytes, and invalid ranges. These regressions passed after the previous implementation rejected cached display-list pointers and incorrectly allowed GPU locked-cache reads.
+
+The guest fixture also submits an invalid display list on each console. The final store reports the CPU's PC and opcode as unsupported while preserving CPU registers, exception state and counters. Replacing only the command-processor object with its prior checkpoint implementation makes the same regression fail; the corrected object passes. This checks diagnostic classification, not recovery from a malformed graphics stream.

@@ -20,6 +20,13 @@ u32 word(std::span<const u8> bytes, std::size_t offset) {
   throw BusFault(address, writing, text, true);
 }
 
+[[noreturn]] void graphics_memory_error(const BusFault &error) {
+  if (error.unsupported_reason)
+    throw;
+  throw BusFault(error.address, error.write,
+                 std::string("Graphics memory access failed: ") + error.what(), true);
+}
+
 } // namespace
 
 CommandProcessor::CommandProcessor(Memory &memory, hw::Devices &devices, Console console)
@@ -64,7 +71,11 @@ void CommandProcessor::gather(u8 byte) {
   const u32 pointer = devices_.read(0x0c003014, 4);
   if (pointer < base || pointer > end)
     unavailable(0x0c008000, true, "Write-gather FIFO pointer is outside its configured ring");
-  memory_.copy_in(pointer, pipe_);
+  try {
+    memory_.copy_in(pointer, pipe_);
+  } catch (const BusFault &error) {
+    graphics_memory_error(error);
+  }
   const u32 next = pointer == end ? base : pointer + 32;
   devices_.write(0x0c003014, next, 4);
   if (registers_[1] & 16) {
@@ -88,7 +99,12 @@ void CommandProcessor::consume_fifo() {
       break;
     if (pointer < fifo(0x20) || pointer > fifo(0x24))
       unavailable(0x0c000038, false, "Graphics FIFO read pointer is outside its ring");
-    const auto data = memory_.range(pointer, 32);
+    std::span<const u8> data;
+    try {
+      data = memory_.range(pointer, 32);
+    } catch (const BusFault &error) {
+      graphics_memory_error(error);
+    }
     submit(data);
     fifo(0x38, pointer == fifo(0x24) ? fifo(0x20) : pointer + 32);
     fifo(0x30, fifo(0x30) - 32);
@@ -102,7 +118,12 @@ void CommandProcessor::submit(std::span<const u8> data) {
   pending_.insert(pending_.end(), data.begin(), data.end());
   std::size_t consumed = 0;
   while (consumed < pending_.size()) {
-    auto amount = decode(std::span<const u8>(pending_).subspan(consumed));
+    std::size_t amount = 0;
+    try {
+      amount = decode(std::span<const u8>(pending_).subspan(consumed));
+    } catch (const BusFault &error) {
+      graphics_memory_error(error);
+    }
     if (!amount)
       break;
     consumed += amount;

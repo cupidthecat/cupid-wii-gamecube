@@ -38,7 +38,7 @@ For Wii input, the first controller supplies A/B, One/Two, Plus, Minus, D-pad, a
 
 Keyboard tilt changes raw accelerometer axes around the calibrated gravity state. Holding shake alternates the selected acceleration axis at approximately 30 samples per second. Mouse pointing supplies two bounded infrared points with screen position transformed into camera coordinates. Window scaling and black bars are accounted for; pointing outside the image supplies no visible points. These are host mappings for the guest protocol; actual game acceptance and physical sensor calibration remain unverified.
 
-Remote report generation implements buttons, accelerometers, IR, Nunchuk state, EEPROM requests, report selection, acknowledgements, LEDs, and rumble. The Wii USB/Bluetooth path negotiates HCI and L2CAP before exchanging HID reports. Encryption, speaker data, interleaved reports, and broader radio behavior remain unfinished. See [device mappings](device-reference.md) and [SDP](sdp.md).
+Remote report generation implements buttons, accelerometers, IR, Nunchuk state, EEPROM requests, report selection, acknowledgements, LEDs, rumble and speaker register traffic. The Wii USB/Bluetooth path negotiates HCI and L2CAP before exchanging HID reports. [Speaker decoding](remote-speaker.md) produces mono PCM with rate and gain metadata through a separate callback when host speaker processing is enabled. Processing defaults to disabled; the host speaker queues and resampler remain unfinished. Encryption, interleaved reports and broader radio behavior remain unfinished. See [device mappings](device-reference.md) and [SDP](sdp.md).
 
 ## Input replay
 

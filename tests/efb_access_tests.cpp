@@ -25,7 +25,7 @@ void bp(Memory &memory, unsigned index, u32 value) {
     memory.write8(0x0c008fe0, byte);
 }
 
-void display_list_guest(Console console) {
+void display_list_guest(Console console, bool invalid = false) {
   runtime::Machine machine(console);
   machine.load_executable(runtime::self_test_dol());
   auto &memory = machine.memory();
@@ -41,6 +41,11 @@ void display_list_guest(Console console) {
                                 0x22, 0x33, 0x61, 0x52, 0,    8,    0};
   memory.copy_in(0x00f863a0, list);
   std::array<u8, 32> command{0x40, 0x80, 0xf8, 0x63, 0xa0, 0, 0, 0, 32};
+  if (invalid) {
+    command[1] = 0x81;
+    command[2] = 0x80;
+    command[3] = command[4] = 0;
+  }
   memory.copy_in(0x7000, command);
   auto &state = machine.cpu().state();
   state.pc = 0x80006000;
@@ -51,8 +56,24 @@ void display_list_guest(Console console) {
     memory.write32(0x6004 + i * 8, (38u << 26) | (5 << 21) | (3 << 16));
   }
   const auto instructions = state.instructions;
-  for (unsigned i = 0; i < 64; ++i)
+  for (unsigned i = 0; i < 63; ++i)
     machine.step();
+  if (invalid) {
+    const auto before = state;
+    try {
+      machine.step();
+      CHECK(false);
+    } catch (const cpu::UnsupportedInstruction &error) {
+      CHECK(error.pc == before.pc && error.opcode == ((38u << 26) | (5 << 21) | (3 << 16)));
+      CHECK(std::string(error.what()).find("Graphics memory access failed") != std::string::npos);
+    }
+    CHECK(state.pc == before.pc && state.instructions == before.instructions);
+    CHECK(state.cycles == before.cycles && state.timebase == before.timebase);
+    CHECK(state.msr == before.msr && state.cr == before.cr && state.fpscr == before.fpscr);
+    CHECK(state.gpr == before.gpr && state.spr == before.spr);
+    return;
+  }
+  machine.step();
   CHECK(state.pc == 0x80006100 && state.instructions == instructions + 64);
   CHECK(state.spr[cpu::spr::dar] == 0 && state.spr[cpu::spr::dsisr] == 0);
   CHECK(memory.read32(0x08000000) == 0x00112233);
@@ -176,5 +197,7 @@ int main() {
     efb_access(Console::Wii);
     display_list_guest(Console::GameCube);
     display_list_guest(Console::Wii);
+    display_list_guest(Console::GameCube, true);
+    display_list_guest(Console::Wii, true);
   });
 }

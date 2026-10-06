@@ -5,6 +5,10 @@
 #include "cupid/cpu/cache.hpp"
 #include "cupid/cpu/native_integer.hpp"
 #include <array>
+#include <cstring>
+#if defined(_M_X64) || defined(__x86_64__)
+#include <emmintrin.h>
+#endif
 #include <stdexcept>
 
 namespace cupid::cpu {
@@ -44,6 +48,10 @@ public:
   u32 pc, opcode;
 };
 
+struct IntegerRun {
+  u32 instructions = 0, cycles = 0;
+};
+
 class Interpreter {
 public:
   explicit Interpreter(Bus &bus, Console console = Console::GameCube);
@@ -59,6 +67,21 @@ public:
   void reset();
   void configure_boot();
   u32 step();
+  // Executes resident register/RAM operations and bounded cache-flush loops.
+  // Callers must bound both quotas before the next device, replay, trace or polling boundary.
+  // A zero result leaves guest state and instruction-cache state unchanged.
+  IntegerRun try_integer_run(u32 maximum_instructions, u32 maximum_cycles);
+
+  bool integer_run_possible() const noexcept {
+    if ((state_.pc & 3) || (state_.spr[spr::hid0] & 0xa000) != 0x8000)
+      return false;
+    const unsigned minimum = backend_ == ExecutionBackend::NativeInteger ? 4 : 2;
+    return instruction_cache_.recent_integer_count(state_.pc) >= minimum ||
+           instruction_cache_.recent_cache_flush_run(state_.pc) ||
+           instruction_cache_.register_branch_run_hint(state_.pc) ||
+           instruction_cache_.scalar_run_hint(state_.pc);
+  }
+
   void set_execution_backend(ExecutionBackend backend);
 
   ExecutionBackend execution_backend() const noexcept {
@@ -99,6 +122,49 @@ private:
   bool last_step_fetched_ = false;
   u32 reservation_address_ = 0, next_pc_ = 0, current_opcode_ = 0;
   u32 tick_remainder_ = 0, decrementer_remainder_ = 0;
+
+  struct BatMap {
+    std::array<u32, 32768> entries{};
+    std::array<u32, 16> registers{};
+    unsigned count = 0;
+  };
+
+  std::array<std::unique_ptr<BatMap>, 2> bat_maps_;
+
+  // Direct writes through state() must invalidate the host mapping too.
+  static bool bat_registers_equal(const u32 *snapshot, const u32 *registers) {
+#if defined(_M_X64) || defined(__x86_64__)
+    const auto first =
+        _mm_cmpeq_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i *>(snapshot)),
+                        _mm_loadu_si128(reinterpret_cast<const __m128i *>(registers)));
+    const auto second =
+        _mm_cmpeq_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i *>(snapshot + 4)),
+                        _mm_loadu_si128(reinterpret_cast<const __m128i *>(registers + 4)));
+    return _mm_movemask_epi8(_mm_and_si128(first, second)) == 0xffff;
+#else
+    return std::memcmp(snapshot, registers, 8 * sizeof(u32)) == 0;
+#endif
+  }
+
+  BatMap &refresh_bat_map(bool instruction, unsigned count);
+  std::span<u8> scalar_ram(u32 opcode, u32 &effective, const BatMap *map);
+  void execute_scalar_ram(u32 opcode, u32 effective, std::span<u8> bytes);
+
+  u64 bat_address(u32 effective, bool instruction, unsigned count) {
+    const unsigned base = instruction ? 528 : 536, extended = instruction ? 560 : 568;
+    auto *map = bat_maps_[instruction].get();
+    if (!map || map->count != count ||
+        !bat_registers_equal(map->registers.data(), state_.spr.data() + base) ||
+        (count == 8 &&
+         !bat_registers_equal(map->registers.data() + 8, state_.spr.data() + extended)))
+      map = &refresh_bat_map(instruction, count);
+    const u32 entry = map->entries[effective >> 17];
+    if (!(entry & 1))
+      return 0;
+    return (u64{1} << 63) | (u64{(entry & 4) != 0} << 32) | (entry & 0xfffe0000) |
+           (effective & 0x1ffff);
+  }
+
   void exception(u32 vector, u32 saved_pc, u32 cause = 0);
   bool take_interrupt(u32 saved_pc);
   [[noreturn]] void program(u32 cause);
@@ -107,6 +173,7 @@ private:
   [[noreturn]] void unsupported(const char *reason);
   void privileged();
   void execute(u32 opcode);
+  bool execute_register_run_instruction(u32 opcode, u32 pc);
   void execute_extended(u32 opcode);
   void execute_float(u32 opcode);
   void execute_paired(u32 opcode);

@@ -7,9 +7,11 @@
 #include "VideoBackends/Software/Tev.h"
 #include "VideoCommon/AbstractGfx.h"
 #include "VideoCommon/BPMemory.h"
+#include "VideoCommon/DataReader.h"
 #include "VideoCommon/EFBInterface.h"
 #include "VideoCommon/FramebufferManager.h"
 #include "VideoCommon/GraphicsModSystem/Config/GraphicsMod.h"
+#include "VideoCommon/GraphicsModSystem/Runtime/CustomShaderCache.h"
 #include "VideoCommon/Statistics.h"
 #include "VideoCommon/VertexManagerBase.h"
 #include "VideoCommon/VertexShaderManager.h"
@@ -37,6 +39,118 @@ GraphicsModGroupConfig::~GraphicsModGroupConfig() {
 
 // Test-only linker boundaries for unrelated application paths retained by some linkers.
 // Every hook fails if called; the comparison uses the actual clipping and coverage functions.
+// Complete the unused services' virtual interfaces so instrumented builds retain their RTTI.
+void AbstractGfx::BeginUtilityDrawing() {
+  throw std::runtime_error("Unexpected reference backend utility drawing");
+}
+
+EFBInterfaceBase::~EFBInterfaceBase() {
+  unexpected_reference_destructor();
+}
+
+VertexManagerBase::~VertexManagerBase() {
+  unexpected_reference_destructor();
+}
+
+// Retained member cleanup also needs real boundaries, even though no service is constructed.
+CPUCull::~CPUCull() {
+  unexpected_reference_destructor();
+}
+
+template <typename T> void CPUCull::BufferDeleter<T>::operator()(T *) {
+  throw std::runtime_error("Unexpected reference backend culling buffer release");
+}
+
+CustomShaderCache::~CustomShaderCache() {
+  unexpected_reference_destructor();
+}
+
+VideoCommon::AsyncShaderCompiler::~AsyncShaderCompiler() {
+  unexpected_reference_destructor();
+}
+
+bool VideoCommon::AsyncShaderCompiler::WorkerThreadInitMainThread(void **) {
+  throw std::runtime_error("Unexpected reference backend shader worker preparation");
+}
+
+bool VideoCommon::AsyncShaderCompiler::WorkerThreadInitWorkerThread(void *) {
+  throw std::runtime_error("Unexpected reference backend shader worker initialization");
+}
+
+void VideoCommon::AsyncShaderCompiler::WorkerThreadExit(void *) {
+  throw std::runtime_error("Unexpected reference backend shader worker exit");
+}
+
+void AbstractGfx::EndUtilityDrawing() {
+  throw std::runtime_error("Unexpected reference backend utility drawing");
+}
+
+void AbstractGfx::SetFramebuffer(AbstractFramebuffer *) {
+  throw std::runtime_error("Unexpected reference backend framebuffer selection");
+}
+
+void AbstractGfx::SetAndDiscardFramebuffer(AbstractFramebuffer *) {
+  throw std::runtime_error("Unexpected reference backend framebuffer discard");
+}
+
+void AbstractGfx::SetAndClearFramebuffer(AbstractFramebuffer *, const ClearColor &, float) {
+  throw std::runtime_error("Unexpected reference backend framebuffer clear");
+}
+
+void AbstractGfx::ClearRegion(const MathUtil::Rectangle<int> &, bool, bool, bool, u32, u32) {
+  throw std::runtime_error("Unexpected reference backend region clear");
+}
+
+void AbstractGfx::ScaleTexture(AbstractFramebuffer *, const MathUtil::Rectangle<int> &,
+                               const AbstractTexture *, const MathUtil::Rectangle<int> &) {
+  throw std::runtime_error("Unexpected reference backend texture scaling");
+}
+
+std::unique_ptr<VideoCommon::AsyncShaderCompiler> AbstractGfx::CreateAsyncShaderCompiler() {
+  throw std::runtime_error("Unexpected reference backend shader compiler creation");
+}
+
+void AbstractGfx::OnConfigChanged(u32) {
+  throw std::runtime_error("Unexpected reference backend configuration change");
+}
+
+bool VertexManagerBase::Initialize() {
+  throw std::runtime_error("Unexpected reference backend vertex initialization");
+}
+
+DataReader VertexManagerBase::PrepareForAdditionalData(OpcodeDecoder::Primitive, u32, u32, bool) {
+  throw std::runtime_error("Unexpected reference backend vertex preparation");
+}
+
+void VertexManagerBase::UploadUtilityUniforms(const void *, u32) {
+  throw std::runtime_error("Unexpected reference backend utility uniform upload");
+}
+
+bool VertexManagerBase::UploadTexelBuffer(const void *, u32, TexelBufferFormat, u32 *) {
+  throw std::runtime_error("Unexpected reference backend texel upload");
+}
+
+bool VertexManagerBase::UploadTexelBuffer(const void *, u32, TexelBufferFormat, u32 *, const void *,
+                                          u32, TexelBufferFormat, u32 *) {
+  throw std::runtime_error("Unexpected reference backend palette upload");
+}
+
+void VertexManagerBase::ResetBuffer(u32) {
+  throw std::runtime_error("Unexpected reference backend buffer reset");
+}
+
+void VertexManagerBase::CommitBuffer(u32, u32, u32, u32 *, u32 *) {
+  throw std::runtime_error("Unexpected reference backend buffer commit");
+}
+
+void VertexManagerBase::UploadUniforms() {
+  throw std::runtime_error("Unexpected reference backend uniform upload");
+}
+
+void VertexManagerBase::DrawCurrentBatch(u32, u32, u32) {
+  throw std::runtime_error("Unexpected reference backend draw");
+}
+
 void Tev::SetKonstColors() {
   throw std::runtime_error("Unexpected reference constant-color setup");
 }
@@ -264,6 +378,76 @@ int main() {
     }
     compared += actual_samples.size();
   }
+  unsigned wide_cases = 0;
+  for (unsigned axis = 0; axis < 2; ++axis)
+    for (float distance : {-128000000.0f, -64000000.0f, -8000000.0f, -5000000.0f, 5000000.0f,
+                           8000000.0f, 64000000.0f, 128000000.0f})
+      for (float w : {0.5f, 1.0f, 2.0f})
+        for (unsigned offset : {0u, 171u, 511u}) {
+          Rasterizer::Init();
+          actual.reset();
+          bp[0] = (2 << 4) | 8 | (3 << 14);
+          bp[0x20] = ((offset * 2) << 12) | (offset * 2);
+          bp[0x21] = ((offset * 2 + 15) << 12) | (offset * 2 + 15);
+          bp[0x59] = offset | (offset << 10);
+          put(0x101d, float(offset * 2 + 8));
+          put(0x101e, float(offset * 2 + 8));
+          xf[0x1005] = 0;
+          std::array<std::optional<cupid::gfx::TransformedVertex>, 3> input;
+          std::array<OutputVertexData, 3> reference;
+          const std::array<cupid::gfx::Vector4, 3> positions{
+              cupid::gfx::Vector4{axis == 0 ? distance * w / 8 : 0,
+                                  axis == 1 ? distance * w / 8 : 0, -0.125f * w, w},
+              cupid::gfx::Vector4{0, 0, -0.25f, 1},
+              cupid::gfx::Vector4{axis == 0 ? 0.0f : 1.0f, axis == 1 ? 0.0f : 1.0f, -0.75f, 1}};
+          for (unsigned i = 0; i < 3; ++i) {
+            input[i].emplace();
+            input[i]->clip_position = positions[i];
+            reference[i].projectedPosition = {positions[i][0], positions[i][1], positions[i][2],
+                                              positions[i][3]};
+            for (unsigned channel = 0; channel < 2; ++channel)
+              reference[i].color[channel] = input[i]->colors[channel] = {20, 40, 60, 255};
+            for (unsigned texture = 0; texture < 8; ++texture) {
+              bp[0x30 + texture * 2] = bp[0x31 + texture * 2] = 0;
+              input[i]->texcoords[texture] = {0, 0, 1};
+              reference[i].texCoords[texture] = {0, 0, 1};
+              bpmem.texcoords[texture].s.hex = bpmem.texcoords[texture].t.hex = 0;
+            }
+          }
+          bpmem.genMode.hex = bp[0];
+          bpmem.scissorTL.hex = bp[0x20];
+          bpmem.scissorBR.hex = bp[0x21];
+          bpmem.scissorOffset.hex = bp[0x59];
+          const auto state = std::as_bytes(std::span(xf));
+          std::copy(state.begin(), state.end(),
+                    std::as_writable_bytes(std::span(&xfmem, 1)).begin());
+          Rasterizer::ScissorChanged();
+          actual_samples.clear();
+          expected_samples.clear();
+          Clipper::ProcessTriangle(&reference[0], &reference[1], &reference[2]);
+          actual.draw(0x90, input);
+          if (!actual_samples.empty() || !expected_samples.empty())
+            throw std::runtime_error("Culled wide triangle emitted samples");
+          bp[0] = (2 << 4) | 8 | (1 << 19);
+          bpmem.genMode.hex = bp[0];
+          const std::array<cupid::gfx::Vector4, 3> visible{
+              cupid::gfx::Vector4{-1, -1, -0.5f, 1}, {-0.5f, -1, -0.5f, 1}, {-1, -0.5f, -0.5f, 1}};
+          for (unsigned i = 0; i < 3; ++i) {
+            input[i]->clip_position = visible[i];
+            reference[i].projectedPosition = {visible[i][0], visible[i][1], visible[i][2],
+                                              visible[i][3]};
+          }
+          Clipper::ProcessTriangle(&reference[0], &reference[1], &reference[2]);
+          actual.draw(0x90, input);
+          if (actual_samples.empty() || actual_samples != expected_samples) {
+            std::cerr << "Frozen wide-plane divergence axis=" << axis << " distance=" << distance
+                      << " W=" << w << " offset=" << offset << '\n';
+            return 1;
+          }
+          compared += actual_samples.size();
+          ++wide_cases;
+        }
   std::cout << "Passed " << compared
-            << " rasterized sample comparisons over 10000 primitive commands\n";
+            << " rasterized sample comparisons over 10000 generated primitive commands and "
+            << wide_cases << " wide culled/frozen pairs\n";
 }

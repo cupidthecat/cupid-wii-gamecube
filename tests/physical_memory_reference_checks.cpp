@@ -62,6 +62,8 @@ unsigned reference_pi_requests = 0;
 
 } // namespace
 
+#include "unused_jit_adapters.inc"
+
 namespace Core {
 struct System::Impl {
   explicit Impl(System &system) : jit(system), pi(system) {

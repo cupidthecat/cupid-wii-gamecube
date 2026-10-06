@@ -75,6 +75,8 @@ unsigned reference_pi_requests = 0;
 
 } // namespace
 
+#include "unused_jit_adapters.inc"
+
 namespace Core {
 CPUThreadGuard::CPUThreadGuard(Core::System &system) : m_system(system), m_was_cpu_thread(false) {
   unused();

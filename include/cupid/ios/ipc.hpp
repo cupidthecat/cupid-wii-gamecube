@@ -59,6 +59,14 @@ public:
     advance_events(end);
   }
 
+  // Excludes the earliest queued event, including one already due at this clock.
+  u64 event_free_cycles() const noexcept {
+    const u64 available = std::numeric_limits<u64>::max() - now_;
+    if (!pending_event_)
+      return available;
+    return next_event_ > now_ ? next_event_ - now_ - 1 : 0;
+  }
+
   u64 cycles() const;
   std::function<void(u64, std::span<u8>)> disc_read;
   std::function<void(u64, std::span<u8>)> partition_read;

@@ -29,10 +29,13 @@ public:
   void locked_cache_dma(u32 memory_address, u32 cache_address, u32 bytes, bool load) override;
   void memory_access_error() override;
   u32 instruction_cache_key(u32 physical) const override;
+  bool stable_instruction_cache_key(u32 physical, u32 &key) const override;
   bool read_instruction_words(u32 physical, std::span<u32> words) override;
   bool read_instruction_bytes(u32 physical, std::span<u8> bytes) override;
   u64 read_cpu_data(u32 physical, unsigned byte_count) override;
   void write_cpu_data(u32 physical, u32 value, unsigned byte_count) override;
+  bool try_clear_cpu_ram_line(u32 physical) override;
+  std::span<u8> plain_cpu_ram(u32 physical, unsigned byte_count) override;
   bool write_page_table32(u32 physical, u32 value) override;
   u64 page_table_write_errors() const;
   u64 instruction_backing_read_errors() const;

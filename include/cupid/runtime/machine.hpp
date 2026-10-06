@@ -71,6 +71,7 @@ public:
 
 private:
   void refresh_input_replay();
+  template <bool Grouped> void step_internal();
 
   Console console_;
   Memory memory_;

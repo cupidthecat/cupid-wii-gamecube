@@ -110,3 +110,320 @@ and persistent files: Sunshine at three billion attempts takes
 201.853/203.136 seconds. Neither pair establishes a whole-game gain. The
 [hardware rendering record](hardware-rendering.md) separates these frozen
 cache measurements from later framebuffer-copy work.
+
+## Live-register CPU BAT tables
+
+Relocated instruction and data accesses use lazily built host BAT tables. Each
+lookup first compares all active BAT register words with its snapshot, including
+direct changes through the public CPU state. Register changes and four/eight-bank
+switches rebuild the map before use. The fast lookup and snapshot checks are
+inline; rebuilding runs separately. [CPU mappings](cpu-reference.md) describe
+the pinned mapping rules and compatibility decisions.
+
+Three alternating pairs per console and loop measured 65 million instructions
+per sample under WSL with GCC 13.3, strict floating-point flags, no LTO and fixed
+CPU affinity. Code uses the boot BAT mappings and a warmed instruction cache;
+Wii data uses MEM2. All complete-state checksums match within each workload.
+
+| Console and loop | Scalar median seconds | Table median seconds | Scalar/table ratio |
+| --- | ---: | ---: | ---: |
+| GameCube integer control | 2.286626 | 1.630244 | 1.403 |
+| GameCube integer/memory/rotate mixture | 2.920403 | 2.521969 | 1.158 |
+| GameCube rotate-heavy loop | 2.426957 | 2.031016 | 1.195 |
+| Wii integer control | 2.363621 | 2.080386 | 1.136 |
+| Wii integer/memory/rotate mixture | 2.857846 | 2.842658 | 1.005 |
+| Wii rotate-heavy loop | 2.389862 | 1.833824 | 1.303 |
+
+Other work shares the host and individual timings vary substantially. The Wii
+mixed-loop difference does not establish a material gain. These authored CPU
+workloads do not establish gameplay speed. An earlier direct SIMD BAT selector
+and an out-of-line table lookup also passed correctness checks, but their full
+CPU measurements included regressions; those variants are not retained.
+
+The added public tests cover 131,072 mutable mappings, and unchanged pinned
+IBAT/DBAT table generation supplies another 131,072 comparisons. Existing
+memory, exception, step and dispatch comparisons also pass. Separate scalar
+and retained traces match 16,384 complete CPU states, ordered bus records and
+both final RAM images byte for byte, totaling 155,957,504 bytes. The trace
+includes BAT/HID4 mutations, cache visibility, privileged writes, interrupts,
+guest faults and timer changes. Frozen sources, exact commands, preliminary
+failures, all timing samples and binary traces remain in
+`.cache/cpu-bat-simd-20261004/`.
+
+Three alternating pairs also run each supplied game for 100 million attempted
+steps from identical copied user data and replay files. The frozen integrated
+variants differ only in the CPU interpreter object and use the same private
+class layout. Every reported state field and every persistent file matches
+within each game's six runs. Sunshine medians are 7.394077 seconds scalar and
+6.281991 seconds table; Galaxy medians are 9.517884 and 10.194303 seconds. The
+Galaxy samples include a regression and establish no integrated gain. Both
+prefixes produce zero VI fields. Galaxy executes 1,948 GX commands, 3,502,080
+software fragments and 4,192 silent audio values in this span; Sunshine
+produces no GX commands or CPU audio values. These are startup comparisons,
+not gameplay or frame-rate measurements. `prefix-results.json` records all
+states, persisted hashes, exact commands, seeds and executable hashes.
+
+## Floating-point rounding guards
+
+Guest scalar, paired-single and quantized operations avoid setting and restoring
+host rounding controls when both the incoming C mode and x86-64 SIMD bits already
+match. Differing controls still use the scoped set/restore path. This reduces
+host environment writes in the usual round-to-nearest case.
+
+Three alternating pairs measure 13 million instructions per sample under WSL
+with GCC 13.3, strict floating-point flags, a warmed instruction cache, boot BAT
+mapping, no LTO and fixed affinity. The frozen variants differ only in the
+rounding guard. Every complete CPU-state checksum and final host rounding mode
+matches within each workload.
+
+| Loop and guest mode | Earlier median seconds | Guard median seconds | Earlier/guard ratio |
+| --- | ---: | ---: | ---: |
+| Scalar, nearest | 0.966406 | 0.891347 | 1.084 |
+| Scalar, downward | 0.980700 | 0.931642 | 1.053 |
+| Paired-single, nearest | 1.467147 | 1.248665 | 1.175 |
+| Paired-single, downward | 1.341236 | 1.301233 | 1.031 |
+
+Other builds, tests and game continuations share the host. Individual samples
+vary, including a slower guarded scalar/downward sample. The downward mode
+still changes host controls, so its small median difference does not establish
+a benefit from skipping writes. These authored loops do not establish a game
+frame rate. Exact sources, samples, executable hashes and a matching 16,384-step
+full CPU/host-environment trace remain in `.cache/cpu-rounding-20261004/`.
+
+A separate cycle-metadata lookup prototype also preserves its measured loop
+states, but has mixed timings with GameCube mixed-loop and Wii rotate-loop
+regressions. It is retained only as a private experiment in
+`.cache/cpu-cycle-tables-20261004/`.
+
+## Event-bounded runtime execution
+
+The runtime now admits resident register-integer groups between device events.
+Command processing, DSP mailboxes, IOS requests and the hardware devices each
+report how many cycles can pass before their next visible update. An event at
+cycle N permits at most N - 1 grouped cycles. PI level causes and overdue
+requests force ordinary stepping. Hardware-device advances defer work inside
+that interval, then materialize elapsed state before a register access or event.
+
+Device comparisons cover three million cycles on each console, including the
+ordered DMA, audio, disc and framebuffer callbacks, interrupt levels, registers
+and final RAM, ARAM, SRAM and card bytes. Separate complete-core tests exercise
+CP token/finish interrupts, DSP mailbox phases, IOS acknowledgement/reply
+deadlines, CPU-generated MMIO and overflow boundaries. Five alternating pairs
+of 150 million device advances reduce isolated medians by 31 to 43 percent.
+These device-only loops do not establish commercial gameplay throughput.
+
+Validated CPU RAM transactions also use fixed-width unaligned host copies and
+byte reversal after the existing range and device checks. Five alternating
+pairs of 50 million transactions preserve every checksum. Four-byte reads
+change from 0.288950 to 0.214183 seconds, eight-byte reads from 0.385666 to
+0.216563 seconds, and four-byte writes from 0.277871 to 0.227904 seconds.
+Two-byte writes regress from 0.227412 to 0.245495 seconds. These isolated WSL
+measurements retain all samples and establish no whole-game gain. Public tests
+cover unaligned access, boundary bytes, aliases and all supported widths.
+
+The integer-group details and admission guards are recorded in
+[native CPU execution](native-cpu.md). Frozen sources, build receipts, complete
+runtime comparisons and supplied-game prefix results are retained in the ignored
+`local-artifacts/integrated-fast-paths-20261004/` and
+`.cache/continuation-scheduling-20261004/` directories. Commercial performance
+claims require those executable comparisons to finish.
+
+## RAM clears, resident cache-flush groups and VI calculations
+
+Five alternating pairs compare ten million 32-byte clears per sample. The
+direct transfer and eight scalar stores produce identical full-memory hashes.
+Strict GCC measurements under WSL give these medians:
+
+| CPU RAM region | Eight stores, seconds | Direct clear, seconds |
+| --- | ---: | ---: |
+| MEM1 | 0.431671 | 0.027446 |
+| MEM1 allocation padding | 0.273609 | 0.020057 |
+| Wii MEM2 | 0.389914 | 0.039152 |
+| Locked cache | 0.346860 | 0.024335 |
+
+These measure the RAM transfer alone. A separate four-pair CPU fixture measures
+the exact resident `dcbf`/integer/conditional-branch group. Stepped/grouped
+medians are 0.613679/0.339549 seconds for GameCube interpreter,
+0.649758/0.444294 for GameCube native, 0.625700/0.352676 for Wii interpreter
+and 0.623561/0.360315 for Wii native. Every complete CPU-state checksum matches.
+Retaining repeatedly overwritten native destinations improves a dependent
+sequence fixture by 16.9 percent; independent stores remain within timing noise.
+Complete grouped native loops improve by only 1.0 to 2.5 percent in that series.
+
+Seven alternating device pairs show 21.2 to 24.6 percent less time in scheduled
+VI updates after caching unchanged geometry. Single-cycle samples vary within
+two percent. Aligned 64 KiB ARAM transfers take 74.8 to 80.8 percent less time,
+with identical bytes, callbacks and ending registers. Sources, exact commands,
+all samples and focused strict/sanitizer logs remain in
+`.cache/goal-emulation-20261004/`, `.cache/cpu-sequence-register-20261004/` and
+`.cache/device-video-timing-20261004/`.
+
+Five draw-admission pairs measure 200,000 unchanged begins per sample. RTX 3060
+medians for one, four and sixteen stages change from
+0.022288/0.026028/0.048997 to 0.010778/0.010577/0.010814 seconds. Mesa medians
+change from 0.021608/0.024053/0.040102 to 0.012421/0.012051/0.012666.
+An isolated Galaxy one-billion-attempt pair differs only in the renderer
+object. All 60 JSON fields, frame bytes and eight persistent files match at
+76 VI fields, 764 dispatches and 104,532,960 GPU fragments, with no fallbacks.
+Elapsed times are 70.916 and 69.061 seconds. The shared host limits timing
+precision; these component and startup results establish no gameplay frame rate.
+The renderer receipts remain in `.cache/graphics-group-20261004/`.
+
+## Guarded RAM polling and quiet MMIO reads
+
+A fresh Galaxy instruction trace records 193,080 fetched instructions, all
+repetitions of a word load, immediate comparison and taken conditional branch.
+The branch crosses an instruction-cache line. The new CPU fixture retains that
+placement and uses ordinary Memory backing, with four alternating pairs of
+100 million retired instructions under strict GCC and fixed CPU affinity.
+Every final architectural checksum matches the earlier CPU.
+
+| Backend and quiet budget | Earlier median seconds | RAM-group median seconds |
+| --- | ---: | ---: |
+| Interpreter, 3 cycles | 4.75662 | 4.38096 |
+| Interpreter, 8 cycles | 4.77517 | 2.40585 |
+| Interpreter, 4,096 cycles | 4.63353 | 0.003884 |
+| Native, 3 cycles | 4.48952 | 3.95896 |
+| Native, 8 cycles | 4.30614 | 2.01487 |
+| Native, 4,096 cycles | 4.74452 | 0.004065 |
+
+The large-budget result measures a stable wait loop whose repeated loads have
+the same value throughout an event-free interval. It does not measure complete
+game execution, rendering, device work or a gameplay frame rate. Exact trace,
+source, compile commands and all samples remain in
+`.cache/cpu-scalar-run-20261004/` and `.cache/goal-emulation-20261004/`.
+
+Seven alternating pairs of valid 20-million-instruction MMIO polling loops
+measure the separate quiet device-materialization path. GCC GameCube medians
+change from 1.75217 to 1.51129 seconds and Wii from 1.87640 to 1.58541.
+MSVC strict/LTO medians change from 2.38163 to 2.01359 and from 2.27244 to
+2.00042. All 112 samples match complete state and report zero faults. An earlier
+benchmark accidentally fell through its branch and measured fault retries;
+that failed experiment remains recorded and is excluded from these results.
+Receipts remain in `.cache/runtime-scheduling-20261004/`.
+
+## Empty hardware rectangles
+
+A private Galaxy diagnostic through field 1,100 records 721,242 raster
+rectangles. Of these, 628,209 contain at most 64 pixels, and 75,088 have no
+covered samples. The counts describe that captured workload, not every game.
+The bounded coverage rejection avoids an upload and dispatch for admitted
+empty rectangles while preserving visible neighbors and retained texture state.
+
+Five alternating RTX pairs replay 20,000 captured empty rectangles per sample.
+The earlier path issues 20,000 dispatches; the corrected path issues none.
+Median component time changes from 0.125024 to 0.0043678 seconds with exact
+EFB results. Positive warm-up work still proves actual GPU execution. This
+measures empty work admission, not rendering an entire game or its frame rate.
+Required-device checks and all samples remain in
+`.cache/graphics-gameplay-20261004/empty-fix/`.
+
+## Conditional-branch fallthrough and portable fog cost
+
+Three alternating or reversed Galaxy startup pairs compare the earlier RAM
+groups with the conditional-branch fallthrough extension at one billion
+attempts. All final guest state, raw frames, checkpoints and storage match.
+Earlier/extended elapsed seconds are 61.38/53.37, 61.38/51.94 and 76.29/48.65.
+The median paired ratio is 1.182. The third earlier sample rises substantially
+under shared-host work, so all rows remain recorded. A single Sunshine pair
+is neutral at 12.87/13.10 seconds. These strict GCC, no-LTO startup captures
+use llvmpipe and establish no full-speed gameplay result. Sources and all
+samples remain in `.cache/cpu-fallthrough-20261004/`.
+
+The exact portable fog repair has a measured cost. Four alternating RTX pairs
+use 20 warmed samples per backend and mode, with 512 captured rectangles in
+each sample. Fog-enabled GPU medians rise from 9.360896 to 11.223552 ms,
+or 19.90 percent; wall time rises 15.45 percent. Fog-disabled GPU medians are
+7.197696 and 7.127040 ms, within sample variation. Every complete EFB/depth
+and accepted-fragment count matches. The arithmetic repair closes an exact
+Linux-driver pixel error; these component times establish no commercial
+frame rate. Sources, all samples and shared-host conditions remain in
+`.cache/graphics-gameplay-20261004/fog-d3d12/cost-native-v2/`.
+
+## Ordered small-rectangle batching
+
+Three alternating RTX component pairs compare the original renderer with the
+bounded ordered batch. Median original/batch ratios are 2.037 for overlapping
+work, 10.872 for spread work, 1.587 for textured work and 1.875 for blending.
+Complete EFB, depth and retained state match. The unchanged large path's ratio
+is 0.969, within the recorded variation. CPU wall-time outliers remain in the
+receipts; they establish no CPU throughput improvement.
+
+The current 224-file Galaxy pair reaches 1,050 fields with identical captured
+guest and graphics state. Raster dispatches fall from 240,351 to 112,118.
+Elapsed seconds are 205.072 and 200.067 on the shared host. This one sequential
+pair verifies dispatch reduction; replicated whole-game speed remains to be
+measured. Sources, all samples and original failures remain in
+`.cache/gpu-ordered-batch-20261005/`.
+
+## Runtime bookkeeping across resident groups
+
+Five alternating strict MSVC Release/LTO pairs execute a varying-address RAM
+copy loop for 20 million retirements. Both variants use the same current core;
+only the runtime object differs. Every reported state value matches, including
+CPU and memory hashes, device clocks, native counters and fault counters.
+The interpreter median changes from 0.546792 to 0.450402 seconds, a ratio of
+1.214. Native execution changes from 0.577855 to 0.462358 seconds, a ratio of
+1.250. The shared host also runs other work, and all twenty samples remain
+recorded.
+
+This measures reduced dispatcher and peripheral bookkeeping while successive
+CPU groups share an event-free interval. It does not measure a commercial
+frame rate. The 634-case Windows runtime comparison separately checks complete
+CPU/RAM state, ordered callbacks and boundary behavior. Source objects,
+commands, binaries and raw samples remain in
+`.cache/continuation-runtime-20261005/measurements.json`. An earlier compiler
+attempt failed with an out-of-heap diagnostic under low host commit headroom.
+The retry overwrote that command's log; the original failure remains in the
+execution transcript.
+
+Two alternating stock-CLI pairs per supplied game compare the earlier
+fallthrough runtime with the cache-flush and quiet-interval extensions at one
+billion attempted instructions. All reported guest state, raw frames and
+persisted files match after excluding the configured revision string.
+
+| Game | Pair | Earlier seconds | Extended seconds | Fields at the bound |
+| --- | --- | --- | --- | --- |
+| Sunshine | 1 | 32.570 | 10.026 | 72 |
+| Sunshine | 2, reversed | 25.330 | 9.204 | 72 |
+| Galaxy | 1 | 77.957 | 77.757 | 76 |
+| Galaxy | 2, reversed | 87.624 | 82.651 | 76 |
+
+These Windows captures use software graphics, disabled host audio, copied
+storage and ordinary replay input. Sunshine produces 40,784 nonzero guest PCM
+values; Galaxy's earlier opening bound remains silent. Compilation and memory
+pressure vary during the captures, so the rows establish exact startup
+equivalence and their observed timing, without a gameplay speed claim.
+Commands, source and binary hashes, storage inventories and all eight runs
+remain in `.cache/continuation-runtime-20261005/startup-1b/verification.json`.
+
+## Current register groups and prepared textures
+
+Two alternating or reversed hardware-rendered pairs per supplied game compare
+the sealed cache-flush/quiet-interval core with the newer register-group and
+prepared-texture combination. Sunshine uses three billion attempts and
+Galaxy uses one billion. All reported fields except the configured revision,
+raw frame bytes and persisted files match in all four pairs.
+
+| Game | Pair | Earlier wall seconds | Current wall seconds | Earlier CPU seconds | Current CPU seconds | Fields |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Sunshine | 1 | 58.290 | 76.429 | 37.859 | 44.719 | 320 |
+| Sunshine | 2, reversed | 30.732 | 35.678 | 21.016 | 23.250 | 320 |
+| Galaxy | 1 | 71.035 | 64.206 | 59.250 | 55.031 | 76 |
+| Galaxy | 2, reversed | 58.229 | 63.737 | 53.703 | 55.750 | 76 |
+
+The newer combination is slower in both Sunshine pairs; Galaxy is mixed.
+These Windows OpenGL interpreter captures use the RTX 3060, one fixed CPU
+affinity, copied storage, ordinary replay and disabled host audio. Compilation,
+tests and longer gameplay captures share the host. The observations establish
+guest equivalence and preserve the measured regression; they do not establish
+an overall speed improvement. Source, executable hashes, complete commands,
+all samples and state/storage comparisons remain in
+`.cache/continuation-runtime-20261005/register-texture-hardware-prefixes/verification.json`.
+
+Prepared decoding separately measures ratios of 1.41 to 2.36 across eleven
+formats in CPU cache-fill comparisons with 555,456 exact texel checks.
+Demand-sampling controls range from 0.758 to 1.192 on the shared host.
+The scalar sampler remains in its original translation unit. This component
+result does not explain or erase the combined runtime timings above; see
+[hardware rendering](hardware-rendering.md) for the isolated source and scope.

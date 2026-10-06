@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <random>
 #include <vector>
@@ -101,6 +102,323 @@ void equal(Fixture &software, Fixture &hardware) {
     }
   for (u32 address = 0x0c001010; address <= 0x0c001016; address += 2)
     CHECK(software.graphics.read(address, 2) == hardware.graphics.read(address, 2));
+}
+
+void projection_precision_checks() {
+  Memory memory(Console::GameCube);
+  std::vector<u8> tmem(1024 * 1024);
+  std::array<u32, 256> bp{};
+  gfx::TevRegisters colors{}, konst{};
+  std::array<u8, 32> texels{};
+  for (unsigned row = 0; row < 4; ++row)
+    texels[row * 8 + 3] = 255;
+  memory.copy_in(0x30000, texels);
+  bp[0] = 1;
+  bp[0x28] = 64;
+  bp[0x41] = 24;
+  bp[0x80] = 16 | 1;
+  bp[0x88] = 7 | (3 << 10) | (1 << 20);
+  bp[0x94] = 0x30000 >> 5;
+  bp[0xc0] = 0xfff8 | (1 << 19);
+  bp[0xc1] = (7 << 13) | (7 << 10) | (7 << 7) | (4 << 4) | (1 << 19);
+  bp[0xf3] = (7 << 16) | (7 << 19);
+  gfx::RasterWork work{};
+  work.right = work.bottom = 1;
+  work.edges.fill({0, 0, 1});
+  work.reciprocal_w.value = 0x1.e0872ap-20f;
+  work.textures[0][0].value = 0x1.38a0d6p+7f;
+  work.textures[0][1].value = 0;
+  work.textures[0][2].value = 0x1.9df960p-2f;
+  const float reciprocal = 1.0f / work.reciprocal_w.value;
+  const float q = work.textures[0][2].value * reciprocal;
+  const float projection = reciprocal / q;
+  gfx::FragmentInputs inputs;
+  inputs.uv[0][0] = work.textures[0][0].value * projection;
+  CHECK(static_cast<s32>(inputs.uv[0][0] * 128.0f) == 49492);
+  gfx::FragmentShader software(memory, bp, colors, konst, tmem);
+  const auto expected = software.shade(inputs);
+  CHECK(expected.has_value());
+  CHECK((*expected == gfx::Color{39, 39, 39, 39}));
+  gfx::HardwareRenderer hardware(memory, tmem);
+  std::vector<u32> efb(640 * 528), depths(efb.size());
+  hardware.upload(efb, depths);
+  CHECK(hardware.begin(bp, colors, konst));
+  CHECK(hardware.draw(work));
+  const auto statistics = hardware.synchronize(efb, depths);
+  CHECK(statistics.dispatches == 1);
+  CHECK(statistics.fragments == 1);
+  CHECK(statistics.fallback_rectangles == 0);
+  CHECK(efb[0] == 0x272727);
+  CHECK(std::all_of(efb.begin() + 1, efb.end(), [](u32 value) { return value == 0; }));
+  std::mt19937 generator(0x338e1cb);
+  work.textures[0][2].value = 0;
+  for (unsigned profile = 0; profile < 256; ++profile) {
+    const u32 exponent = u32(100 + generator() % 20);
+    const u32 mantissa = u32(generator() & 0x7fffff);
+    work.reciprocal_w.value = std::bit_cast<float>((exponent << 23) | mantissa);
+    const float expected_u = float(64 + generator() % 1024) / 128.0f;
+    const float inverse = 1.0f / work.reciprocal_w.value;
+    work.textures[0][0].value = expected_u / inverse;
+    inputs.uv[0][0] = work.textures[0][0].value * inverse;
+    const auto sampled = software.shade(inputs);
+    CHECK(sampled.has_value());
+    CHECK(hardware.draw(work));
+    const auto profile_statistics = hardware.synchronize(efb, depths);
+    CHECK(profile_statistics.fragments == 1);
+    CHECK(profile_statistics.fallback_rectangles == 0);
+    const u32 wanted = (u32((*sampled)[0]) << 16) | (u32((*sampled)[1]) << 8) | (*sampled)[2];
+    if (efb[0] != wanted)
+      throw std::runtime_error("Projected reciprocal profile " + std::to_string(profile) +
+                               " software color=" + std::to_string(wanted) +
+                               " hardware color=" + std::to_string(efb[0]));
+  }
+  std::cout << "Verified projected division at a fixed-point texture boundary\n";
+}
+
+void projective_mip_checks() {
+  Memory memory(Console::GameCube);
+  std::vector<u8> tmem(1024 * 1024), texels;
+  for (unsigned level = 0; level < 6; ++level) {
+    const unsigned size = 32 >> level;
+    for (unsigned block_y = 0; block_y < (size + 3) / 4; ++block_y)
+      for (unsigned block_x = 0; block_x < (size + 7) / 8; ++block_x)
+        for (unsigned y = 0; y < 4; ++y)
+          for (unsigned x = 0; x < 8; ++x)
+            texels.push_back(
+                static_cast<u8>(level * 41 + (block_x * 8 + x) * 13 + (block_y * 4 + y) * 23));
+  }
+  memory.copy_in(0x30000, texels);
+  std::array<u32, 256> bp{};
+  gfx::TevRegisters colors{}, konst{};
+  bp[0] = 1;
+  bp[0x28] = 64;
+  bp[0x41] = 24;
+  bp[0x84] = 80 << 8;
+  bp[0x88] = 31 | (31 << 10) | (1 << 20);
+  bp[0x94] = 0x30000 >> 5;
+  bp[0xc0] = 0xfff8 | (1 << 19);
+  bp[0xc1] = (7 << 13) | (7 << 10) | (7 << 7) | (4 << 4) | (1 << 19);
+  bp[0xf3] = (7 << 16) | (7 << 19);
+  gfx::FragmentShader software(memory, bp, colors, konst, tmem);
+  gfx::HardwareRenderer hardware(memory, tmem);
+  std::vector<u32> efb(640 * 528), depths(efb.size());
+  hardware.upload(efb, depths);
+  std::mt19937 generator(0x574d6970);
+  const auto fraction = [&] { return float(generator() & 65535) / 65536.0f; };
+  for (unsigned profile = 0; profile < 1280; ++profile) {
+    bp[0x80] = (profile % 3) | (((profile / 3) % 3) << 2) | ((profile & 1) << 4) |
+               ((1 + profile % 2) << 5) | (((profile >> 1) & 1) << 7) |
+               (((profile >> 2) & 1) << 8) | ((generator() & 255) << 9);
+    bp[0x84] = 80 << 8;
+    if (profile >= 512 && profile < 1024) {
+      // Matched filters make a fixed mip independent of derivatives. Keep the
+      // neighboring mismatched-filter states in the same differential sweep:
+      // filter selection still uses the unclamped LOD, including at LOD zero.
+      constexpr std::array<unsigned, 16> lods{0,  1,  7,  8,  15, 16, 23, 24,
+                                              31, 32, 47, 48, 63, 64, 79, 80};
+      const unsigned mode = (profile >> 1) & 3, lod = lods[(profile >> 3) & 15];
+      const unsigned mag = profile & 1, min = profile & 128 ? mag ^ 1 : mag;
+      bp[0x80] = (bp[0x80] & ~u32(16 | 96 | 128)) | (mag << 4) | (mode << 5) | (min << 7);
+      bp[0x84] = lod | (lod << 8);
+    }
+    if (profile >= 1024) {
+      // With no mip selection, matched filters also ignore unequal or inverted
+      // LOD bounds. Neither bound may change the fixed-point bilinear taps.
+      const unsigned linear = profile & 1;
+      bp[0x80] = (bp[0x80] & ~u32(16 | 96 | 128)) | (linear << 4) | (linear << 7);
+      bp[0x84] = (profile & 255) | (((profile * 17) & 255) << 8);
+    }
+    gfx::RasterWork work{};
+    work.right = work.bottom = 4;
+    work.edges.fill({0, 0, 1});
+    const float w = std::ldexp(1.0f + fraction(), int(generator() % 24) - 20);
+    work.reciprocal_w = {w, w * (fraction() - 0.5f) / 16.0f, w * (fraction() - 0.5f) / 16.0f};
+    work.textures[0][2] = {0.125f + fraction(), (fraction() - 0.5f) / 64.0f,
+                           (fraction() - 0.5f) / 64.0f};
+    for (unsigned component = 0; component < 2; ++component)
+      work.textures[0][component] = {(fraction() - 0.5f) * 64.0f,
+                                     (fraction() - 0.5f) * 8.0f,
+                                     (fraction() - 0.5f) * 8.0f,
+                                     fraction(),
+                                     fraction(),
+                                     int(generator() % 5),
+                                     int(generator() % 5)};
+    const auto projected = [&](int x, int y) {
+      const float reciprocal = 1.0f / work.reciprocal_w.at(x, y);
+      const float q = work.textures[0][2].at(x, y) * reciprocal;
+      const float projection = reciprocal / q;
+      return std::array{work.textures[0][0].at(x, y) * projection,
+                        work.textures[0][1].at(x, y) * projection};
+    };
+    std::array<u32, 16> expected{};
+    for (int y = 0; y < 4; ++y)
+      for (int x = 0; x < 4; ++x) {
+        gfx::FragmentInputs inputs;
+        inputs.uv[0][0] = projected(x, y)[0];
+        inputs.uv[0][1] = projected(x, y)[1];
+        const auto origin = projected(x & ~1, y & ~1);
+        const auto dx = projected((x & ~1) + 1, y & ~1);
+        const auto dy = projected(x & ~1, (y & ~1) + 1);
+        for (unsigned component = 0; component < 2; ++component) {
+          inputs.dx[0][component] = dx[component] - origin[component];
+          inputs.dy[0][component] = dy[component] - origin[component];
+        }
+        const auto result = software.shade(inputs);
+        CHECK(result.has_value());
+        expected[static_cast<unsigned>(y * 4 + x)] =
+            (u32((*result)[0]) << 16) | (u32((*result)[1]) << 8) | (*result)[2];
+      }
+    CHECK(hardware.begin(bp, colors, konst));
+    CHECK(hardware.draw(work));
+    const auto stats = hardware.synchronize(efb, depths);
+    CHECK(stats.dispatches == profile + 1);
+    CHECK(stats.fragments == 16);
+    CHECK(stats.fallback_rectangles == 0);
+    for (unsigned y = 0; y < 4; ++y)
+      for (unsigned x = 0; x < 4; ++x)
+        if (efb[y * 640 + x] != expected[y * 4 + x])
+          throw std::runtime_error("Projective mip profile " + std::to_string(profile) +
+                                   " pixel=" + std::to_string(x) + "," + std::to_string(y) +
+                                   " software color=" + std::to_string(expected[y * 4 + x]) +
+                                   " hardware color=" + std::to_string(efb[y * 640 + x]));
+  }
+  std::cout << "Verified 1,280 varying-W/Q mip and fixed-LOD profiles with exact sampled colors\n";
+}
+
+void projective_stage_benchmark(bool fixed_lod = false) {
+  Memory memory(Console::GameCube);
+  std::vector<u8> tmem(1024 * 1024);
+  std::array<u8, 32> texels{};
+  for (unsigned row = 0; row < 4; ++row)
+    texels[row * 8 + 3] = 255;
+  memory.copy_in(0x30000, texels);
+  std::array<u32, 256> bp{};
+  gfx::TevRegisters colors{}, konst{};
+  bp[0] = (fixed_lod ? 8 : 1) | (15 << 10);
+  bp[0x41] = 24;
+  bp[0x80] = fixed_lod ? 0x191 : 16 | 1;
+  bp[0x88] = 7 | (3 << 10) | (1 << 20);
+  bp[0x94] = 0x30000 >> 5;
+  bp[0xf3] = (7 << 16) | (7 << 19);
+  for (unsigned stage = 0; stage < 16; ++stage) {
+    const u32 coordinate = fixed_lod ? (stage & 7) << 3 : 0;
+    bp[0x28 + stage / 2] |= (64 | coordinate) << ((stage & 1) * 12);
+    bp[0xc0 + stage * 2] = 0xfff8 | (1 << 19);
+    bp[0xc1 + stage * 2] = (7 << 13) | (7 << 10) | (7 << 7) | (4 << 4) | (1 << 19);
+  }
+  gfx::RasterWork work{};
+  work.right = work.bottom = 128;
+  work.edges.fill({0, 0, 1});
+  work.reciprocal_w.value = 0x1.e0872ap-20f;
+  for (auto &texture : work.textures) {
+    texture[0].value = 0x1.38a0d6p+7f;
+    texture[1].value = 0;
+    texture[2].value = 0x1.9df960p-2f;
+  }
+  gfx::HardwareRenderer hardware(memory, tmem);
+  std::vector<u32> efb(640 * 528), depths(efb.size());
+  hardware.upload(efb, depths);
+  CHECK(hardware.begin(bp, colors, konst));
+  // Compile and warm the exact sampled pipeline before timing submission and completion.
+  CHECK(hardware.draw(work));
+  hardware.synchronize(efb, depths);
+  const auto started = std::chrono::steady_clock::now();
+  for (unsigned draw = 0; draw < 64; ++draw)
+    CHECK(hardware.draw(work));
+  const auto stats = hardware.synchronize(efb, depths);
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+  CHECK(stats.fragments == 64 * 128 * 128);
+  CHECK(stats.fallback_rectangles == 0);
+  for (unsigned y = 0; y < 528; ++y)
+    for (unsigned x = 0; x < 640; ++x)
+      CHECK(efb[y * 640 + x] == (x < 128 && y < 128 ? 0x272727u : 0));
+  std::cout << "Verified 64 projected " << (fixed_lod ? "fixed-LOD " : "")
+            << "16-stage rectangles: seconds=" << seconds << '\n';
+}
+
+void state_upload_checks(bool measure) {
+  Memory memory(Console::GameCube);
+  std::vector<u8> tmem(1024 * 1024);
+  std::array<u32, 256> bp{};
+  gfx::TevRegisters colors{}, konst{};
+  bp[0x41] = 24;
+  bp[0xc0] = 0xfff0 | (1 << 19);
+  bp[0xc1] = (7 << 13) | (7 << 10) | (7 << 7) | (1 << 19);
+  bp[0xf3] = (7 << 16) | (7 << 19);
+  gfx::FragmentShader software(memory, bp, colors, konst, tmem);
+  gfx::HardwareRenderer hardware(memory, tmem);
+  std::vector<u32> efb(640 * 528), depths(efb.size());
+  hardware.upload(efb, depths);
+  std::array<u32, 9> expected{};
+  for (unsigned profile = 0; profile < expected.size(); ++profile) {
+    colors[0] = {s16(19 + profile * 11), s16(37 + profile * 7), s16(53 + profile * 3), 255};
+    konst[0] = {s16(13 + profile * 9), s16(29 + profile * 5), s16(43 + profile * 13), 255};
+    bp[0xc0] = (profile % 3 == 2 ? 0xfffe : 0xfff0) | (1 << 19);
+    bp[0xf6] = 12 << 4;
+    if (profile == 4) {
+      CHECK(hardware.begin(bp, colors, konst));
+      const u32 valid = bp[0x10];
+      bp[0x10] = 1 << 20;
+      CHECK(!hardware.begin(bp, colors, konst));
+      bp[0x10] = valid;
+    }
+    for (unsigned repeat = 0; repeat < 8; ++repeat)
+      CHECK(hardware.begin(bp, colors, konst));
+    gfx::RasterWork work{};
+    work.left = int(profile);
+    work.right = work.left + 1;
+    work.bottom = 1;
+    work.edges.fill({0, 0, 1});
+    CHECK(hardware.draw(work));
+    const auto result = software.shade(gfx::FragmentInputs{});
+    CHECK(result.has_value());
+    expected[profile] = (u32((*result)[0]) << 16) | (u32((*result)[1]) << 8) | (*result)[2];
+  }
+  const auto stats = hardware.synchronize(efb, depths);
+  CHECK(stats.dispatches == expected.size());
+  CHECK(stats.fragments == expected.size());
+  CHECK(stats.fallback_rectangles == 0);
+  CHECK(std::equal(expected.begin(), expected.end(), efb.begin()));
+  CHECK(
+      std::all_of(efb.begin() + expected.size(), efb.end(), [](u32 value) { return value == 0; }));
+  // A rectangle-level diagnostic must not invalidate an otherwise reusable BP
+  // state or preserve that diagnostic into its next successful begin.
+  gfx::RasterWork recovery{};
+  recovery.top = 1;
+  recovery.right = 1;
+  recovery.bottom = 2;
+  recovery.edges.fill({0, 0, 1});
+  recovery.depth.value = std::numeric_limits<float>::infinity();
+  CHECK(hardware.begin(bp, colors, konst));
+  CHECK(!hardware.draw(recovery));
+  CHECK(!hardware.fallback_reason().empty());
+  CHECK(hardware.begin(bp, colors, konst));
+  CHECK(hardware.fallback_reason().empty());
+  recovery.depth.value = 0;
+  CHECK(hardware.draw(recovery));
+  const auto recovered = hardware.synchronize(efb, depths);
+  CHECK(recovered.fragments == 1 && recovered.dispatches == expected.size() + 1);
+  CHECK(recovered.fallback_rectangles == 1);
+  CHECK(efb[640] == expected.back());
+  if (measure) {
+    for (unsigned stages : {1u, 4u, 16u}) {
+      bp[0] = (stages - 1) << 10;
+      for (unsigned stage = 1; stage < stages; ++stage) {
+        bp[0xc0 + stage * 2] = bp[0xc0];
+        bp[0xc1 + stage * 2] = bp[0xc1];
+      }
+      CHECK(hardware.begin(bp, colors, konst));
+      const auto started = std::chrono::steady_clock::now();
+      for (unsigned repeat = 0; repeat < 200000; ++repeat)
+        CHECK(hardware.begin(bp, colors, konst));
+      const double seconds =
+          std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+      std::cout << "Verified 200,000 unchanged hardware-state begins: stages=" << stages
+                << ", seconds=" << seconds << '\n';
+    }
+  }
+  std::cout << "Verified queued BP/TEV/konst state changes and rejected-state continuation\n";
 }
 
 void checks(Fixture &software, Fixture &hardware) {
@@ -1236,6 +1554,381 @@ void xfb_clear_checks() {
   std::cout << "Verified eight queued GPU copy/clear commands with one later EFB readback\n";
 }
 
+void counter_checks() {
+  Memory memory{Console::GameCube};
+  std::array<u32, 256> bp{};
+  gfx::TevRegisters colors{}, konst{};
+  std::vector<u8> tmem(1024 * 1024);
+  gfx::FragmentShader software(memory, bp, colors, konst, tmem);
+  gfx::FragmentShader hardware(memory, bp, colors, konst, tmem);
+  gfx::HardwareRenderer renderer(memory, tmem);
+  std::vector<u32> cpu_colors(640 * 528), cpu_depths(cpu_colors.size());
+  auto gpu_colors = cpu_colors, gpu_depths = cpu_depths;
+  std::mt19937 generator(0x4120398);
+  for (unsigned i = 0; i < 256; ++i)
+    memory.write8(0x80000 + i, static_cast<u8>(i * 37 + 19));
+  bp[0x80] = 1 | (1 << 2);
+  bp[0x88] = 7 | (7 << 10) | (6 << 20);
+  bp[0x94] = 0x80000 >> 5;
+  bp[0x28] = 64;
+  bp[0x41] = 24;
+  bp[0xf6] = 4;
+  bp[0xf7] = 14;
+  bp[0xc0] = 0xfff8 | (1 << 19);
+  bp[0xc1] = (7 << 13) | (7 << 10) | (7 << 7) | (5 << 4) | (1 << 19);
+  constexpr std::array<int, 8> extents{1, 7, 8, 9, 15, 16, 17, 63};
+  u64 checked_fragments = 0;
+  u64 expected_raster_calls = 0;
+  for (unsigned profile = 0; profile < 256; ++profile) {
+    std::fill(cpu_colors.begin(), cpu_colors.end(), 0x315a87);
+    for (unsigned i = 0; i < cpu_depths.size(); ++i)
+      cpu_depths[i] = 128 + (i % 7) * 32;
+    gpu_colors = cpu_colors;
+    gpu_depths = cpu_depths;
+    renderer.upload(gpu_colors, gpu_depths);
+    const unsigned maps = profile % 5;
+    bp[0] = 1 | (1 << 4) | (maps << 16);
+    bp[0x43] = profile & 1 ? 64 : 0;
+    bp[0x40] = profile < 2 ? 0 : 1 | (((profile >> 1) & 7) << 1) | 16;
+    bp[0xf3] = profile < 2 ? (7 << 16) | (7 << 19)
+                           : 137 | (205 << 8) | (((profile >> 3) & 7) << 16) |
+                                 (((profile >> 5) & 7) << 19) | (((profile >> 6) & 3) << 22);
+    gfx::RasterWork work{};
+    const int width = extents[profile % extents.size()];
+    const int height = extents[(profile / extents.size()) % extents.size()];
+    work.left = static_cast<int>(generator() % (641 - width));
+    work.top = static_cast<int>(generator() % (529 - height));
+    work.right = work.left + width;
+    work.bottom = work.top + height;
+    work.edges.fill({0, 0, 1});
+    if (profile % 4 == 2)
+      work.edges[0] = {1, 1, (work.left - work.top) * 16 + 1};
+    if (profile % 4 == 3)
+      work.edges[1] = {0, -1, -(work.left + width / 2) * 16 + 1};
+    work.depth.value = 97;
+    work.depth.dx = 7;
+    work.depth.dy = 11;
+    work.depth.x_origin = work.left;
+    work.depth.y_origin = work.top;
+    work.reciprocal_w.value = 1;
+    work.colors[0][3] = work.depth;
+    work.textures[0][0].value = -3;
+    work.textures[0][0].dx = 0.75f;
+    work.textures[0][0].dy = 0.25f;
+    work.textures[0][1].value = 5;
+    work.textures[0][1].dx = -0.5f;
+    work.textures[0][1].dy = 1.25f;
+    gfx::HardwareStats expected;
+    for (unsigned draw = 0; draw < 2; ++draw) {
+      CHECK(renderer.begin(bp, colors, konst));
+      CHECK(renderer.draw(work));
+      for (int by = work.top & ~1; by < work.bottom; by += 2)
+        for (int bx = work.left & ~1; bx < work.right; bx += 2)
+          for (int iy = 0; iy < 2; ++iy)
+            for (int ix = 0; ix < 2; ++ix) {
+              const int x = bx + ix, y = by + iy;
+              if (x < work.left || x >= work.right || y < work.top || y >= work.bottom)
+                continue;
+              bool covered = true;
+              for (const auto &edge : work.edges)
+                covered &= edge.constant + edge.dx * y * 16 - edge.dy * x * 16 > 0;
+              if (!covered)
+                continue;
+              const auto offset = static_cast<unsigned>(y * 640 + x);
+              u32 depth = static_cast<u32>(work.depth.at(x, y));
+              const auto depth_test = [&] {
+                if (!(bp[0x40] & 1))
+                  return true;
+                if (!gfx::compare((bp[0x40] >> 1) & 7, depth, cpu_depths[offset]))
+                  return false;
+                if (bp[0x40] & 16)
+                  cpu_depths[offset] = depth;
+                return true;
+              };
+              const bool early = (bp[0x43] & 64) != 0;
+              if (early && !depth_test())
+                continue;
+              gfx::FragmentInputs inputs;
+              inputs.colors[0][3] =
+                  static_cast<u8>(std::clamp(work.colors[0][3].at(x, y), 0.0f, 255.0f));
+              for (unsigned component = 0; component < 2; ++component) {
+                const auto &plane = work.textures[0][component];
+                inputs.uv[0][component] = plane.at(x, y);
+                inputs.dx[0][component] = plane.at(bx + 1, by) - plane.at(bx, by);
+                inputs.dy[0][component] = plane.at(bx, by + 1) - plane.at(bx, by);
+              }
+              const auto result = software.shade(inputs, &depth);
+              if (!result || (!early && !depth_test()))
+                continue;
+              cpu_colors[offset] =
+                  (u32((*result)[0]) << 16) | (u32((*result)[1]) << 8) | (*result)[2];
+              ++expected.fragments;
+              expected.left = std::min(expected.left, u32(x) & ~1u);
+              expected.right = std::max(expected.right, u32(x) | 1u);
+              expected.top = std::min(expected.top, u32(y) & ~1u);
+              expected.bottom = std::max(expected.bottom, u32(y) | 1u);
+            }
+      work.textures[0][0].value += 2.5f;
+    }
+    const auto actual = renderer.synchronize(gpu_colors, gpu_depths, &hardware);
+    expected_raster_calls += width * height <= 256 ? 1 : 2;
+    CHECK(actual.dispatches == expected_raster_calls);
+    CHECK(actual.fallback_rectangles == 0);
+    CHECK(actual.fragments == expected.fragments);
+    CHECK(actual.left == expected.left && actual.right == expected.right);
+    CHECK(actual.top == expected.top && actual.bottom == expected.bottom);
+    CHECK(cpu_colors == gpu_colors && cpu_depths == gpu_depths);
+    CHECK(software.texture_state() == hardware.texture_state());
+    checked_fragments += expected.fragments;
+  }
+  std::cout << "Verified 512 queued counter draws with partial groups, coverage/alpha/depth "
+               "rejection and all map latches; accepted fragments="
+            << checked_fragments << '\n';
+}
+
+void counter_benchmark() {
+  Memory memory{Console::GameCube};
+  std::vector<u8> tmem(1024 * 1024);
+  gfx::HardwareRenderer renderer(memory, tmem);
+  std::array<u32, 256> bp{};
+  gfx::TevRegisters colors{}, konst{};
+  bp[0] = 1 << 4;
+  bp[0x40] = 1 | 14 | 16;
+  bp[0x41] = 24;
+  bp[0xf6] = 4;
+  bp[0xf7] = 14;
+  bp[0xf3] = (7 << 16) | (7 << 19);
+  bp[0xc0] = 0xfffa | (1 << 19);
+  bp[0xc1] = (7 << 13) | (7 << 10) | (7 << 7) | (5 << 4) | (1 << 19);
+  gfx::RasterWork work{};
+  work.right = 640;
+  work.bottom = 528;
+  work.edges.fill({0, 0, 1});
+  work.depth.value = 12345;
+  for (unsigned c = 0; c < 4; ++c)
+    work.colors[0][c].value = gfx::Color{211, 105, 65, 177}[c];
+  std::vector<u32> pixels(640 * 528), depths(pixels.size());
+  renderer.upload(pixels, depths);
+  CHECK(renderer.begin(bp, colors, konst));
+  CHECK(renderer.draw(work));
+  renderer.synchronize(pixels, depths);
+  const auto start = std::chrono::steady_clock::now();
+  for (unsigned draw = 0; draw < 64; ++draw)
+    CHECK(renderer.draw(work));
+  const auto stats = renderer.synchronize(pixels, depths);
+  const double elapsed =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  CHECK(stats.fragments == 64 * pixels.size());
+  CHECK(stats.left == 0 && stats.right == 639 && stats.top == 0 && stats.bottom == 527);
+  CHECK(stats.fallback_rectangles == 0);
+  CHECK(std::all_of(pixels.begin(), pixels.end(), [](u32 value) { return value == 0xd36941; }));
+  CHECK(std::all_of(depths.begin(), depths.end(), [](u32 value) { return value == 12345; }));
+  std::cout << "Verified 64 warm full EFB rectangles: OpenGL seconds=" << elapsed
+            << ", device=" << renderer.device() << '\n';
+}
+
+void logical_sequence_cap_checks() {
+  auto software = std::make_unique<Fixture>(), hardware = std::make_unique<Fixture>();
+  hardware->graphics.set_hardware_rendering(true);
+  const std::array<std::array<float, 3>, 3> triangle{
+      {{-1, -1, -0.5f}, {-0.9375f, -1, -0.5f}, {-1, -0.9375f, -0.5f}}};
+  const std::array<u32, 3> color{0x4997d9ff, 0x4997d9ff, 0x4997d9ff};
+  for (unsigned i = 0; i < 4095; ++i) {
+    software->draw(0x90, triangle, color);
+    hardware->draw(0x90, triangle, color);
+  }
+  const auto total = software->graphics.fragment_count();
+  CHECK(total > 0 && total % 4095 == 0);
+  const auto per_triangle = total / 4095;
+  auto stats = hardware->graphics.hardware_stats();
+  CHECK(hardware->graphics.fragment_count() == total);
+  CHECK(stats.fragments == 4094 * per_triangle);
+  CHECK(total - stats.fragments == per_triangle);
+  CHECK(stats.fallback_rectangles == 1);
+  CHECK(stats.dispatches == 256);
+  for (unsigned y = 0; y < 528; ++y)
+    for (unsigned x = 0; x < 640; ++x) {
+      CHECK(software->graphics.color(x, y) == hardware->graphics.color(x, y));
+      CHECK(software->graphics.depth(x, y) == hardware->graphics.depth(x, y));
+    }
+  for (u32 address = 0x0c001010; address < 0x0c001018; address += 2)
+    CHECK(software->graphics.read(address, 2) == hardware->graphics.read(address, 2));
+  const auto previous_calls = stats.dispatches;
+  software->draw(0x90, triangle, color);
+  hardware->draw(0x90, triangle, color);
+  stats = hardware->graphics.hardware_stats();
+  CHECK(hardware->graphics.fragment_count() == 4096 * per_triangle);
+  CHECK(stats.fragments == 4095 * per_triangle && stats.fallback_rectangles == 1);
+  CHECK(stats.dispatches == previous_calls + 1);
+  equal(*software, *hardware);
+  std::cout << "Verified 4094 logical latch-sequence cap, one CPU fallback triangle, exact CPU/GPU "
+               "accepted-fragment sum and physical raster calls\n";
+}
+
+void empty_coverage_checks() {
+  Memory memory(Console::GameCube);
+  std::array<u32, 256> bp{};
+  gfx::TevRegisters colors{}, konst{};
+  std::vector<u8> tmem(1024 * 1024);
+  gfx::FragmentShader shader(memory, bp, colors, konst, tmem);
+  gfx::HardwareRenderer renderer(memory, tmem);
+  bp[0] = 1 << 4;
+  bp[0x40] = 1 | 14 | 16;
+  bp[0x41] = 24;
+  bp[0xf6] = 4;
+  bp[0xf7] = 14;
+  bp[0xf3] = (7 << 16) | (7 << 19);
+  bp[0xc0] = 0xfffa | (1 << 19);
+  bp[0xc1] = (7 << 13) | (7 << 10) | (7 << 7) | (5 << 4) | (1 << 19);
+  std::vector<u32> cpu_colors(640 * 528), cpu_depths(cpu_colors.size());
+  for (unsigned i = 0; i < cpu_colors.size(); ++i) {
+    cpu_colors[i] = (i * 103 + 19) & 0xffffff;
+    cpu_depths[i] = (i * 97 + 23) & 0xffffff;
+  }
+  auto gpu_colors = cpu_colors, gpu_depths = cpu_depths;
+  renderer.upload(gpu_colors, gpu_depths);
+  gfx::RasterWork work{};
+  work.left = 17;
+  work.top = 13;
+  work.right = 18;
+  work.bottom = 14;
+  work.edges.fill({0, 0, 1});
+  work.depth.value = 0x123456;
+  for (unsigned c = 0; c < 4; ++c)
+    work.colors[0][c].value = gfx::Color{73, 151, 217, 255}[c];
+  CHECK(renderer.begin(bp, colors, konst));
+  CHECK(renderer.draw(work));
+  auto stats = renderer.synchronize(gpu_colors, gpu_depths, &shader);
+  cpu_colors[13 * 640 + 17] = 0x4997d9;
+  cpu_depths[13 * 640 + 17] = 0x123456;
+  CHECK(stats.dispatches == 1 && stats.fragments == 1 && stats.fallback_rectangles == 0);
+  CHECK(cpu_colors == gpu_colors && cpu_depths == gpu_depths);
+  const auto retained = shader.texture_state();
+
+  struct CapturedRectangle {
+    std::array<int, 4> bounds;
+    std::array<gfx::RasterWork::Edge, 3> edges;
+    unsigned adjusted_edge;
+    s64 positive_adjustment;
+  };
+
+  // Fixed-point edge sets from small clipped title-animation rectangles.
+  constexpr std::array<CapturedRectangle, 6> captured{{
+      {{638, 226, 640, 227}, {{{32, 0, -115487}, {-32, -8, 33897}, {0, 8, 81848}}}, 1, 24},
+      {{639, 128, 640, 129}, {{{-14, -6, -32685}, {0, 8, 81848}, {14, -2, -49049}}}, 0, 14},
+      {{639, 9, 640, 10}, {{{-16, -9, -89566}, {0, 15, 153465}, {16, -6, -63657}}}, 2, 10},
+      {{483, 455, 485, 456}, {{{27, 10, -119199}, {-3, -10, -55448}, {-24, 0, 174888}}}, 1, 9},
+      {{0, 15, 1, 17}, {{{-19, -8, 4842}, {19, 30, -4621}, {0, -22, 199}}}, 1, 62},
+      {{0, 205, 1, 233}, {{{10, -441, -33160}, {-1, 0, 3713}, {-9, 441, 29889}}}, 0, 41},
+  }};
+  const auto configure = [&](const CapturedRectangle &rectangle) {
+    work.left = rectangle.bounds[0];
+    work.top = rectangle.bounds[1];
+    work.right = rectangle.bounds[2];
+    work.bottom = rectangle.bounds[3];
+    work.edges = rectangle.edges;
+  };
+  const auto covered = [&](int x, int y) {
+    return std::all_of(work.edges.begin(), work.edges.end(), [&](const auto &edge) {
+      return edge.constant + edge.dx * y * 16 - edge.dy * x * 16 > 0;
+    });
+  };
+  for (unsigned i = 0; i < captured.size(); ++i) {
+    configure(captured[i]);
+    for (int y = work.top; y < work.bottom; ++y)
+      for (int x = work.left; x < work.right; ++x)
+        CHECK(!covered(x, y));
+    CHECK(renderer.draw(work));
+    if (i < 3) {
+      work.edges[captured[i].adjusted_edge].constant += captured[i].positive_adjustment - 1;
+      for (int y = work.top; y < work.bottom; ++y)
+        for (int x = work.left; x < work.right; ++x)
+          CHECK(!covered(x, y));
+      CHECK(renderer.draw(work));
+    }
+  }
+  stats = renderer.synchronize(gpu_colors, gpu_depths, &shader);
+  CHECK(stats.dispatches == 1 && stats.fragments == 0 && stats.fallback_rectangles == 0);
+  CHECK(stats.left == 0xffffffff && stats.right == 0 && stats.top == 0xffffffff &&
+        stats.bottom == 0);
+  CHECK(cpu_colors == gpu_colors && cpu_depths == gpu_depths);
+  CHECK(shader.texture_state() == retained);
+
+  for (const auto &rectangle : captured) {
+    configure(rectangle);
+    work.edges[rectangle.adjusted_edge].constant += rectangle.positive_adjustment;
+    unsigned samples = 0;
+    for (int y = work.top; y < work.bottom; ++y)
+      for (int x = work.left; x < work.right; ++x)
+        if (covered(x, y)) {
+          ++samples;
+          cpu_colors[y * 640 + x] = 0x4997d9;
+          cpu_depths[y * 640 + x] = 0x123456;
+        }
+    CHECK(samples == 1);
+    CHECK(renderer.draw(work));
+  }
+  stats = renderer.synchronize(gpu_colors, gpu_depths, &shader);
+  CHECK(stats.dispatches == 7 && stats.fragments == 6 && stats.fallback_rectangles == 0);
+  CHECK(stats.left == 0 && stats.right == 639 && stats.top == 8 && stats.bottom == 455);
+  CHECK(cpu_colors == gpu_colors && cpu_depths == gpu_depths);
+  CHECK(shader.texture_state() == retained);
+
+  for (unsigned i = 0; i < 256; ++i)
+    memory.write8(0x80000 + i, static_cast<u8>(i * 37 + 19));
+  bp[0] |= 1;
+  bp[0x28] = 64;
+  bp[0x88] = 7 | (7 << 10) | (6 << 20);
+  bp[0x94] = 0x80000 >> 5;
+  bp[0xc0] = 0xfff8 | (1 << 19);
+  work.left = 41;
+  work.top = 43;
+  work.right = 42;
+  work.bottom = 44;
+  work.edges.fill({0, 0, 1});
+  work.textures[0][0].value = 0.5f;
+  work.textures[0][1].value = 1.5f;
+  gfx::FragmentShader textured_software(memory, bp, colors, konst, tmem);
+  gfx::FragmentInputs input;
+  input.colors[0] = {73, 151, 217, 255};
+  input.uv[0] = {0.5f, 1.5f};
+  u32 depth = 0x123456;
+  const auto sampled = textured_software.shade(input, &depth);
+  CHECK(sampled.has_value());
+  const u32 sampled_color = (u32((*sampled)[0]) << 16) | (u32((*sampled)[1]) << 8) | (*sampled)[2];
+  CHECK(renderer.begin(bp, colors, konst));
+  CHECK(renderer.draw(work));
+  stats = renderer.synchronize(gpu_colors, gpu_depths, &shader);
+  cpu_colors[43 * 640 + 41] = sampled_color;
+  cpu_depths[43 * 640 + 41] = depth;
+  CHECK(stats.dispatches == 8 && stats.fragments == 1 && stats.fallback_rectangles == 0);
+  CHECK(cpu_colors == gpu_colors && cpu_depths == gpu_depths);
+  CHECK(shader.texture_state().texture != gfx::Color{});
+  CHECK(shader.texture_state() == textured_software.texture_state());
+  for (const auto &rectangle : captured) {
+    configure(rectangle);
+    CHECK(renderer.draw(work));
+  }
+  stats = renderer.synchronize(gpu_colors, gpu_depths, &shader);
+  CHECK(stats.dispatches == 8 && stats.fragments == 0 && stats.fallback_rectangles == 0);
+  CHECK(cpu_colors == gpu_colors && cpu_depths == gpu_depths);
+  CHECK(shader.texture_state() == textured_software.texture_state());
+  configure(captured[0]);
+  work.edges[captured[0].adjusted_edge].constant += captured[0].positive_adjustment;
+  CHECK(textured_software.shade(input, &depth).has_value());
+  CHECK(renderer.draw(work));
+  stats = renderer.synchronize(gpu_colors, gpu_depths, &shader);
+  cpu_colors[226 * 640 + 639] = sampled_color;
+  cpu_depths[226 * 640 + 639] = depth;
+  CHECK(stats.dispatches == 9 && stats.fragments == 1 && stats.fallback_rectangles == 0);
+  CHECK(cpu_colors == gpu_colors && cpu_depths == gpu_depths);
+  CHECK(shader.texture_state() == textured_software.texture_state());
+  std::cout
+      << "Verified six captured empty rectangles, strict boundaries and six visible neighbors, "
+         "nonzero retained texture state, device="
+      << renderer.device() << '\n';
+}
+
 void benchmark(Fixture &software, Fixture &hardware) {
   const std::array<std::array<float, 3>, 4> quad{
       {{-1, -1, -0.5f}, {1, -1, -0.5f}, {1, 1, -0.5f}, {-1, 1, -0.5f}}};
@@ -1276,13 +1969,20 @@ void benchmark(Fixture &software, Fixture &hardware) {
 int main(int argc, char **argv) {
   Fixture software, hardware;
   bool required = false, measure = false, fog_only = false, texture_cache_only = false,
-       xfb_only = false;
+       xfb_only = false, projection_only = false, state_only = false, fixed_lod_only = false,
+       counter_only = false, counter_benchmark_only = false, empty_coverage_only = false;
   for (int i = 1; i < argc; ++i) {
     required |= std::strcmp(argv[i], "--require-device") == 0;
     measure |= std::strcmp(argv[i], "--benchmark") == 0;
     fog_only |= std::strcmp(argv[i], "--fog-only") == 0;
     texture_cache_only |= std::strcmp(argv[i], "--texture-cache-only") == 0;
     xfb_only |= std::strcmp(argv[i], "--xfb-only") == 0;
+    projection_only |= std::strcmp(argv[i], "--projection-only") == 0;
+    state_only |= std::strcmp(argv[i], "--state-only") == 0;
+    fixed_lod_only |= std::strcmp(argv[i], "--fixed-lod-only") == 0;
+    counter_only |= std::strcmp(argv[i], "--counter-only") == 0;
+    counter_benchmark_only |= std::strcmp(argv[i], "--counter-benchmark-only") == 0;
+    empty_coverage_only |= std::strcmp(argv[i], "--empty-coverage-only") == 0;
   }
   try {
     hardware.graphics.set_hardware_rendering(true);
@@ -1294,6 +1994,38 @@ int main(int argc, char **argv) {
     return 1;
   }
   return run_tests([&] {
+    if (empty_coverage_only) {
+      logical_sequence_cap_checks();
+      empty_coverage_checks();
+      return;
+    }
+    if (counter_benchmark_only) {
+      counter_benchmark();
+      return;
+    }
+    if (counter_only) {
+      counter_checks();
+      if (measure)
+        counter_benchmark();
+      return;
+    }
+    if (state_only) {
+      state_upload_checks(measure);
+      return;
+    }
+    if (fixed_lod_only) {
+      projective_mip_checks();
+      if (measure)
+        projective_stage_benchmark(true);
+      return;
+    }
+    if (projection_only) {
+      projection_precision_checks();
+      projective_mip_checks();
+      if (measure)
+        projective_stage_benchmark();
+      return;
+    }
     if (xfb_only) {
       xfb_checks(measure);
       xfb_clear_checks();
@@ -1305,6 +2037,12 @@ int main(int argc, char **argv) {
       return;
     }
     if (!fog_only) {
+      empty_coverage_checks();
+      counter_checks();
+      logical_sequence_cap_checks();
+      state_upload_checks(false);
+      projection_precision_checks();
+      projective_mip_checks();
       checks(software, hardware);
       indirect_checks(software, hardware);
       indirect_state_checks();

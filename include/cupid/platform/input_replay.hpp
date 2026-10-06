@@ -5,6 +5,7 @@
 #include <array>
 #include <filesystem>
 #include <istream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -22,6 +23,15 @@ public:
   bool needs_update(u64 instructions, u64 fields) const {
     return !initialized_ || ((pending_ & 1) && instructions >= next_[0]) ||
            ((pending_ & 2) && fields >= next_[1]);
+  }
+
+  // Fields must stay unchanged during this interval. An instruction event is
+  // applied before the attempt that starts at its counter, after the last
+  // preceding instruction has completed.
+  u64 event_free_instructions(u64 instructions, u64 fields) const {
+    if (needs_update(instructions, fields))
+      return 0;
+    return (pending_ & 1) ? next_[0] - instructions : std::numeric_limits<u64>::max();
   }
 
   bool update(u64 instructions, u64 fields);

@@ -6,6 +6,176 @@
 #include <vector>
 
 namespace {
+void plain_cpu_ram(cupid::Console console) {
+  using namespace cupid;
+  Memory memory(console);
+  unsigned observations = 0;
+  memory.memory_error = [&] { ++observations; };
+  memory.mmio_handles = [&](u32) {
+    ++observations;
+    return true;
+  };
+  memory.mmio_read = [&](u32, unsigned) {
+    ++observations;
+    return 0;
+  };
+  memory.mmio_write = [&](u32, u32, unsigned) { ++observations; };
+  memory.fifo_write = [&](u8) { ++observations; };
+  std::vector<u32> bases{0x1000u,     0x01801000u, 0x02001000u, 0x04001000u,
+                         0x06001000u, 0xe0001000u, 0xe003ff80u};
+  if (console == Console::Wii)
+    bases.insert(bases.end(), {0x10001000u, 0x13ffff80u});
+  for (u32 base : bases) {
+    for (unsigned width : {1u, 2u, 4u, 8u}) {
+      for (unsigned offset : {0u, 1u, 3u, 7u}) {
+        for (unsigned n = 0; n < 32; ++n)
+          memory.write_cpu_data(base + n, 0x40u + n, 1);
+        const auto bytes = memory.plain_cpu_ram(base + offset, width);
+        CHECK(bytes.size() == width);
+        for (unsigned n = 0; n < width; ++n)
+          CHECK(bytes[n] == 0x40u + offset + n);
+        bytes.back() = 0xa5;
+        for (unsigned n = 0; n < 32; ++n)
+          CHECK(memory.read_cpu_data(base + n, 1) == (n == offset + width - 1 ? 0xa5u : 0x40u + n));
+      }
+    }
+  }
+  for (unsigned width : {1u, 2u, 4u, 8u}) {
+    for (u32 end : {0x1000u, 0x01800000u, 0x02000000u, 0x04000000u, 0x08000000u, 0xe0040000u}) {
+      CHECK(memory.plain_cpu_ram(end - width, width).size() == width);
+      if (width > 1)
+        CHECK(memory.plain_cpu_ram(end - width + 1, width).empty());
+    }
+    CHECK(memory.plain_cpu_ram(0x10000000, width).empty() == (console == Console::GameCube));
+    CHECK(memory.plain_cpu_ram(0x14000000 - width, width).empty() ==
+          (console == Console::GameCube));
+    for (u32 address : {0x08000000u, 0x0c003000u, 0x0c008000u, 0x14000000u, 0x20000000u,
+                        0x80001000u, 0xc0001000u, 0xe0040000u, 0xfffffff8u})
+      CHECK(memory.plain_cpu_ram(address, width).empty());
+  }
+  memory.write_cpu_data(0x1000, 0x12345678, 4);
+  for (unsigned width : {0u, 3u, 5u, 7u, 9u, 32u, 0xffffffffu})
+    CHECK(memory.plain_cpu_ram(0x1000, width).empty());
+  CHECK(memory.read_cpu_data(0x1000, 4) == 0x12345678);
+  CHECK(observations == 0);
+  CHECK(memory.page_table_write_errors() == 0 && memory.instruction_backing_read_errors() == 0);
+}
+
+void cpu_ram_line_clear(cupid::Console console) {
+  using namespace cupid;
+  Memory memory(console);
+  unsigned errors = 0, device_writes = 0, fifo_bytes = 0;
+  memory.memory_error = [&] { ++errors; };
+  memory.mmio_handles = [](u32 address) { return address >= 0x08000000 && address < 0x10000000; };
+  memory.mmio_write = [&](u32, u32, unsigned) { ++device_writes; };
+  memory.fifo_write = [&](u8) { ++fifo_bytes; };
+  std::vector<u32> lines{0u,          0x20u,       0xfe0u,      0x1000u,     0x017fffe0u,
+                         0x01800000u, 0x01ffffe0u, 0x02000000u, 0x03ffffe0u, 0x04000000u,
+                         0x07ffffe0u, 0xe0000000u, 0xe0000fe0u, 0xe003ffe0u};
+  if (console == Console::Wii)
+    lines.insert(lines.end(), {0x10000000u, 0x10000fe0u, 0x13ffffe0u});
+  for (u32 address : lines) {
+    for (unsigned offset = 0; offset < 32; ++offset)
+      memory.write_cpu_data(address + offset, 1u + offset * 7, 1);
+    CHECK(memory.try_clear_cpu_ram_line(address));
+    for (unsigned offset = 0; offset < 32; ++offset)
+      CHECK(memory.read_cpu_data(address + offset, 1) == 0);
+  }
+  // The fast transfer may not broaden the CPU's physical aliases or silently
+  // replace observable device stores. Unaligned requests also leave RAM intact.
+  memory.write_cpu_data(0x1000, 0xaabbccdd, 4);
+  for (u32 address : {1u, 0x1001u, 0x07fffffcu, 0x08000000u, 0x0c003000u, 0x0c008000u, 0x14000000u,
+                      0x20000000u, 0x80001000u, 0xc0001000u, 0xe0040000u, 0xffffffe0u})
+    CHECK(!memory.try_clear_cpu_ram_line(address));
+  if (console == Console::GameCube)
+    CHECK(!memory.try_clear_cpu_ram_line(0x10000000));
+  CHECK(memory.read_cpu_data(0x1000, 4) == 0xaabbccdd);
+  CHECK(errors == 0 && device_writes == 0 && fifo_bytes == 0);
+  CHECK(memory.page_table_write_errors() == 0 && memory.instruction_backing_read_errors() == 0);
+  for (u32 address : {0xff0u, 0x017fffd0u, 0x01800100u, 0x01ffffd0u, 0xe003ffb0u}) {
+    for (unsigned offset = 0; offset < 64; ++offset)
+      memory.write_cpu_data(address + offset, 0x5a, 1);
+    const u32 line = (address + 31) & ~31u;
+    CHECK(memory.try_clear_cpu_ram_line(line));
+    for (unsigned offset = 0; offset < 64; ++offset)
+      CHECK(memory.read_cpu_data(address + offset, 1) ==
+            (address + offset >= line && address + offset < line + 32 ? 0u : 0x5au));
+  }
+  CHECK(errors == 0 && device_writes == 0 && fifo_bytes == 0);
+}
+
+void stable_fetch_backing(cupid::Console console) {
+  using namespace cupid;
+  Memory memory(console);
+  u32 key = 0xdeadbeef;
+  for (u32 alias : {0u, 0x40000000u, 0x80000000u, 0xc0000000u}) {
+    for (u32 address : {0u, 4u, 28u, 0x1000u, Memory::mem1_size - 4}) {
+      CHECK(memory.stable_instruction_cache_key(alias | address, key));
+      CHECK(key == memory.instruction_cache_key(alias | address));
+    }
+    for (u32 address : {1u, 0x017ffffdu, Memory::mem1_size, 0x01fffffcu, 0x04000000u, 0x08000000u,
+                        0x0c003000u, 0x20000040u}) {
+      key = 0xdeadbeef;
+      CHECK(!memory.stable_instruction_cache_key(alias | address, key));
+      CHECK(key == 0xdeadbeef);
+    }
+    for (u32 address : {0x10000000u, 0x10000004u, 0x13fffffcu}) {
+      key = 0xdeadbeef;
+      const bool accepted = memory.stable_instruction_cache_key(alias | address, key);
+      CHECK(accepted == (console == Console::Wii));
+      CHECK(key == (accepted ? memory.instruction_cache_key(alias | address) : 0xdeadbeef));
+    }
+  }
+  for (u32 address : {0x14000000u, 0x54000040u, 0xe0000000u, 0xe003fffcu, 0xc6000040u}) {
+    key = 0xdeadbeef;
+    CHECK(!memory.stable_instruction_cache_key(address, key));
+    CHECK(key == 0xdeadbeef);
+  }
+  CHECK(memory.instruction_backing_read_errors() == 0);
+  CHECK(memory.page_table_write_errors() == 0);
+}
+
+void cpu_word_transfers(cupid::Console console) {
+  using namespace cupid;
+  Memory memory(console);
+  unsigned errors = 0;
+  memory.memory_error = [&] { ++errors; };
+  std::vector<u32> bases{0xff0, 0x017fffc0, 0x01801000, 0x02001000, 0xe0000ff0, 0xe003ff80};
+  if (console == Console::Wii)
+    bases.insert(bases.end(), {0x10000ff0, 0x13ffff80});
+  for (u32 base : bases) {
+    std::array<u8, 128> expected{};
+    const auto initialize = [&] {
+      for (unsigned n = 0; n < expected.size(); ++n) {
+        expected[n] = static_cast<u8>(n * 73 + (base >> 12));
+        memory.write_cpu_data(base + n, expected[n], 1);
+      }
+    };
+    initialize();
+    for (unsigned offset = 0; offset < 64; ++offset) {
+      for (unsigned width : {1u, 2u, 4u, 8u}) {
+        u64 value = 0;
+        for (unsigned n = 0; n < width; ++n)
+          value = (value << 8) | expected[offset + n];
+        CHECK(memory.read_cpu_data(base + offset, width) == value);
+      }
+      for (unsigned width : {1u, 2u, 3u, 4u}) {
+        for (u32 value : {0u, 1u, 0x80000000u, 0xffffffffu, 0x11223344u, 0xfedcba98u}) {
+          initialize();
+          memory.write_cpu_data(base + offset, value, width);
+          for (unsigned n = 0; n < width; ++n)
+            expected[offset + n] = static_cast<u8>(value >> ((width - n - 1) * 8));
+          // Includes both sentinels around the transfer and the partial-word
+          // writes used by string stores. Some addresses cross a guest page.
+          for (unsigned n = 0; n < expected.size(); ++n)
+            CHECK(memory.read_cpu_data(base + n, 1) == expected[n]);
+        }
+      }
+    }
+  }
+  CHECK(errors == 0);
+}
+
 void fifo_page(cupid::Console console) {
   cupid::Memory memory(console);
   std::vector<cupid::u8> captured, expected;
@@ -319,6 +489,14 @@ void instruction_byte_reads(cupid::Console console) {
 
 int main() {
   return run_tests([] {
+    plain_cpu_ram(cupid::Console::GameCube);
+    plain_cpu_ram(cupid::Console::Wii);
+    cpu_ram_line_clear(cupid::Console::GameCube);
+    cpu_ram_line_clear(cupid::Console::Wii);
+    stable_fetch_backing(cupid::Console::GameCube);
+    stable_fetch_backing(cupid::Console::Wii);
+    cpu_word_transfers(cupid::Console::GameCube);
+    cpu_word_transfers(cupid::Console::Wii);
     fifo_page(cupid::Console::GameCube);
     fifo_page(cupid::Console::Wii);
     memory_error_signal(cupid::Console::GameCube);

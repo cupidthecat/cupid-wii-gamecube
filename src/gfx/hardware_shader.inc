@@ -4,14 +4,61 @@ R"glsl(#version 430 core
 layout(local_size_x=8, local_size_y=8) in;
 layout(std430, binding=0) buffer Efb { uint efb[]; };
 layout(std430, binding=1) readonly buffer State { uint state[]; };
-layout(std430, binding=2) buffer Counters { uint counters[]; };
+layout(std430, binding=2) coherent buffer Counters { uint counters[]; };
 layout(std430, binding=3) readonly buffer Work { uint work[]; };
 layout(std430, binding=4) readonly buffer Textures { uint textures[]; };
 layout(std430, binding=5) buffer TextureState { uint texture_state[]; };
 layout(std430, binding=6) readonly buffer FogThresholds { uint fog_thresholds[]; };
 
-float fog_divide(float numerator, float denominator) {
+float rounded_divide(float numerator, float denominator) {
   return float(double(numerator)/double(denominator));
+}
+
+double positive_float_value(uint bits) {
+  uint fraction=bits&8388607u,exponent=bits>>23u;
+  if (exponent==0u) {
+    if (fraction==0u) return 0.0LF;
+    int leading=findMSB(fraction);
+    fraction=(fraction<<uint(23-leading))&8388607u;
+    exponent=uint(leading+874);
+  } else exponent+=896u;
+  return packDouble2x32(uvec2(fraction<<29u,(exponent<<20u)|(fraction>>3u)));
+}
+bool above_float_midpoint(double numerator,double denominator,uint lower) {
+  precise double first=positive_float_value(lower);
+  // The conceptual successor of the greatest finite binary32 value is 2^128.
+  precise double second=lower==2139095039u ? packDouble2x32(uvec2(0u,1151u<<20u)) : positive_float_value(lower+1u);
+  precise double midpoint=(first+second)*0.5LF;
+  // Midpoint and denominator have at most 25 and 24 significand bits.
+  precise double product=midpoint*denominator;
+  return numerator>product || (numerator==product && (lower&1u)!=0u);
+}
+float fog_divide(float numerator,float denominator) {
+  uint nbits=floatBitsToUint(numerator),dbits=floatBitsToUint(denominator);
+  uint sign=(nbits^dbits)&2147483648u;
+  nbits&=2147483647u; dbits&=2147483647u;
+  if (nbits>2139095040u || dbits>2139095040u ||
+      (nbits==0u && dbits==0u) || (nbits==2139095040u && dbits==2139095040u))
+    return uintBitsToFloat(2143289344u);
+  if (dbits==0u || nbits==2139095040u) return uintBitsToFloat(2139095040u|sign);
+  if (dbits==2139095040u) return uintBitsToFloat(sign);
+  if (nbits==0u) return uintBitsToFloat(sign);
+  precise double n=positive_float_value(nbits),d=positive_float_value(dbits);
+  uint candidate=floatBitsToUint(rounded_divide(numerator,denominator))&2147483647u;
+  if (candidate>2139095040u) candidate=2139095040u;
+  for (uint attempt=0u;attempt<8u;++attempt) {
+    if (candidate!=0u && !above_float_midpoint(n,d,candidate-1u)) --candidate;
+    else if (candidate!=2139095040u && above_float_midpoint(n,d,candidate)) ++candidate;
+    else return uintBitsToFloat(candidate|sign);
+  }
+  // An estimate flushed to zero can be far from a nonzero subnormal quotient.
+  uint lower=0u,upper=2139095040u;
+  while (lower<upper) {
+    uint middle=lower+(upper-lower)/2u;
+    if (above_float_midpoint(n,d,middle)) lower=middle+1u;
+    else upper=middle;
+  }
+  return uintBitsToFloat(lower|sign);
 }
 
 bool compare_value(uint mode, uint value, uint reference) {
@@ -123,42 +170,68 @@ ivec4 sample_mip(uint unit, ivec2 coordinate, uint level, bool linear) {
           fetch_texture(unit,pixel+ivec2(1,1),level)*fraction.x*fraction.y)>>14;
 }
 vec2 projected_uv(uint coordinate, ivec2 pixel) {
-  precise float reciprocal=1.0/plane(1u,pixel);
+  precise float reciprocal=rounded_divide(1.0,plane(1u,pixel));
   precise float q=plane(12u+coordinate*3u,pixel)*reciprocal;
-  precise float projection=q!=0.0 ? reciprocal/q : reciprocal;
+  precise float projection=q!=0.0 ? rounded_divide(reciprocal,q) : reciprocal;
   precise vec2 result=vec2(plane(10u+coordinate*3u,pixel),plane(11u+coordinate*3u,pixel))*projection;
   return result;
+}
+uint projected_coordinate=8u;
+bool projected_derivatives_ready=false;
+precise vec2 projected_value,projected_dx,projected_dy;
+void prepare_projection(uint coordinate, ivec2 pixel, bool derivatives) {
+  if (projected_coordinate!=coordinate) {
+    projected_value=projected_uv(coordinate,pixel);
+    projected_coordinate=coordinate;
+    projected_derivatives_ready=false;
+  }
+  if (derivatives && !projected_derivatives_ready) {
+    ivec2 block=pixel&~ivec2(1);
+    precise vec2 origin=projected_uv(coordinate,block);
+    projected_dx=projected_uv(coordinate,block+ivec2(1,0))-origin;
+    projected_dy=projected_uv(coordinate,block+ivec2(0,1))-origin;
+    projected_derivatives_ready=true;
+  }
 }
 int coordinate_bits(int value) {
   return int((uint(value)&16777215u)^8388608u)-8388608;
 }
 ivec2 fixed_coordinates(uint coordinate, ivec2 pixel) {
   if ((state[0]&15u)==0u) return ivec2(0);
-  precise vec2 uv=projected_uv(coordinate,pixel);
-  ivec2 fixed_uv=ivec2(uv*128.0)&ivec2(16777215);
+  prepare_projection(coordinate,pixel,false);
+  ivec2 fixed_uv=ivec2(projected_value*128.0)&ivec2(16777215);
   return (fixed_uv^ivec2(8388608))-ivec2(8388608);
 }
-ivec4 sample_texture(uint unit, uint coordinate, ivec2 pixel, ivec2 fixed_uv) {
-  uint mode=texture_register(unit,0u),mode1=texture_register(unit,1u);
-  ivec2 block=pixel&~ivec2(1);
-  precise vec2 origin=projected_uv(coordinate,block);
-  precise vec2 dx=projected_uv(coordinate,block+ivec2(1,0))-origin;
-  precise vec2 dy=projected_uv(coordinate,block+ivec2(0,1))-origin;
-  vec2 delta=(mode&256u)!=0u ? abs(dx)+abs(dy) : max(abs(dx),abs(dy));
-  uint bits=floatBitsToUint(max(delta.x,delta.y));
-  int lod=int((bits&2139095040u)>>19u)-2032+int((bits&8388607u)>>19u);
-  int bias=int(((mode>>9u)&255u)^128u)-128;
-  lod+=bias>>1;
-  bool linear=lod>0 ? (mode&128u)!=0u : (mode&16u)!=0u;
-  if (lod>int((mode1>>8u)&255u)) lod=int((mode1>>8u)&255u);
-  else if (lod<int(mode1&255u)) lod=int(mode1&255u);
-  uint mip_mode=(mode>>5u)&3u;
+ivec4 sample_lod(uint unit, ivec2 fixed_uv, int lod, bool linear, uint mip_mode) {
   uint level=lod>0 && mip_mode!=0u ? uint(lod)>>4u : 0u;
   if (mip_mode==1u && (lod&15)>=8 && lod>0) ++level;
   ivec4 result=sample_mip(unit,fixed_uv,level,linear);
   if (mip_mode==2u && lod>0 && (lod&15)!=0)
     result=(result*(16-(lod&15))+sample_mip(unit,fixed_uv,level+1u,linear)*(lod&15))>>4;
   return result;
+}
+ivec4 sample_texture(uint unit, uint coordinate, ivec2 pixel, ivec2 fixed_uv) {
+  uint mode=texture_register(unit,0u),mode1=texture_register(unit,1u);
+  uint mip_mode=(mode>>5u)&3u;
+  bool mag_linear=(mode&16u)!=0u,min_linear=(mode&128u)!=0u;
+  uint minimum=mode1&255u,maximum=(mode1>>8u)&255u;
+  // Equal filters and a fixed mip make derivatives irrelevant to the result.
+  // Retain unclamped LOD selection when minification and magnification differ.
+  int lod=int(minimum);
+  bool linear=mag_linear;
+  if (mag_linear!=min_linear || (mip_mode!=0u && minimum!=maximum)) {
+    prepare_projection(coordinate,pixel,true);
+    vec2 delta=(mode&256u)!=0u ? abs(projected_dx)+abs(projected_dy) :
+                                max(abs(projected_dx),abs(projected_dy));
+    uint bits=floatBitsToUint(max(delta.x,delta.y));
+    lod=int((bits&2139095040u)>>19u)-2032+int((bits&8388607u)>>19u);
+    int bias=int(((mode>>9u)&255u)^128u)-128;
+    lod+=bias>>1;
+    linear=lod>0 ? min_linear : mag_linear;
+    if (lod>int(maximum)) lod=int(maximum);
+    else if (lod<int(minimum)) lod=int(minimum);
+  }
+  return sample_lod(unit,fixed_uv,lod,linear,mip_mode);
 }
 int indirect_wrap(int value, uint mode) {
   if (mode==0u) return value;
@@ -404,8 +477,11 @@ void main() {
   if (!shade(pixel,z,value)) return;
   if (!early && !depth_test(offset,z)) return;
   atomicAdd(counters[0],1u);
-  atomicMin(counters[1],uint(pixel.x)&~1u); atomicMax(counters[2],uint(pixel.x)|1u);
-  atomicMin(counters[3],uint(pixel.y)&~1u); atomicMax(counters[4],uint(pixel.y)|1u);
+  uvec2 first=uvec2(pixel)&~1u,last=uvec2(pixel)|1u;
+  if (counters[1]>first.x) atomicMin(counters[1],first.x);
+  if (counters[2]<last.x) atomicMax(counters[2],last.x);
+  if (counters[3]>first.y) atomicMin(counters[3],first.y);
+  if (counters[4]<last.y) atomicMax(counters[4],last.y);
   uint format=state[67]&7u,blend=state[65];
   ivec4 destination=decode_efb(efb[offset],format);
   if ((blend&1u)!=0u) {

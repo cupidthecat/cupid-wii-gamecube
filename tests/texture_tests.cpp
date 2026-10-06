@@ -127,6 +127,82 @@ void filtering() {
   f.bp[0x80] = 2 << 5;
   CHECK(f.sampler.sample(0, 0, 0, 24, false)[0] == 150);
 }
+
+void prepared_decode() {
+  Fixture f;
+  auto source = f.memory.range(0x2000, 65536);
+  for (unsigned i = 0; i < source.size(); ++i)
+    source[i] = static_cast<u8>((i * 37 + 19) ^ (i >> 3));
+  for (unsigned i = 0; i < f.tmem.size(); ++i)
+    f.tmem[i] = static_cast<u8>((i * 59 + 71) ^ (i >> 5));
+  constexpr std::array<unsigned, 11> formats{0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 14};
+  constexpr std::array<std::array<unsigned, 2>, 6> sizes{
+      {{1, 1}, {7, 5}, {8, 8}, {9, 13}, {17, 9}, {32, 16}}};
+  u64 compared = 0;
+  for (unsigned unit = 0; unit < 8; ++unit) {
+    const unsigned address = 0x80 + (unit & 3) + ((unit & 4) << 3);
+    for (unsigned format : formats)
+      for (const auto &size : sizes)
+        for (unsigned palette = 0; palette < 3; ++palette) {
+          f.bp[address + 8] = (format << 20) | (size[0] - 1) | ((size[1] - 1) << 10);
+          f.bp[address + 12] = 0;
+          f.bp[address + 20] = 0x2000 >> 5;
+          f.bp[address + 24] = (palette << 10) | 23;
+          for (unsigned mip : {0u, 1u, 2u, 3u, 4u, 10u}) {
+            const unsigned width = ((size[0] - 1) >> mip) + 1, height = ((size[1] - 1) >> mip) + 1;
+            std::vector<u32> decoded(std::size_t(width) * height);
+            f.sampler.decode(unit, mip, source, decoded);
+            for (unsigned y = 0; y < height; ++y)
+              for (unsigned x = 0; x < width; ++x) {
+                const auto expected = f.sampler.texel(unit, x, y, mip);
+                const u32 packed = (u32(expected[0]) << 24) | (u32(expected[1]) << 16) |
+                                   (u32(expected[2]) << 8) | expected[3];
+                CHECK(decoded[std::size_t(y) * width + x] == packed);
+                ++compared;
+              }
+          }
+          f.bp[address + 12] = (1 << 21) | 128;
+          f.bp[address + 16] = 512;
+          std::vector<u32> decoded(static_cast<std::size_t>(size[0]) * size[1]);
+          f.sampler.decode(unit, 0, {}, decoded);
+          for (unsigned y = 0; y < size[1]; ++y)
+            for (unsigned x = 0; x < size[0]; ++x) {
+              const auto expected = f.sampler.texel(unit, x, y);
+              const u32 packed = (u32(expected[0]) << 24) | (u32(expected[1]) << 16) |
+                                 (u32(expected[2]) << 8) | expected[3];
+              CHECK(decoded[std::size_t(y) * size[0] + x] == packed);
+              ++compared;
+            }
+        }
+  }
+
+  f.bp[0x8c] = 0;
+  f.image(6);
+  std::vector<u32> decoded(64);
+  CHECK_THROWS(f.sampler.decode(0, 0, {}, decoded));
+  CHECK_THROWS(f.sampler.decode(0, 0, source.first(255), decoded));
+  CHECK_THROWS(f.sampler.decode(0, 0, source, std::span(decoded).first(63)));
+  CHECK_THROWS(f.sampler.decode(8, 0, source, decoded));
+  CHECK_THROWS(f.sampler.decode(0, 11, source, decoded));
+  f.bp[0x8c] = 1 << 21;
+  std::array<u32, 16> mip{};
+  CHECK_THROWS(f.sampler.decode(0, 1, {}, mip));
+  f.bp[0x8c] = 0;
+  f.image(7);
+  CHECK_THROWS(f.sampler.decode(0, 0, source, decoded));
+  f.image(8);
+  f.bp[0x98] = 3 << 10;
+  CHECK_THROWS(f.sampler.decode(0, 0, source, decoded));
+  f.bp[0x98] = 2 << 10;
+  gfx::TextureSampler short_palette(f.memory, f.bp, std::span(f.tmem).first(2));
+  CHECK_THROWS(short_palette.decode(0, 0, source, decoded));
+  f.bp[0x8c] = (1 << 21) | 32767;
+  f.image(6);
+  CHECK_THROWS(f.sampler.decode(0, 0, {}, decoded));
+  std::cout << "Verified " << compared
+            << " prepared/demand texels across all formats, units, palettes, uneven mips and "
+               "split banks, plus source/destination bounds\n";
+}
 } // namespace
 
 int main() {
@@ -134,5 +210,6 @@ int main() {
     encodings();
     compressed();
     filtering();
+    prepared_decode();
   });
 }

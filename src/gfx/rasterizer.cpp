@@ -19,6 +19,18 @@ int fixed_coordinate(float value) {
   return truncated + (value - truncated >= 0.5f ? 1 : 0) - 9;
 }
 
+int depth_origin(float value) {
+  const float scaled = value * 16;
+  // A culled primitive uses only an interpolation origin, without the edge
+  // products that require the smaller coverage-coordinate range.
+  constexpr float limit = 2147483520.0f;
+  if (!std::isfinite(scaled) || scaled < -limit || scaled > limit)
+    throw VertexError("Raster depth origin exceeds the supported fixed-point range");
+  const int truncated = static_cast<int>(scaled);
+  const int rounded = truncated + (scaled - truncated >= 0.5f ? 1 : 0);
+  return (rounded + 6) >> 4;
+}
+
 unsigned clip_mask(const Vector4 &v) {
   return (v[3] - v[0] < 0 ? 1u : 0) | (v[0] + v[3] < 0 ? 2u : 0) | (v[3] - v[1] < 0 ? 4u : 0) |
          (v[1] + v[3] < 0 ? 8u : 0) | (v[3] * v[2] > 0 ? 16u : 0) | (v[2] + v[3] < 0 ? 32u : 0);
@@ -85,7 +97,8 @@ void Rasterizer::draw(u8 opcode, std::span<const std::optional<TransformedVertex
     scissor_state_ = scissor_state;
     scissor_state_valid_ = true;
   }
-  std::vector<TransformedVertex> vertices;
+  auto &vertices = primitive_vertices_;
+  vertices.clear();
   vertices.reserve(input.size());
   for (const auto &vertex : input)
     if (vertex) {
@@ -359,8 +372,8 @@ void Rasterizer::update_depth(const ScreenVertex &a, const ScreenVertex &b, cons
   depth_.value = a.screen[2];
   depth_.dx = ((c.screen[2] - a.screen[2]) * dy1 - (b.screen[2] - a.screen[2]) * dy2) / determinant;
   depth_.dy = (dx2 * (b.screen[2] - a.screen[2]) - dx1 * (c.screen[2] - a.screen[2])) / determinant;
-  depth_.x_origin = (fixed_coordinate(a.screen[0] - x_offset) + 15) >> 4;
-  depth_.y_origin = (fixed_coordinate(a.screen[1] - y_offset) + 15) >> 4;
+  depth_.x_origin = depth_origin(a.screen[0] - x_offset);
+  depth_.y_origin = depth_origin(a.screen[1] - y_offset);
   depth_.x_offset = float(depth_.x_origin) - (a.screen[0] - x_offset) + 0.495f;
   depth_.y_offset = float(depth_.y_origin) - (a.screen[1] - y_offset) + 0.495f;
 }

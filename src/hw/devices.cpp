@@ -86,6 +86,7 @@ Devices::Devices(Console console)
   set_pair(vi_, 0x34, 0x10000000u | (1u << 16) | 1u);
   vi_[0x48 / 2] = (40u << 8) | 40u;
   vi_[0x6c / 2] = 1;
+  update_video_timing();
   di_[9] = 1;
   exi_[0][0] = 0x800;
   exi_[1][0] = 0x880;
@@ -153,6 +154,7 @@ void Devices::reset_disc(bool spinup) {
 
 void Devices::prepare_disc_boot(bool streaming, u8 buffer_size) {
   flush_elapsed();
+  next_deadline_ = 0;
   drive_state_ = DriveState::ReadyNoReads;
   disc_stream_.configure(streaming, buffer_size ? buffer_size : 10);
 }
@@ -190,6 +192,7 @@ void Devices::disc_id_read() {
 
 DiscCommandResult Devices::disc_immediate(u32 command, u32 argument1, u32 argument2) {
   flush_elapsed();
+  next_deadline_ = 0;
   const u8 opcode = u8(command >> 24);
   if (opcode != 0xab && (opcode < 0xe0 || opcode > 0xe4))
     throw std::invalid_argument("Command is not an immediate disc operation");
@@ -567,6 +570,9 @@ void Devices::write_half(u32 address, u16 value) {
           (value & 0xe000))
         vi_[offset / 2] &= ~0x1000;
     }
+    if (offset == 0 || offset == 4 || offset == 6 || (offset >= 0x0c && offset <= 0x12) ||
+        offset == 0x6c)
+      update_video_timing();
     update_interrupts(interrupt_vi);
     return;
   }
@@ -673,18 +679,33 @@ void Devices::update_interrupts(u32 devices) {
                       (expansion ? interrupt_exi : 0);
 }
 
+void Devices::update_video_timing() {
+  const u32 equalization = 3 * (vi_[0] & 15), active = 2 * ((vi_[0] >> 4) & 1023);
+  const u32 odd_blank = pair(vi_, 0x0c), even_blank = pair(vi_, 0x10);
+  video_field_halflines_[0] =
+      equalization + active + (odd_blank & 1023) + ((odd_blank >> 16) & 1023);
+  video_field_halflines_[1] =
+      equalization + active + (even_blank & 1023) + ((even_blank >> 16) & 1023);
+  const u32 odd_start = equalization + (odd_blank & 1023);
+  const s32 difference = s32((odd_blank >> 16) & 1023) - s32((even_blank >> 16) & 1023);
+  const u32 even_start =
+      u32(s32(video_field_halflines_[0] + equalization + (even_blank & 1023)) - difference);
+  video_field_last_halflines_ = {odd_start + active - 1, even_start + active - 1};
+  video_active_ = active != 0;
+  video_sample_ticks_ = u32(2 * clock_ / ((vi_[0x6c / 2] & 1) ? 54000000 : 27000000));
+  video_halfline_ticks_ = u64(video_sample_ticks_) * (pair(vi_, 4) & 1023);
+}
+
 u32 Devices::video_halflines(unsigned field) const {
-  const u32 blank = pair(vi_, field == 0 ? 0x0c : 0x10);
-  return 3 * (vi_[0] & 15) + 2 * ((vi_[0] >> 4) & 1023) + (blank & 1023) + (blank >> 16 & 1023);
+  return video_field_halflines_[field != 0];
 }
 
 u32 Devices::video_ticks_per_sample() const {
-  const u32 frequency = vi_[0x6c / 2] & 1 ? 54000000 : 27000000;
-  return u32(2 * clock_ / frequency);
+  return video_sample_ticks_;
 }
 
 u64 Devices::video_nominal_period() const {
-  return u64(video_ticks_per_sample()) * (pair(vi_, 4) & 1023);
+  return video_halfline_ticks_;
 }
 
 u64 Devices::video_period() const {
@@ -724,26 +745,21 @@ Xfb Devices::xfb(unsigned field) const {
 
 void Devices::video_halfline() {
   const u32 odd_length = video_halflines(0), even_length = video_halflines(1);
-  const u32 equalization = 3 * (vi_[0] & 15), active = 2 * ((vi_[0] >> 4) & 1023);
-  const u32 odd_blank = pair(vi_, 0x0c), even_blank = pair(vi_, 0x10);
-  const u32 odd_start = equalization + (odd_blank & 1023);
-  const s32 difference = s32((odd_blank >> 16) & 1023) - s32((even_blank >> 16) & 1023);
-  const u32 even_start = u32(s32(odd_length + equalization + (even_blank & 1023)) - difference);
-  if (active != 0 &&
-      (halfline_ == odd_start + active - 1 || halfline_ == even_start + active - 1)) {
-    const unsigned field = halfline_ == odd_start + active - 1 ? 0 : 1;
+  if (video_active_ && (halfline_ == video_field_last_halflines_[0] ||
+                        halfline_ == video_field_last_halflines_[1])) {
+    const unsigned field = halfline_ == video_field_last_halflines_[0] ? 0 : 1;
     ++fields_;
     const Xfb frame = xfb(field);
     if ((vi_[1] & 1) && frame.address != 0 && xfb_present)
       xfb_present(frame);
   }
-  if (halfline_ == 0 || halfline_ == odd_length)
-    si_next_poll_ = halfline_ + 15;
   if (halfline_ == si_next_poll_) {
     poll_controllers();
     const u32 poll_lines = (si_poll_ >> 16) & 1023;
     si_next_poll_ += 2 * poll_lines;
   }
+  if (halfline_ == 0 || halfline_ == odd_length)
+    si_next_poll_ = halfline_ + 15;
   ++halfline_;
   if (halfline_ >= odd_length + even_length)
     halfline_ = 0;
@@ -756,25 +772,27 @@ void Devices::video_halfline() {
   update_interrupts(interrupt_vi);
 }
 
-void Devices::advance(u64 amount) {
+u64 Devices::event_free_cycles() {
+  if ((pi_[0] & 0x70u) != level_interrupts_)
+    return 0;
+  if (!next_deadline_)
+    rebuild_deadline();
+  if (!next_deadline_)
+    return 0;
+  return std::min(next_deadline_ - 1, std::numeric_limits<u64>::max() - cycles_);
+}
+
+void Devices::advance_events(u64 amount) {
   if (amount > std::numeric_limits<u64>::max() - cycles_)
     throw std::overflow_error("Device cycle counter overflow");
   cycles_ += amount;
-  if (amount < next_deadline_) {
-    next_deadline_ -= amount;
-    deferred_cycles_ += amount;
-    // Timed level causes must reassert even after the guest clears PI directly.
-    constexpr u32 timed_causes = interrupt_ai | interrupt_dsp | interrupt_exi;
-    pi_[0] = (pi_[0] & ~timed_causes) | level_interrupts_;
-    return;
-  }
   const u64 earlier = deferred_cycles_;
   deferred_cycles_ = 0;
   next_deadline_ = 0;
   // Materialize prior event-free calls first: a callback may throw before later
   // counters consume this call, so combining both intervals changes failure state.
   if (earlier)
-    advance_state(earlier);
+    advance_quiet(earlier);
   advance_state(amount);
   rebuild_deadline();
 }
@@ -784,9 +802,31 @@ void Devices::flush_elapsed() {
     return;
   const u64 elapsed = deferred_cycles_;
   deferred_cycles_ = 0;
-  next_deadline_ = 0;
-  advance_state(elapsed);
-  rebuild_deadline();
+  advance_quiet(elapsed);
+}
+
+void Devices::advance_quiet(u64 amount) {
+  // Deferred calls exclude every completion and periodic boundary. Their
+  // counters can be materialized without dispatching events or rebuilding the
+  // deadline, which was already reduced by each call to advance().
+  if (di_remaining_)
+    di_remaining_ -= amount;
+  if (aram_remaining_)
+    aram_remaining_ -= amount;
+  if (audio_start_interrupt_)
+    audio_start_interrupt_ -= amount;
+  for (auto &card : cards_) {
+    if (card.command_remaining)
+      card.command_remaining -= amount;
+    for (u64 &remaining : card.transfer_remaining)
+      remaining -= amount;
+  }
+  audio_remainder_ += amount;
+  disc_stream_.advance(amount, disc_audio_divisor(), (ai_[0] & 1) != 0);
+  if (ai_[0] & 1)
+    ai_remainder_ += amount;
+  video_remainder_ += amount;
+  pi_[0] = (pi_[0] & ~0x70u) | level_interrupts_;
 }
 
 void Devices::rebuild_deadline() {
@@ -1249,6 +1289,8 @@ void Devices::set_memory_card(unsigned slot, std::span<const u8> image) {
   const auto size = image.size();
   if (size != 0 && (size < 524288 || size > 33554432 || (size & (size - 1)) != 0))
     throw std::invalid_argument("Raw memory card image size is invalid");
+  flush_elapsed();
+  next_deadline_ = 0;
   cards_[slot] = MemoryCard{};
   cards_[slot].image.assign(image.begin(), image.end());
   exi_[slot][0] = (exi_[slot][0] & ~0x1000u) | 0x800u | (size ? 0x1000u : 0u);
@@ -1402,8 +1444,7 @@ void Devices::start_aram_dma() {
       if (console_ == Console::Wii)
         dma_read(0x10000000 | (ar_address & 0x3ffffff), data);
       else
-        for (u32 i = 0; i < 32; ++i)
-          data[i] = aram_[(ar_address + i) & 0xffffff];
+        std::copy_n(aram_.begin() + (ar_address & 0xffffff), data.size(), data.begin());
       dma_write(main_address, data);
     } else {
       dma_read(main_address, data);
@@ -1412,12 +1453,12 @@ void Devices::start_aram_dma() {
         if ((dsp_[0x12 / 2] & 15) == 4 && ar_address < 0x400000)
           dma_write(0x10400000 | ar_address, data);
       } else {
-        for (u32 i = 0; i < 32; ++i) {
-          const u32 offset = (ar_address + i) & 0xffffff;
-          aram_[offset] = data[i];
-          if ((dsp_[0x12 / 2] & 15) == 4 && ar_address < 0x400000)
-            aram_[offset + 0x400000] = data[i];
-        }
+        // Register masks keep every block aligned, so a block cannot straddle
+        // the end of ARAM or the boundary of the duplicated four-MiB bank.
+        const auto destination = aram_.begin() + (ar_address & 0xffffff);
+        std::copy(data.begin(), data.end(), destination);
+        if ((dsp_[0x12 / 2] & 15) == 4 && ar_address < 0x400000)
+          std::copy(data.begin(), data.end(), destination + 0x400000);
       }
     }
     main_address += 32;

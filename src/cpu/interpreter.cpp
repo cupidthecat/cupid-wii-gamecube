@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <bit>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 
 namespace cupid::cpu {
@@ -390,24 +391,41 @@ u32 Interpreter::translate(u32 effective, bool instruction, bool write) {
   return translate_access(effective, instruction, write, uncached);
 }
 
+Interpreter::BatMap &Interpreter::refresh_bat_map(bool instruction, unsigned count) {
+  const unsigned base = instruction ? 528 : 536, extended = instruction ? 560 : 568;
+  auto &map = bat_maps_[instruction];
+  if (!map)
+    map = std::make_unique<BatMap>();
+  else
+    map->entries.fill(0);
+  std::copy_n(state_.spr.data() + base, 8, map->registers.data());
+  if (count == 8)
+    std::copy_n(state_.spr.data() + extended, 8, map->registers.data() + 8);
+  map->count = count;
+  for (unsigned bank = 0; bank < count; ++bank) {
+    const u32 upper = map->registers[bank * 2], lower = map->registers[bank * 2 + 1];
+    if (!(upper & 3))
+      continue;
+    const u32 blocks = (upper >> 2) & 2047;
+    // Ascending banks and blocks preserve priority and malformed-mask mappings.
+    for (u32 block = 0; block <= blocks; ++block)
+      if ((block & blocks) == block)
+        map->entries[(upper >> 17) | block] =
+            (lower & 0xfffe0000) | (block << 17) | 1 | ((lower & 0x60) ? 4 : 0);
+  }
+  return *map;
+}
+
 u32 Interpreter::translate_access(u32 effective, bool instruction, bool write, bool &uncached) {
   uncached = false;
   if (!(state_.msr & (instruction ? msr::ir : msr::dr)))
     return effective;
   // Higher numbered overlapping BATs win, including the extended bank when enabled.
   const unsigned count = console_ == Console::Wii && (state_.spr[spr::hid4] & 0x02000000) ? 8 : 4;
-  for (unsigned n = count; n-- > 0;) {
-    const unsigned base =
-        n < 4 ? (instruction ? 528 : 536) + n * 2 : (instruction ? 560 : 568) + (n - 4) * 2;
-    const u32 upper = state_.spr[base], lower = state_.spr[base + 1];
-    if (!(upper & 3))
-      continue;
-    const u32 mask = ((upper & 0x1ffc) << 15) | 0x1ffff;
-    const u32 matching_mask = mask & ~(upper & 0xfffe0000);
-    if ((effective & ~matching_mask) == (upper & 0xfffe0000)) {
-      uncached = (lower & 0x60) != 0;
-      return (lower & 0xfffe0000) | (effective & mask);
-    }
+  const u64 bat = bat_address(effective, instruction, count);
+  if (bat) {
+    uncached = (bat & (u64{1} << 32)) != 0;
+    return static_cast<u32>(bat);
   }
   const u32 segment = state_.sr[effective >> 28], vsid = segment & 0xffffff;
   auto &tlb = instruction ? instruction_tlb_ : data_tlb_;
@@ -579,6 +597,8 @@ void Interpreter::clear_cache_line(u32 effective) {
   unsigned offset = 0;
   try {
     const u32 physical = translate(effective, false, true);
+    if (bus_.try_clear_cpu_ram_line(physical))
+      return;
     for (; offset < 32; offset += 4)
       bus_.write_cpu_data(physical + offset, 0, 4);
   } catch (const BusFault &fault) {
@@ -607,6 +627,347 @@ void Interpreter::tick(u32 cycles) {
       state_.spr[spr::dec] -= decrement;
     }
   }
+}
+
+std::span<u8> Interpreter::scalar_ram(u32 opcode, u32 &effective, const BatMap *map) {
+  const unsigned primary = opcode >> 26, address = (opcode >> 16) & 31;
+  const unsigned width = primary < 34 || primary == 36 || primary == 37 ? 4 : primary < 40 ? 1 : 2;
+  const u32 base = (primary & 1) || address ? state_.gpr[address] : 0;
+  effective = base + signed_immediate(opcode);
+  if ((effective & 4095) + width > 4096)
+    return {};
+  u32 physical = effective;
+  if (state_.msr & msr::dr) {
+    if (!map)
+      return {};
+    const u32 entry = map->entries[effective >> 17];
+    if (!(entry & 1) || (entry & 4))
+      return {};
+    physical = (entry & 0xfffe0000) | (effective & 0x1ffff);
+  }
+  auto bytes = bus_.plain_cpu_ram(physical, width);
+  return bytes.size() == width ? bytes : std::span<u8>{};
+}
+
+void Interpreter::execute_scalar_ram(u32 opcode, u32 effective, std::span<u8> bytes) {
+  const unsigned primary = opcode >> 26, destination = (opcode >> 21) & 31;
+  const unsigned address = (opcode >> 16) & 31;
+  const bool write = (primary >= 36 && primary <= 39) || primary >= 44;
+  u32 value = write ? state_.gpr[destination] : 0;
+  if (bytes.size() == 4) {
+    if (!write)
+      std::memcpy(&value, bytes.data(), 4);
+    if constexpr (std::endian::native == std::endian::little)
+      value = swap32(value);
+    if (write)
+      std::memcpy(bytes.data(), &value, 4);
+  } else if (bytes.size() == 2) {
+    u16 half = static_cast<u16>(value);
+    if (!write)
+      std::memcpy(&half, bytes.data(), 2);
+    if constexpr (std::endian::native == std::endian::little)
+      half = swap16(half);
+    if (write)
+      std::memcpy(bytes.data(), &half, 2);
+    value = half;
+  } else if (write) {
+    bytes[0] = static_cast<u8>(value);
+  } else {
+    value = bytes[0];
+  }
+  if (!write)
+    state_.gpr[destination] =
+        primary >= 42 ? static_cast<u32>(static_cast<s32>(static_cast<s16>(value))) : value;
+  if (primary & 1)
+    state_.gpr[address] = effective;
+}
+
+bool Interpreter::execute_register_run_instruction(u32 opcode, u32 pc) {
+  const unsigned primary = opcode >> 26;
+  const bool branch = primary == 16 || primary == 18 || primary == 19;
+  if (branch) {
+    state_.pc = pc;
+    next_pc_ = pc + 4;
+  }
+  const bool cached = backend_ == ExecutionBackend::NativeInteger &&
+                      native_integer_->execute_cached(state_, opcode);
+  if (!cached) {
+    execute(opcode);
+    if (backend_ == ExecutionBackend::NativeInteger)
+      native_integer_->record_fallback(1);
+  }
+  if (!branch)
+    return false;
+  state_.pc = next_pc_;
+  if (primary != 16 || next_pc_ != pc + 4)
+    return true;
+  // A taken branch to the following word still terminates the run.
+  const unsigned bo = (opcode >> 21) & 31, bi = (opcode >> 16) & 31;
+  return ((bo & 4) || ((state_.spr[spr::ctr] != 0) != ((bo & 2) != 0))) &&
+         ((bo & 16) || (((state_.cr >> (31 - bi)) & 1) == ((bo >> 3) & 1)));
+}
+
+IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cycles) {
+  if (maximum_instructions < 2 || maximum_cycles < 2 || !integer_run_possible() ||
+      (state_.msr & msr::le) || (state_.spr[spr::hid0] & 0xa000) != 0x8000 ||
+      state_.spr[spr::mmcr0] || state_.spr[spr::mmcr1] ||
+      ((state_.msr & msr::ee) && (external_interrupt_ || decrementer_pending_ || monitor_pending_)))
+    return {};
+  unsigned limit = std::min({maximum_instructions, maximum_cycles, 8u});
+  u32 cycle_budget = maximum_cycles;
+  if (state_.instructions > std::numeric_limits<u64>::max() - limit)
+    return {};
+  const u32 decrementer = state_.spr[spr::dec];
+  if (!(decrementer & 0x80000000)) {
+    if (decrementer == 0)
+      return {};
+    const u64 until_transition = u64{decrementer} * 12 - decrementer_remainder_;
+    if (until_transition <= cycle_budget)
+      cycle_budget = static_cast<u32>(until_transition - 1);
+    limit = std::min(limit, cycle_budget);
+    if (limit < 2)
+      return {};
+  }
+  u32 physical = state_.pc;
+  if (state_.msr & msr::ir) {
+    const unsigned banks = console_ == Console::Wii && (state_.spr[spr::hid4] & 0x02000000) ? 8 : 4;
+    const auto *map = bat_maps_[true].get();
+    // Rebuilding a map or walking a page table would change host or bus state
+    // on a rejected run. Ordinary stepping establishes the next valid mapping.
+    if (!map || map->count != banks ||
+        !bat_registers_equal(map->registers.data(), state_.spr.data() + 528) ||
+        (banks == 8 && !bat_registers_equal(map->registers.data() + 8, state_.spr.data() + 560)))
+      return {};
+    const u32 entry = map->entries[state_.pc >> 17];
+    if (!(entry & 1))
+      return {};
+    physical = (entry & 0xfffe0000) | (state_.pc & 0x1ffff);
+  }
+  u32 key = 0;
+  if (!bus_.stable_instruction_cache_key(physical, key))
+    return {};
+  const auto resident = instruction_cache_.recent_words(key, physical);
+  if (maximum_instructions >= 3 && cycle_budget >= 7 && resident.size() >= 3 &&
+      instruction_cache_.recent_cache_flush_run(physical)) {
+    // Coherent data backing makes DCBF a register-only operation. Its five
+    // cycles plus one register operation and a conditional branch fit one
+    // event-free interval; the branch is the only possible control transfer.
+    const u32 start = state_.pc;
+    const auto words = resident.first(3);
+    for (u32 opcode : words.first(2))
+      if (backend_ != ExecutionBackend::NativeInteger || !native_integer_->execute(state_, opcode))
+        execute(opcode);
+    state_.last_pc = state_.pc + 8;
+    state_.pc = state_.last_pc;
+    next_pc_ = state_.pc + 4;
+    if (backend_ == ExecutionBackend::NativeInteger)
+      (void)native_integer_->execute(state_, words.back());
+    execute(words.back());
+    state_.pc = next_pc_;
+    state_.last_opcode = current_opcode_ = words.back();
+    last_step_fetched_ = true;
+    u32 retired = 3, cycles = 7;
+    const unsigned destination = (words[1] >> 21) & 31;
+    const unsigned bo = (words[2] >> 21) & 31;
+    if (state_.pc == start && (words[0] >> 26) == 31 && ((words[0] >> 1) & 1023) == 86 &&
+        (words[1] >> 26) == 14 && destination && destination == ((words[1] >> 16) & 31) &&
+        (bo & 30) == 16 && !(words[2] & 2)) {
+      // The coherent DCBF policy has no address-dependent effects. After the
+      // first taken iteration, ADDI and the counter alone determine this loop.
+      // Repeated hits in its one resident line preserve cache replacement state.
+      const u64 iterations =
+          std::min({u64{maximum_instructions} / 3,
+                    u64{std::min(cycle_budget, std::numeric_limits<u32>::max() - 11)} / 7,
+                    (std::numeric_limits<u64>::max() - state_.instructions) / 3,
+                    u64{state_.spr[spr::ctr]} + 1});
+      if (iterations > 1) {
+        const u32 repeats = static_cast<u32>(iterations - 1);
+        state_.gpr[destination] += signed_immediate(words[1]) * repeats;
+        state_.spr[spr::ctr] -= repeats;
+        if (!state_.spr[spr::ctr])
+          state_.pc = next_pc_ = start + 12;
+        retired = static_cast<u32>(iterations * 3);
+        cycles = static_cast<u32>(iterations * 7);
+        if (backend_ == ExecutionBackend::NativeInteger)
+          native_integer_->record_fallback(repeats * 3);
+      }
+    }
+    state_.instructions += retired;
+    tick(cycles);
+    return {retired, cycles};
+  }
+  if (instruction_cache_.register_branch_run_hint(physical)) {
+    const auto first_line = instruction_cache_.inspect(key, physical);
+    std::array<u32, 8> words{};
+    unsigned count = 0, branches = 0;
+    u32 second_key = 0;
+    const unsigned first_size = static_cast<unsigned>(first_line.words.size());
+    const auto append = [&](const InstructionCache::Resident &line) {
+      for (unsigned n = 0; n < line.words.size() && count < limit; ++n) {
+        const unsigned bit = 1u << n;
+        const bool conditional = (line.branch_mask & bit) && (line.words[n] >> 26) == 16;
+        if (!(line.integer_mask & bit) && !conditional)
+          break;
+        if (conditional)
+          branches |= 1u << count;
+        words[count++] = line.words[n];
+      }
+    };
+    append(first_line);
+    if (count == first_size && count && count < limit &&
+        (physical & 0x1ffff) + count * 4 < 0x20000 &&
+        bus_.stable_instruction_cache_key(physical + count * 4, second_key))
+      append(instruction_cache_.inspect(second_key, physical + count * 4));
+    if (count >= 2 && branches) {
+      const u32 start = state_.pc;
+      unsigned retired = 0;
+      bool taken = false;
+      for (u32 opcode : std::span<const u32>(words).first(count)) {
+        if (!retired || retired == first_size)
+          instruction_cache_.commit_hit(!retired ? key : second_key);
+        taken = execute_register_run_instruction(opcode, start + retired * 4);
+        ++retired;
+        if (taken)
+          break;
+      }
+      state_.last_pc = start + (retired - 1) * 4;
+      state_.last_opcode = current_opcode_ = words[retired - 1];
+      if (!taken)
+        state_.pc = next_pc_ = start + retired * 4;
+      last_step_fetched_ = true;
+      state_.instructions += retired;
+      tick(retired);
+      return {retired, retired};
+    }
+  }
+  if (instruction_cache_.scalar_run_hint(state_.pc)) {
+    const auto first_line = instruction_cache_.inspect(key, physical);
+    std::array<u32, 8> scalar_words{};
+    unsigned scalar_count = 0, memory_mask = 0, branch_mask = 0;
+    u32 second_key = 0;
+    const unsigned first_size = static_cast<unsigned>(first_line.words.size());
+    const auto append = [&](const InstructionCache::Resident &line) {
+      for (unsigned n = 0; n < line.words.size() && scalar_count < limit; ++n) {
+        const unsigned bit = 1u << n;
+        if (!((line.integer_mask | line.scalar_mask | line.branch_mask) & bit))
+          break;
+        if (line.scalar_mask & bit)
+          memory_mask |= 1u << scalar_count;
+        if (line.branch_mask & bit)
+          branch_mask |= 1u << scalar_count;
+        scalar_words[scalar_count++] = line.words[n];
+        if ((line.branch_mask & bit) && (line.words[n] >> 26) != 16)
+          break;
+      }
+    };
+    append(first_line);
+    if (scalar_count == first_size && scalar_count && scalar_count < limit && !branch_mask &&
+        (physical & 0x1ffff) + scalar_count * 4 < 0x20000 &&
+        bus_.stable_instruction_cache_key(physical + scalar_count * 4, second_key))
+      append(instruction_cache_.inspect(second_key, physical + scalar_count * 4));
+    if (scalar_count >= 2 && memory_mask) {
+      const auto words = std::span<const u32>(scalar_words).first(scalar_count);
+      unsigned first_memory = 0;
+      while (first_memory < words.size() && (words[first_memory] >> 26) < 32)
+        ++first_memory;
+      const BatMap *map = nullptr;
+      if (state_.msr & msr::dr) {
+        const unsigned banks =
+            console_ == Console::Wii && (state_.spr[spr::hid4] & 0x02000000) ? 8 : 4;
+        const auto *candidate = bat_maps_[false].get();
+        if (candidate && candidate->count == banks &&
+            bat_registers_equal(candidate->registers.data(), state_.spr.data() + 536) &&
+            (banks == 4 ||
+             bat_registers_equal(candidate->registers.data() + 8, state_.spr.data() + 568)))
+          map = candidate;
+      }
+      // Establish bus admission before executing a register prefix. An observable
+      // bus or unavailable mapping keeps the ordinary integer-only path intact.
+      u32 effective = 0;
+      auto bytes = first_memory < words.size() ? scalar_ram(words[first_memory], effective, map)
+                                               : std::span<u8>{};
+      if (!bytes.empty()) {
+        const u32 start = state_.pc;
+        unsigned retired = 0;
+        bool branched = false;
+        for (u32 opcode : words) {
+          const unsigned primary = opcode >> 26;
+          if (primary >= 32 && primary <= 45) {
+            if (retired != 0)
+              bytes = scalar_ram(opcode, effective, map);
+            if (bytes.empty())
+              break;
+            if (retired == 0 || retired == first_size)
+              instruction_cache_.commit_hit(retired == 0 ? key : second_key);
+            execute_scalar_ram(opcode, effective, bytes);
+            if (backend_ == ExecutionBackend::NativeInteger)
+              native_integer_->record_fallback(1);
+          } else {
+            if (retired == 0 || retired == first_size)
+              instruction_cache_.commit_hit(retired == 0 ? key : second_key);
+            branched = execute_register_run_instruction(opcode, start + retired * 4);
+          }
+          ++retired;
+          if (branched)
+            break;
+        }
+        state_.last_pc = start + (retired - 1) * 4;
+        state_.last_opcode = current_opcode_ = words[retired - 1];
+        if (!branched) {
+          state_.pc = start + retired * 4;
+          next_pc_ = state_.pc;
+        }
+        // A taken load/compare loop has an invariant address and loaded value
+        // throughout this event-free interval. Its comparison and branch alter
+        // no address register or counter. Repeating adjacent cache-line hits is
+        // idempotent, including their replacement bits and final recent hint.
+        const unsigned load_primary = words[0] >> 26;
+        if (retired == 3 && state_.pc == start &&
+            (load_primary == 32 || load_primary == 34 || load_primary == 40 ||
+             load_primary == 42) &&
+            ((words[1] >> 26) == 10 || (words[1] >> 26) == 11) &&
+            ((words[1] >> 16) & 31) == ((words[0] >> 21) & 31) && (words[2] >> 26) == 16 &&
+            (words[2] & (4u << 21)) &&
+            (((words[0] >> 16) & 31) == 0 || ((words[0] >> 16) & 31) != ((words[0] >> 21) & 31))) {
+          const u64 available = std::min<u64>(
+              std::min({maximum_instructions, cycle_budget, std::numeric_limits<u32>::max() - 11}),
+              std::numeric_limits<u64>::max() - state_.instructions);
+          const u32 iterations = static_cast<u32>(available / 3);
+          if (iterations > 1) {
+            if (backend_ == ExecutionBackend::NativeInteger) {
+              native_integer_->record_fallback((iterations - 1) * 3);
+            }
+            retired = iterations * 3;
+          }
+        }
+        last_step_fetched_ = true;
+        state_.instructions += retired;
+        tick(retired);
+        return {retired, retired};
+      }
+    }
+  }
+  const unsigned count = std::min({limit, static_cast<unsigned>(resident.size()),
+                                   instruction_cache_.recent_integer_count(physical)});
+  const unsigned minimum = backend_ == ExecutionBackend::NativeInteger ? 4 : 2;
+  if (count < minimum)
+    return {};
+  const auto words = resident.first(count);
+  if (backend_ == ExecutionBackend::NativeInteger) {
+    if (!native_integer_->execute_sequence(state_, words))
+      return {};
+  } else {
+    for (u32 opcode : words)
+      execute(opcode);
+  }
+  state_.last_pc = state_.pc + (count - 1) * 4;
+  state_.last_opcode = current_opcode_ = words.back();
+  state_.pc += count * 4;
+  next_pc_ = state_.pc;
+  last_step_fetched_ = true;
+  state_.instructions += count;
+  tick(count);
+  return {count, count};
 }
 
 u32 Interpreter::step() {

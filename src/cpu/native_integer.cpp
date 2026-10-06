@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cupid/cpu/native_integer.hpp"
 #include "cupid/cpu/interpreter.hpp"
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstring>
@@ -28,16 +29,107 @@ namespace cupid::cpu {
 namespace {
 bool eligible(u32 opcode) {
   const unsigned primary = opcode >> 26;
-  return primary == 14 || primary == 15 || primary == 20 || primary == 21 || primary == 23 ||
-         (primary >= 24 && primary <= 29);
+  if (primary == 7 || primary == 8 || (primary >= 10 && primary <= 15) || primary == 20 ||
+      primary == 21 || primary == 23 || (primary >= 24 && primary <= 29))
+    return true;
+  if (primary != 31)
+    return false;
+  const unsigned operation = (opcode >> 1) & 1023;
+  switch (operation) {
+  case 0:
+  case 24:
+  case 26:
+  case 28:
+  case 32:
+  case 60:
+  case 124:
+  case 284:
+  case 316:
+  case 412:
+  case 444:
+  case 476:
+  case 536:
+  case 792:
+  case 824:
+  case 922:
+  case 954:
+    return true;
+  default:
+    break;
+  }
+  switch (operation & 511) {
+  case 8:
+  case 10:
+  case 11:
+  case 40:
+  case 75:
+  case 104:
+  case 136:
+  case 138:
+  case 200:
+  case 202:
+  case 232:
+  case 234:
+  case 235:
+  case 266:
+    return true;
+  default:
+    return false;
+  }
 }
 
 #if CUPID_NATIVE_X64
 static_assert(std::is_standard_layout_v<State> && std::is_trivially_copyable_v<State>);
 using Operation = void (*)(State *);
+constexpr std::size_t block_slot_bytes = 8 * 256;
 
-class Encoder {
+struct BlockKey {
+  std::array<u32, 8> words{};
+  u32 count = 0;
+  bool operator==(const BlockKey &) const = default;
+};
+
+struct BlockHash {
+  std::size_t operator()(const BlockKey &key) const noexcept {
+    u32 hash = key.count;
+    for (unsigned n = 0; n < key.count; ++n)
+      hash = (hash ^ key.words[n]) * 0x9e3779b1u;
+    hash ^= hash >> 16;
+    hash *= 0x85ebca6bu;
+    hash ^= hash >> 13;
+    hash *= 0xc2b2ae35u;
+    return hash ^ (hash >> 16);
+  }
+};
+
+struct BlockEntry {
+  BlockKey key;
+  Operation operation = nullptr;
+};
+
+template <std::size_t Capacity = 256> class Encoder {
 public:
+  explicit Encoder(bool retain_register = false) : retain_register_(retain_register) {
+  }
+
+  void retain_result(bool retain) {
+    retain_register_ = retain;
+  }
+
+  void entry() {
+    bytes({0xf3, 0x0f, 0x1e, 0xfa}); // ENDBR64 permits indirect entry with CET.
+#ifdef _WIN32
+    bytes({0x49, 0x89, 0xca}); // RCX -> R10
+#else
+    bytes({0x49, 0x89, 0xfa}); // RDI -> R10
+#endif
+  }
+
+  void finish() {
+    spill();
+    byte(0xc3);
+  }
+
   void bytes(std::initializer_list<u8> values) {
     for (u8 value : values)
       byte(value);
@@ -56,7 +148,8 @@ public:
 
   void memory(u8 instruction, unsigned reg, std::size_t displacement) {
     // R10 holds State; all emitted scratch registers are volatile in both ABIs.
-    bytes({0x41, instruction});
+    bytes({static_cast<u8>(0x41 | (reg >= 8 ? 4 : 0)), instruction});
+    reg &= 7;
     if (displacement <= 127) {
       byte(static_cast<u8>(0x42 | (reg << 3)));
       byte(static_cast<u8>(displacement));
@@ -67,11 +160,26 @@ public:
   }
 
   void load(unsigned reg, unsigned guest) {
-    memory(0x8b, reg, offsetof(State, gpr) + guest * sizeof(u32));
+    if (guest == retained_guest_)
+      bytes({static_cast<u8>(0x44 | (reg >= 8 ? 1 : 0)), 0x89,
+             static_cast<u8>(0xd8 | (reg & 7))}); // R11D -> scratch register
+    else
+      memory(0x8b, reg, offsetof(State, gpr) + guest * sizeof(u32));
   }
 
   void store(unsigned guest) {
-    memory(0x89, 0, offsetof(State, gpr) + guest * sizeof(u32));
+    if (!retain_register_) {
+      if (guest == retained_guest_)
+        retained_guest_ = 32;
+      else
+        spill();
+      memory(0x89, 0, offsetof(State, gpr) + guest * sizeof(u32));
+      return;
+    }
+    if (guest != retained_guest_)
+      spill();
+    bytes({0x41, 0x89, 0xc3}); // EAX -> R11D; flags and other scratch registers survive.
+    retained_guest_ = guest;
   }
 
   void accumulator(u8 instruction, u32 immediate) {
@@ -79,20 +187,50 @@ public:
     word(immediate);
   }
 
-  void record() {
-    // The destination has already been stored. TEST classifies the full signed
-    // result; SO is read independently from XER, and CR1 through CR7 are retained.
-    bytes({0x31, 0xd2, 0x45, 0x31, 0xc0, 0x85, 0xc0}); // clear EDX/R8D; test EAX
-    bytes({0x0f, 0x94, 0xc2, 0x41, 0x0f, 0x98, 0xc0}); // EQ in DL; LT in R8B
-    bytes({0x0f, 0x9f, 0xc0, 0x0f, 0xb6, 0xc0});       // GT in EAX
-    bytes({0xc1, 0xe0, 2, 0xc1, 0xe2, 1, 0x41, 0xc1, 0xe0, 3});
-    bytes({0x09, 0xc2, 0x44, 0x09, 0xc2});
-    memory(0x8b, 0, offsetof(State, spr) + spr::xer * sizeof(u32));
-    bytes({0xc1, 0xe8, 31, 0x09, 0xc2, 0xc1, 0xe2, 28});
+  void condition(unsigned field, bool signed_values) {
+    // CMP or TEST flags remain live through MOV and CMOV. The field value is
+    // GT, LT or EQ together with the current sticky SO, retaining other fields.
+    accumulator(0xba, 4); // MOV EDX, GT
+    accumulator(0xb9, 8); // MOV ECX, LT
+    bytes({0x0f, static_cast<u8>(signed_values ? 0x4c : 0x42), 0xd1});
+    accumulator(0xb9, 2); // MOV ECX, EQ
+    bytes({0x0f, 0x44, 0xd1});
+    memory(0x8b, 1, offsetof(State, spr) + spr::xer * sizeof(u32));
+    bytes({0xc1, 0xe9, 31, 0x09, 0xca});
+    const unsigned shift = (7 - field) * 4;
+    if (shift)
+      bytes({0xc1, 0xe2, static_cast<u8>(shift)});
     memory(0x8b, 0, offsetof(State, cr));
-    accumulator(0x25, 0x0fffffff);
+    accumulator(0x25, ~(15u << shift));
     bytes({0x09, 0xd0});
     memory(0x89, 0, offsetof(State, cr));
+  }
+
+  void record() {
+    // Retain the guest result before this method reuses EAX for the CR word.
+    bytes({0x85, 0xc0});
+    condition(0, true);
+  }
+
+  void flags(bool carry, bool overflow, bool invert_carry = false, bool carry_ready = false,
+             bool overflow_ready = false) {
+    // Capture host flags before modifying any scratch register. R8B can also
+    // hold an instruction-specific carry that differs from the host carry.
+    if (carry && !carry_ready)
+      bytes({0x41, 0x0f, static_cast<u8>(invert_carry ? 0x93 : 0x92), 0xc0});
+    if (overflow && !overflow_ready)
+      bytes({0x41, 0x0f, 0x90, 0xc1});
+    memory(0x8b, 2, offsetof(State, spr) + spr::xer * sizeof(u32));
+    bytes({0x81, 0xe2});
+    word(~((carry ? 0x20000000u : 0) | (overflow ? 0x40000000u : 0)));
+    if (carry) {
+      bytes({0x45, 0x0f, 0xb6, 0xc0, 0x41, 0xc1, 0xe0, 29, 0x44, 0x09, 0xc2});
+    }
+    if (overflow) {
+      bytes({0x45, 0x0f, 0xb6, 0xc9, 0x41, 0xc1, 0xe1, 30, 0x44, 0x09, 0xca});
+      bytes({0x41, 0xd1, 0xe1, 0x44, 0x09, 0xca}); // SO retains any earlier overflow.
+    }
+    memory(0x89, 2, offsetof(State, spr) + spr::xer * sizeof(u32));
   }
 
   std::span<const u8> code() const {
@@ -100,22 +238,47 @@ public:
   }
 
 private:
-  std::array<u8, 128> storage_{};
+  void spill() {
+    if (retained_guest_ < 32) {
+      memory(0x89, 11, offsetof(State, gpr) + retained_guest_ * sizeof(u32));
+      retained_guest_ = 32;
+    }
+  }
+
+  std::array<u8, Capacity> storage_{};
   std::size_t size_ = 0;
+  bool retain_register_ = false;
+  unsigned retained_guest_ = 32;
 };
 
-Encoder encode(u32 opcode) {
-  Encoder code;
-  code.bytes({0xf3, 0x0f, 0x1e, 0xfa}); // ENDBR64 also permits indirect entry with CET.
-#ifdef _WIN32
-  code.bytes({0x49, 0x89, 0xca}); // RCX -> R10
-#else
-  code.bytes({0x49, 0x89, 0xfa}); // RDI -> R10
-#endif
+template <std::size_t Capacity> void encode_instruction(Encoder<Capacity> &code, u32 opcode) {
   const unsigned primary = opcode >> 26, source = (opcode >> 21) & 31;
   const unsigned address = (opcode >> 16) & 31, count = (opcode >> 11) & 31;
   bool record = false;
-  if (primary == 14 || primary == 15) {
+  if (primary == 10 || primary == 11) {
+    code.load(0, address);
+    code.accumulator(0x3d, primary == 10
+                               ? opcode & 0xffff
+                               : static_cast<u32>(static_cast<s32>(static_cast<s16>(opcode))));
+    code.condition((opcode >> 23) & 7, primary == 11);
+  } else if (primary == 7 || primary == 8 || primary == 12 || primary == 13) {
+    const u32 immediate = static_cast<u32>(static_cast<s32>(static_cast<s16>(opcode)));
+    code.load(0, address);
+    if (primary == 7) {
+      code.bytes({0x69, 0xc0}); // IMUL EAX, EAX, signed immediate
+      code.word(immediate);
+    } else if (primary == 8) {
+      code.bytes({0x89, 0xc1});
+      code.accumulator(0xb8, immediate);
+      code.bytes({0x29, 0xc8});
+      code.flags(true, false, true);
+    } else {
+      code.accumulator(0x05, immediate);
+      code.flags(true, false);
+      record = primary == 13;
+    }
+    code.store(source);
+  } else if (primary == 14 || primary == 15) {
     const u32 immediate = static_cast<u32>(static_cast<s32>(static_cast<s16>(opcode)))
                           << (primary == 15 ? 16 : 0);
     if (address == 0)
@@ -131,6 +294,116 @@ Encoder encode(u32 opcode) {
     code.accumulator(primary < 26 ? 0x0d : primary < 28 ? 0x35 : 0x25, immediate);
     code.store(address);
     record = primary >= 28;
+  } else if (primary == 31) {
+    const unsigned operation = (opcode >> 1) & 1023, arithmetic = operation & 511;
+    if (operation == 0 || operation == 32) {
+      code.load(0, address);
+      code.load(1, count);
+      code.bytes({0x39, 0xc8});
+      code.condition((opcode >> 23) & 7, operation == 0);
+    } else if (operation == 24 || operation == 536) {
+      code.load(0, source);
+      code.load(1, count);
+      code.bytes({0xd3, static_cast<u8>(operation == 24 ? 0xe0 : 0xe8)});
+      code.bytes({0x31, 0xd2, 0xf6, 0xc1, 32, 0x0f, 0x45, 0xc2});
+      code.store(address);
+      record = opcode & 1;
+    } else if (operation == 792 || operation == 824) {
+      code.load(0, source);
+      code.bytes({0x48, 0x63, 0xc0, 0x48, 0x89, 0xc2}); // sign-extend; retain input
+      if (operation == 824)
+        code.accumulator(0xb9, count);
+      else
+        code.load(1, count);
+      // A 64-bit SAR uses exactly the guest's six-bit variable shift count and
+      // already saturates a sign-extended 32-bit input for counts above 31.
+      code.bytes({0x48, 0xd3, 0xf8, 0x49, 0x89, 0xc0, 0x49, 0xd3, 0xe0});
+      code.bytes({0x49, 0x39, 0xd0, 0x41, 0x0f, 0x95, 0xc0}); // lost bits
+      code.bytes({0x85, 0xd2, 0x41, 0x0f, 0x98, 0xc1, 0x45, 0x20, 0xc8});
+      code.flags(true, false, false, true);
+      code.store(address);
+      record = opcode & 1;
+    } else if (operation == 26 || operation == 922 || operation == 954) {
+      code.load(0, source);
+      if (operation == 26) {
+        code.accumulator(0xba, 63);
+        code.bytes({0x0f, 0xbd, 0xc0, 0x0f, 0x44, 0xc2}); // BSR; defined zero result
+        code.accumulator(0x35, 31);
+      } else {
+        code.bytes({0x0f, static_cast<u8>(operation == 922 ? 0xbf : 0xbe), 0xc0});
+      }
+      code.store(address);
+      record = opcode & 1;
+    } else if (operation == 28 || operation == 60 || operation == 124 || operation == 284 ||
+               operation == 316 || operation == 412 || operation == 444 || operation == 476) {
+      code.load(0, source);
+      code.load(1, count);
+      if (operation == 60 || operation == 412)
+        code.bytes({0xf7, 0xd1});
+      const u8 instruction = operation == 28 || operation == 60 || operation == 476 ? 0x21
+                             : operation == 284 || operation == 316                 ? 0x31
+                                                                                    : 0x09;
+      code.bytes({instruction, 0xc8});
+      if (operation == 124 || operation == 284 || operation == 476)
+        code.bytes({0xf7, 0xd0});
+      code.store(address);
+      record = opcode & 1;
+    } else {
+      const bool overflow = (opcode & 0x400) != 0;
+      code.load(0, address);
+      if (arithmetic == 104) {
+        code.bytes({0xf7, 0xd8});
+        if (overflow)
+          code.flags(false, true);
+      } else if (arithmetic == 11 || arithmetic == 75 || arithmetic == 235) {
+        code.load(1, count);
+        if (arithmetic == 235) {
+          code.bytes({0x0f, 0xaf, 0xc1});
+          if (overflow)
+            code.flags(false, true);
+        } else {
+          code.bytes({0xf7, static_cast<u8>(arithmetic == 11 ? 0xe1 : 0xe9), 0x89, 0xd0});
+        }
+      } else {
+        const bool subtract = arithmetic == 8 || arithmetic == 40 || arithmetic == 136 ||
+                              arithmetic == 200 || arithmetic == 232;
+        const bool minus_one = arithmetic == 232 || arithmetic == 234;
+        const bool incoming =
+            arithmetic != 8 && arithmetic != 10 && arithmetic != 40 && arithmetic != 266;
+        const bool carry = arithmetic != 40 && arithmetic != 266;
+        if (subtract)
+          code.bytes({0xf7, 0xd0});
+        if (minus_one) {
+          code.bytes({0x41, 0x89, 0xc0}); // Retain complemented or ordinary left operand.
+          code.accumulator(0xb9, 0xffffffff);
+        } else if (arithmetic == 200 || arithmetic == 202) {
+          code.accumulator(0xb9, 0);
+        } else {
+          code.load(1, count);
+        }
+        if (incoming) {
+          code.memory(0x8b, 2, offsetof(State, spr) + spr::xer * sizeof(u32));
+          code.bytes({0x0f, 0xba, 0xe2, 29, 0x11, 0xc8}); // BT XER.CA; ADC EAX, ECX
+        } else if (subtract) {
+          code.bytes({0xf9, 0x11, 0xc8});
+        } else {
+          code.bytes({0x01, 0xc8});
+        }
+        if (minus_one) {
+          // These two operations test carry against (incoming - 1), including
+          // the zero incoming operand when CA is set. Preserve OF separately.
+          if (overflow)
+            code.bytes({0x41, 0x0f, 0x90, 0xc1});
+          code.bytes({0x31, 0xc9, 0x45, 0x85, 0xc0, 0x0f, 0x95, 0xc1});
+          code.bytes({0x0f, 0xba, 0xe2, 29, 0x41, 0x0f, 0x93, 0xc0, 0x41, 0x20, 0xc8});
+          code.flags(true, overflow, false, true, true);
+        } else if (carry || overflow) {
+          code.flags(carry, overflow);
+        }
+      }
+      code.store(source);
+      record = opcode & 1;
+    }
   } else {
     const unsigned begin = (opcode >> 6) & 31, end = (opcode >> 1) & 31;
     const u32 from_begin = 0xffffffffu >> begin, through_end = 0xffffffffu << (31 - end);
@@ -154,7 +427,64 @@ Encoder encode(u32 opcode) {
   }
   if (record)
     code.record();
-  code.byte(0xc3);
+}
+
+Encoder<> encode(u32 opcode) {
+  Encoder<> code;
+  code.entry();
+  encode_instruction(code, opcode);
+  code.finish();
+  return code;
+}
+
+unsigned destination_register(u32 opcode) {
+  const unsigned primary = opcode >> 26;
+  if (primary == 10 || primary == 11)
+    return 32;
+  if (primary == 31) {
+    const unsigned operation = (opcode >> 1) & 1023;
+    if (operation == 0 || operation == 32)
+      return 32;
+    switch (operation & 511) {
+    case 8:
+    case 10:
+    case 11:
+    case 40:
+    case 75:
+    case 104:
+    case 136:
+    case 138:
+    case 200:
+    case 202:
+    case 232:
+    case 234:
+    case 235:
+    case 266:
+      return (opcode >> 21) & 31;
+    default:
+      return (opcode >> 16) & 31;
+    }
+  }
+  return primary >= 20 ? (opcode >> 16) & 31 : (opcode >> 21) & 31;
+}
+
+Encoder<block_slot_bytes> encode_sequence(std::span<const u32> words) {
+  // R11 is volatile in both host ABIs and unused by instruction scratch work.
+  // Sequences contain only register operations, so one dirty guest register can
+  // remain here until replacement or return without an observable state gap.
+  Encoder<block_slot_bytes> code;
+  code.entry();
+  for (unsigned n = 0; n < words.size(); ++n) {
+    const unsigned destination = destination_register(words[n]);
+    unsigned next_destination = 32;
+    for (unsigned next = n + 1; next < words.size() && next_destination == 32; ++next)
+      next_destination = destination_register(words[next]);
+    // Retain only overwritten destinations. Independent writes keep their
+    // direct store without occupying a host register or adding move traffic.
+    code.retain_result(destination < 32 && destination == next_destination);
+    encode_instruction(code, words[n]);
+  }
+  code.finish();
   return code;
 }
 
@@ -194,23 +524,29 @@ public:
   Operation append(std::span<const u8> code) {
     if (!fits(code.size()))
       throw std::logic_error("Native code page capacity exceeded");
+    const auto operation = replace(used_, code);
+    used_ += code.size();
+    return operation;
+  }
+
+  Operation replace(std::size_t offset, std::span<const u8> code) {
+    if (offset > size_ || code.size() > size_ - offset)
+      throw std::logic_error("Native code replacement exceeds its arena bound");
     // Emitted operations make no calls. Compilation runs on the owning CPU
     // thread between operations, so an existing page is never executing here.
     if (sealed_)
       protect(false);
-    std::memcpy(memory_ + used_, code.data(), code.size());
+    std::memcpy(memory_ + offset, code.data(), code.size());
     protect(true);
 #ifdef _WIN32
-    if (!FlushInstructionCache(GetCurrentProcess(), memory_ + used_, code.size()))
+    if (!FlushInstructionCache(GetCurrentProcess(), memory_ + offset, code.size()))
       throw std::system_error(static_cast<int>(GetLastError()), std::system_category(),
                               "Native instruction-cache flush failed");
 #else
-    __builtin___clear_cache(reinterpret_cast<char *>(memory_ + used_),
-                            reinterpret_cast<char *>(memory_ + used_ + code.size()));
+    __builtin___clear_cache(reinterpret_cast<char *>(memory_ + offset),
+                            reinterpret_cast<char *>(memory_ + offset + code.size()));
 #endif
-    const auto operation = reinterpret_cast<Operation>(memory_ + used_);
-    used_ += code.size();
-    return operation;
+    return reinterpret_cast<Operation>(memory_ + offset);
   }
 
 private:
@@ -248,16 +584,30 @@ std::size_t page_size() {
 } // namespace
 
 struct NativeInteger::Impl {
-  explicit Impl(unsigned limit) : capacity(limit) {
+  explicit Impl(unsigned limit, unsigned block_limit)
+      : capacity(limit), block_capacity(block_limit) {
 #if CUPID_NATIVE_X64
     operations.reserve(capacity);
+    blocks.resize(block_capacity);
+    block_lookup.reserve(block_capacity);
 #endif
   }
 
-  unsigned capacity;
+  unsigned capacity, block_capacity;
 #if CUPID_NATIVE_X64
   std::unordered_map<u32, Operation> operations;
   std::vector<std::unique_ptr<ExecutablePage>> pages;
+  std::vector<BlockEntry> blocks;
+  std::unordered_map<BlockKey, unsigned, BlockHash> block_lookup;
+  std::unique_ptr<ExecutablePage> block_arena;
+  unsigned next_block = 0, last_block = 0;
+
+  void clear_blocks() noexcept {
+    std::fill(blocks.begin(), blocks.end(), BlockEntry{});
+    block_lookup.clear();
+    block_arena.reset();
+    next_block = last_block = 0;
+  }
 #endif
 };
 
@@ -265,29 +615,37 @@ bool NativeInteger::supported() noexcept {
   return CUPID_NATIVE_X64 != 0;
 }
 
-NativeInteger::NativeInteger(unsigned capacity) {
+bool NativeInteger::can_execute(u32 opcode) noexcept {
+  return eligible(opcode);
+}
+
+NativeInteger::NativeInteger(unsigned capacity, unsigned block_capacity) {
   if (!supported())
     throw std::runtime_error("Native integer execution requires an x86-64 host");
   if (capacity == 0 || capacity > 4096)
     throw std::invalid_argument("Native integer cache capacity must be between 1 and 4096");
-  impl_ = std::make_unique<Impl>(capacity);
+  if (block_capacity == 0 || block_capacity > 512)
+    throw std::invalid_argument("Native sequence cache capacity must be between 1 and 512");
+  impl_ = std::make_unique<Impl>(capacity, block_capacity);
 }
 
 NativeInteger::~NativeInteger() = default;
 
 bool NativeInteger::execute_other(State &state, u32 opcode) {
+  auto &hint = hints_[(opcode ^ (opcode >> 11) ^ (opcode >> 21)) & 2047];
   if (!eligible(opcode)) {
+    hint = {opcode, Hint::Kind::Unsupported, nullptr};
     ++statistics_.fallback;
     return false;
   }
 #if CUPID_NATIVE_X64
-  auto &hint = hints_[(opcode ^ (opcode >> 11) ^ (opcode >> 21)) & 2047];
   Operation operation = nullptr;
   if (const auto found = impl_->operations.find(opcode); found != impl_->operations.end()) {
     operation = found->second;
     ++statistics_.cache_hits;
   } else {
     if (impl_->operations.size() == impl_->capacity) {
+      hint = {opcode, Hint::Kind::Capacity, nullptr};
       ++statistics_.capacity_fallbacks;
       ++statistics_.fallback;
       return false;
@@ -302,7 +660,7 @@ bool NativeInteger::execute_other(State &state, u32 opcode) {
     statistics_.cache_entries = impl_->operations.size();
     statistics_.executable_bytes = impl_->pages.size() * page_bytes;
   }
-  hint = {opcode, operation};
+  hint = {opcode, Hint::Kind::Emitted, operation};
   invoke_operation(state, operation);
   ++statistics_.executed;
   return true;
@@ -314,9 +672,80 @@ bool NativeInteger::execute_other(State &state, u32 opcode) {
 }
 
 void NativeInteger::reset() {
-  impl_ = std::make_unique<Impl>(impl_->capacity);
+  impl_ = std::make_unique<Impl>(impl_->capacity, impl_->block_capacity);
   hints_ = {};
   statistics_ = {};
+}
+
+bool NativeInteger::execute_sequence(State &state, std::span<const u32> words) {
+  if (words.size() < 2 || words.size() > 8)
+    return false;
+#if CUPID_NATIVE_X64
+  BlockKey key;
+  key.count = static_cast<u32>(words.size());
+  std::copy(words.begin(), words.end(), key.words.begin());
+  bool hit = false;
+  unsigned slot = impl_->last_block;
+  if (impl_->blocks[slot].operation && impl_->blocks[slot].key == key)
+    hit = true;
+  else if (const auto found = impl_->block_lookup.find(key); found != impl_->block_lookup.end()) {
+    slot = found->second;
+    hit = true;
+  }
+  if (!hit) {
+    if (!std::all_of(words.begin(), words.end(), eligible))
+      return false;
+    slot = impl_->next_block;
+    try {
+      const auto code = encode_sequence(words);
+      if (!impl_->block_arena) {
+        const std::size_t requested = impl_->block_capacity * block_slot_bytes;
+        const auto page = page_size();
+        const auto bytes = (requested + page - 1) / page * page;
+        impl_->block_arena = std::make_unique<ExecutablePage>(bytes);
+        statistics_.block_executable_bytes = bytes;
+      }
+      auto &entry = impl_->blocks[slot];
+      if (entry.operation)
+        impl_->block_lookup.erase(entry.key);
+      const auto offset = slot * block_slot_bytes;
+      const auto operation = impl_->block_arena->replace(offset, code.code());
+      impl_->block_lookup.emplace(key, slot);
+      if (entry.operation)
+        ++statistics_.block_replacements;
+      else
+        ++statistics_.block_cache_entries;
+      entry = {key, operation};
+      impl_->next_block = (slot + 1) % impl_->block_capacity;
+      ++statistics_.block_compilations;
+    } catch (const std::bad_alloc &) {
+      impl_->clear_blocks();
+      statistics_.block_cache_entries = statistics_.block_executable_bytes = 0;
+      ++statistics_.block_compilation_failures;
+      return false;
+    } catch (const std::system_error &) {
+      // Failed page protection may affect old slots too. Retire all entries
+      // before returning to ordinary execution, which can retry safely.
+      impl_->clear_blocks();
+      statistics_.block_cache_entries = statistics_.block_executable_bytes = 0;
+      ++statistics_.block_compilation_failures;
+      return false;
+    }
+  }
+  impl_->last_block = slot;
+  invoke_operation(state, impl_->blocks[slot].operation);
+  statistics_.executed += words.size();
+  statistics_.block_executed += words.size();
+  ++statistics_.block_runs;
+  if (hit) {
+    ++statistics_.block_cache_hits;
+    statistics_.cache_hits += words.size();
+  }
+  return true;
+#else
+  (void)state;
+  return false;
+#endif
 }
 
 NativeIntegerStatistics NativeInteger::statistics() const noexcept {

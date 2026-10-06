@@ -21,6 +21,7 @@ keys.bin
 /build*/
 /out/
 /.cache/
+/gmon.out
 __pycache__/
 *.log
 *.dmp

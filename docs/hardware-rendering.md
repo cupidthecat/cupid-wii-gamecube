@@ -38,6 +38,27 @@ source-byte equality. Filter, wrap and LOD-bias changes update GPU sampling
 state without decoding or uploading unchanged texels. A changed reachable mip
 count still invalidates the decode. Cache revisions control GPU uploads.
 
+Draw-state uploads compare all 256 BP words and all 32 TEV/konst words with
+the last uploaded array. Equal arrays reuse the existing GPU register buffer.
+An identical admitted state also reuses its eligibility result and packed
+registers. Each draw still checks all reachable texture bytes. A
+rejected state leaves the last GPU register array intact. XFB copy and clear
+commands use a separate parameter buffer and restore the fragment program.
+
+Projected texture coordinates keep the CPU path's float rounding at each step:
+the reciprocal of interpolated W, the Q product, the projected quotient, and
+the S/T products before conversion to signed 17.7 coordinates. The two
+divisions use double intermediates rounded back to float. The shader's
+`precise` qualifier preserves operation order but does not require a driver to
+round float division exactly. An approximate quotient can cross a fixed-point
+sampling boundary and change a filtered texel.
+
+Within each fragment, stages reuse the most recently selected coordinate's
+projected S/T values. The first sample also prepares and retains its 2 by 2
+derivatives. Selecting another coordinate invalidates those values. Each
+texture unit still applies its own filtering, wrap and LOD state to the
+retained arithmetic inputs.
+
 Source snapshots cover the checked RAM mip extent, the selected manual TMEM
 bank or both RGBA8 banks, and the selected palette. C4, C8 and C14X2 compare
 32, 512 and 32,768 palette bytes respectively. Unrelated TMEM writes do not
@@ -156,6 +177,36 @@ checks 9,198 adjacent-depth pixels around the four exponential curves'
 quantization boundaries without fallback. Invalid range parameters preserve
 CPU diagnostics, and a valid CPU continuation followed by hardware work must
 preserve the EFB. Use `--fog-only` to run these focused fog checks.
+
+`--projection-only` checks one authored I8 gradient pixel at a projected
+division boundary and 256 generated reciprocal profiles with zero Q. The
+first case requires fixed coordinate 49,492 and RGB value `0x272727`. Each
+profile compares the GPU's sampled color with the CPU fragment shader and
+requires hardware execution without fallback. These cases test both divisions
+whose rounded results feed texture coordinates.
+Another 512 profiles vary W, Q and S/T planes across 4 by 4 rectangles. They
+compare all 8,192 sampled colors with the CPU fragment shader, including six
+I8 mip levels, point and trilinear mip selection, both derivative modes,
+signed LOD bias, point and linear filters, and all wrap modes. Every profile
+requires one hardware dispatch and zero fallbacks.
+Adding `--benchmark` to `--projection-only` times 64 draws of a 128 by 128
+rectangle with 16 stages selecting one projected coordinate. The timed work
+executes 1,048,576 GPU fragments, requires zero fallbacks, and checks every EFB
+pixel against the authored gradient result after readback.
+
+`--state-only` checks nine queued draws after repeated identical begins,
+changed BP/TEV/konst words, and a rejected state followed by the preceding
+valid state. It compares the final pixels exactly with the CPU shader.
+Adding `--benchmark` measures 200,000 unchanged begins after those checks.
+
+A separate 256-profile fixture queues 512 draws across workgroup-edge widths
+and heights, sparse triangle coverage, all depth comparisons, early and late
+depth writes, alpha rejection and zero through four indirect maps. It matches
+the complete EFB, fragment counts and retained texture/indirect latches after
+28,549 accepted fragments. The full required-device suite and both authored
+CPU-to-VI guests pass on the RTX 3060 and Mesa. Counter-aggregation prototypes
+also passed pixel checks but were slower and were removed; shader bytes remain
+unchanged by the draw-admission cache.
 
 Before the indirect extension, the suite passed on October 4, 2026, under WSL with Mesa
 `llvmpipe (LLVM 20.1.2, 256 bits)`: 1,799 dispatches and 2,789,052 shader fragments.
@@ -350,6 +401,75 @@ whole-game speed, gameplay or full-speed execution.
 
 ## Bounded commercial comparisons
 
+The projective precision checks passed on October 4, 2026, in isolated strict
+MSVC 19.51 and GCC 13.3 Release builds, using the RTX 3060 and WSL llvmpipe
+drivers above. Both complete required-device hardware suites passed as well.
+The regression's authored projected-division case failed on the native driver
+before the fix. A generated zero-Q reciprocal case also failed before its
+division was rounded. No comparison tolerances or software fallbacks were
+added.
+
+A private Galaxy capture located a native color difference in field 664,
+GX command 647,885. Replaying the complete captured draw reproduced one raw
+EFB pixel difference at `(387,443)`: CPU `0x24f580`, GPU `0x20f540`, with matching
+depth `0xfffc76`. The initial CPU and GPU replays each matched their captured
+arrays exactly. The same initial replay passed on llvmpipe. A single dispatch
+and fragment retained the native failure. Instrumented W, reciprocal, Q and
+S/T values matched; the projected quotient differed by one float step and
+crossed a signed 17.7 sampling boundary.
+
+After the two rounded divisions, the complete original draw passed on both
+drivers with 11 hardware dispatches, 68,775 fragments and zero color or depth
+differences against the captured CPU result. The frozen core and graphics
+sources, exact invocation receipts, red and green logs and private capture
+remain under `local-artifacts/galaxy-draw-capture-20261004/`. This validates that
+draw and the arithmetic regressions. It does not establish equivalence for a
+complete commercial run or playable gameplay.
+
+A separate frozen continuation with only the projected-division correction
+completed at field 690 with 8,425,629,213 successful instructions, 12,512 GPU
+dispatches, 935,052,581 GPU fragments and zero fallback rectangles. All 23
+checkpoints, taken every 30 fields, match the software control's complete
+reported state apart from the three backend counters. Their PPM files also
+match byte for byte. Final main and secondary RAM dumps, frame bytes, PCM
+bytes and persisted user files are identical. The supplied image, replay and
+frozen sources remain unchanged. The receipt is
+`local-artifacts/galaxy-projection-continuation-20261004/completed-003.json`.
+This verifies the corrected startup prefix through the first recorded frame
+difference. Later fields and gameplay remain outside that comparison.
+
+An extension with the same frozen core, the projected-division correction and
+the exact state-upload cache completed through field 1,050. All 35 checkpoints
+and final reported state match the software control apart from the three
+backend counters. Full CPU dumps, both complete RAM dumps, PPM files, PCM
+bytes and persisted user files match exactly. It executed 12,747,664,586
+successful instructions, 268,063 GPU dispatches and 1,487,715,052 GPU fragments.
+Its 406 fallback rectangles produced seven CPU fragments. The image, replay
+and frozen sources remain unchanged. The receipt is
+`local-artifacts/galaxy-state-projection-continuation-20261004/completed.json`.
+This closes the recorded frame and secondary-RAM differences at that bound.
+It uses the shader before projected-coordinate reuse and establishes no later
+gameplay or full-speed result.
+
+The state-upload regression passed on both drivers in strict MSVC 19.51 and
+GCC 13.3 Release builds. Five runs of its 200,000-begin benchmark had native
+medians of 0.156990 seconds before caching and 0.0324661 seconds after caching.
+The llvmpipe medians were 0.0849154 and 0.0265423 seconds. Other builds and
+commercial validation were active during these measurements. They measure
+unchanged-state submission overhead and do not establish a commercial frame
+rate. The exact logs remain under
+`local-artifacts/graphics-fidelity-20261004/`.
+
+The projected-coordinate reuse checks and the complete original captured draw
+passed on both drivers. Five runs of the 16-stage rectangle benchmark had RTX
+3060 medians of 0.0349868 seconds before reuse and 0.0098433 seconds after
+reuse. The llvmpipe medians were 0.269940 and 0.248199 seconds. Each timed
+result includes submission and GPU completion after a separate warm-up draw.
+The measurements share the same workload and exact pixel checks, with other
+validation active on the host; they do not measure commercial gameplay. The
+field-690 commercial continuation above uses the frozen shader before this
+reuse change.
+
 On October 4, 2026, both renderers ran from the same copied Windows executable,
 configured as `integrated-runtime-private-20261004`. Its SHA-256 was
 `c53402c5e7d9f1fb5d8c6505a360c96d0b4b489ee70b771057397c2996e0d74a`.
@@ -390,6 +510,145 @@ measurements. Private receipts, exact arguments, input hashes, state dumps,
 images and timing records are retained under the ignored local directory
 `local-artifacts/hardware-commercial-final-20261004/`.
 
+## Derivative-independent texture sampling
+
+The compute sampler skips projective derivatives when minification and
+magnification use the same filter and mip selection is fixed. A disabled mip
+filter always samples level zero; enabled mip filtering can skip derivatives
+when the minimum and maximum LOD are equal. Different minification and
+magnification filters still select the filter from the unclamped LOD before
+applying the bounds. Both paths share the same mip sampling code.
+
+Required-device suites pass on the RTX 3060 and Mesa with 1,280 varying-W/Q,
+mip and fixed-LOD profiles compared pixel for pixel against the CPU. The
+complete captured Galaxy field-664 draw also matches every EFB color and depth
+pixel on both drivers: 11 dispatches and 68,775 fragments. Five alternating
+native pairs change the fixed-LOD benchmark median from 0.033539 to 0.012348
+seconds. Replaying the complete captured draw 64 times changes from 0.058950
+to 0.049951 seconds. The Mesa samples conflict and establish no throughput gain.
+These measurements cover rendering components under a shared host, not a
+commercial frame rate. Exact sources, samples and required-device logs remain
+under `local-artifacts/graphics-next-continuation-20261004/`.
+
+## Empty raster coverage
+
+After the existing state, texture-coordinate and edge-range admission checks,
+the hardware path rejects rectangles lying entirely outside a strict triangle
+edge. Rectangles containing at most 64 pixels also receive an exact host
+coverage scan. If no sample is covered, the renderer completes the work
+without uploading parameters or issuing a dispatch. Empty coverage leaves
+EFB values, fragment counters and retained texture samples unchanged.
+
+Six captured Galaxy rectangles, strict zero-edge boundaries and six visible
+neighbors verify that distinction. The fixture starts with nonzero retained
+texture state and checks its preservation. The earlier renderer fails the
+new unnecessary-dispatch assertion on both drivers. The complete required
+hardware suite passes with the repair on the RTX 3060 and Mesa; it retains
+all color, depth, bounding-box, texture, fog, projection and XFB checks.
+The shader is unchanged. Sources, red/green logs, dependency hashes and
+executable receipts remain in `.cache/graphics-gameplay-20261004/empty-fix/`.
+
+The combined RAM/empty-coverage Sunshine runtime completes field 10,000 and
+renders ordinary airstrip movement and jumping. All 86 shared checkpoints
+through field 5,160 retain exact guest state and raw frame bytes. GPU execution
+counters have their own scope: the existing 4,094-dispatch cap is tested before
+coverage admission, so removing empty dispatches can change which later
+rectangles use the checked CPU fallback. Per-empty-work fragment and retained
+state invariance does not imply identical whole-run GPU/CPU counters.
+[Compatibility](compatibility.md) records the complete capture and its limits.
+
+## Exact fog division on the Linux physical driver
+
+A WSLg child process using `GALLIUM_DRIVER=d3d12` exposes the physical RTX 3060.
+The original full pixel suite finds a one-step blue-channel error at pixel
+(52, 53) of fog profile 1,384. Its perspective quotient differs by one binary32
+step even when the division is written in double precision. The original
+failure and unsuccessful precision-only repair remain retained.
+
+The fog helper now selects the nearest binary32 quotient by exact midpoint
+comparisons, with ties to even. It decodes operands from bits so subnormal
+values survive conversion. A midpoint and denominator require at most 49
+significand bits; their product fits exactly in binary64. Eight local
+corrections precede a bounded binary search when the estimate is unusable.
+Signs, signed zero, subnormal boundaries and the overflow boundary retain
+their separate handling. Only four fog divisions change; texture projection
+and renderer admission remain unchanged.
+
+The complete unchanged pixel suite passes on native RTX, physical D3D12 RTX
+and Mesa llvmpipe. An independent 65,536-case division fixture passes on all
+three drivers, comparing 65,524 defined results bit for bit and checking the
+classification of 12 invalid NaN cases separately. Captured fog pixels,
+neighbors, full EFB/depth and fragment/bounding-box state match the CPU.
+The shader SHA256 is
+`28c18602a2b5b6aba26d180db245882cbb1e0892f1e484e147f2305b63c597f9`.
+The exact proof and original failures remain in
+`.cache/graphics-gameplay-20261004/fog-d3d12/immutable-v2/`.
+Physical Linux D3D12 on the RTX 3060 also completes a 320-field Sunshine startup.
+Every recorded raw frame and guest state matches the CPU renderer after the
+three backend counters are excluded. The ordinary CLI and its checkpoint
+observer match all 60 final values, including every renderer counter, plus
+frame and storage bytes. The longer ordinary-input capture is still running.
+
+## Ordered small rectangles
+
+The renderer batches at most 16 rectangles of at most 256 pixels each. Their
+union may contain at most 4,096 pixels and at most four times the sum of their
+individual areas. Each GPU invocation owns one EFB pixel and applies admitted
+records in order. Projection coordinates and cached samples reset for each
+record; blend, depth and retained texture state keep their ordinary sequence.
+State changes, texture revisions, framebuffer access and XFB operations flush
+pending work. The original large-rectangle kernel remains byte-identical.
+
+Raster dispatch statistics count actual GPU calls. A separate 4,094-record
+logical cap preserves the existing latch-tag limit. XFB and clear dispatches
+are excluded from the raster count. Compile-time checks require identical fog
+helper text and all four call sites in both kernels.
+
+Full suites, 4,176 independent boundary rectangles and captured small fog
+neighbors pass on Windows RTX, Linux llvmpipe and physical Linux D3D12/RTX.
+Deliberately broken ordering, projection and texture barriers fail the private
+oracles. An initial stock-only captured-fog oracle used pixel bounds instead of
+the required complete 2x2 quad bounds; its failed log remains recorded, and the
+corrected expectation passes both renderers on all three drivers. The initial
+reused executable and source bytes were overwritten before sealing and are not
+claimed to remain reproducible.
+
+A pair using the 224-file CPU/fog snapshot reaches Galaxy field 1,050. All 35
+checkpoint graphics snapshots and raw frames, final graphics state, 2,124
+non-dispatch JSON values and storage match. Actual raster calls fall from
+240,351 to 112,118; accepted fragments remain 1,487,715,052 with 406 CPU fallback
+rectangles. The private 563-file production packet, separate 54-file compile
+guard packet and 296 execution files were rehashed before integration. Receipts
+remain in `.cache/gpu-ordered-batch-20261005/`. The complete combined source
+matrices and a full-speed gameplay result remain pending.
+
+## Prepared texture uploads
+
+Hardware cache fills decode complete texture tiles from the already validated
+source span. Image dimensions, mip layout, bank selection and palette state are
+computed once per image. The prepared decoder handles all eleven supported
+formats, including split-bank RGBA8, indexed palettes and compressed blocks.
+Short source or destination spans retain explicit validation. The original
+scalar texture implementation remains byte-identical in its own translation
+unit; normal CPU texture sampling keeps that path.
+
+Strict MSVC checks compare 555,456 prepared and scalar texels exactly. They cover
+mips, odd image sizes, RAM and manual texture memory, palettes and invalid spans.
+The unchanged complete hardware suite passes on the RTX 3060 with the new
+cache-fill path. The separate authored CPU-to-VI guest probe confirms three
+physical raster batches and 768 shader fragments on both consoles, with exact
+frame pixels, controller redraw and zero fallback rectangles.
+
+Three alternating component rounds use the same CPU affinity and eleven
+256-by-256 format captures. Every complete output matches. Prepared decoding
+ratios range from 1.41 to 2.36 compared with repeated scalar decoding. Concurrent
+gameplay and compilation affect these timings; demand-sampling controls vary
+from 0.76 to 1.19 despite identical scalar source. This establishes a prepared
+cache-fill measurement, with no stable demand or whole-game speed claim.
+Exact sources, captures, raw samples and rejected slower experiments remain in
+`.cache/gpu-texture-isolated-final-20261005/` and its recorded predecessor
+directories.
+
 ## Behavior mappings
 
 The behavioral checkout is pinned at
@@ -404,6 +663,7 @@ validated graphics modules and an independently written compute shader.
 | GPU TEV combiner, alpha and depth textures | `VideoBackends/Software/Tev.cpp`, `Draw`, `DrawColorRegular`, `DrawColorCompare`, `DrawAlphaRegular`, `DrawAlphaCompare` | Stage sequencing, integer arithmetic, retained texture samples, comparisons and depth-texture ordering. |
 | GPU indirect maps, matrices, bump alpha and retained state | `VideoBackends/Software/Tev.cpp`, `Indirect`, `Draw`, `WrapIndirectCoord`; `VideoBackends/Software/Rasterizer.cpp`, `CalculateLOD`, `Draw`; `VideoCommon/PixelShaderGen.cpp`, `WriteStage` | Map order and scale, signed matrix arithmetic, 24-bit coordinate wrapping, per-stage bump alpha, traversal latches and documented differences between behavioral paths. |
 | GPU fog, quantized curve tables and viewport-width transfer | `VideoBackends/Software/Tev.cpp`, `Draw`; `VideoCommon/BPMemory.h`, `FogParams`, `FogRangeKElement`; `VideoCommon/PixelShaderGen.cpp`, `WriteFog`; `VideoCommon/PixelShaderManager.cpp`, `SetConstants`, `SetFogParamChanged` | Perspective/orthographic depth, all curve selectors, center and coefficient interpolation, paired infinities, and final integer color weighting. The compute path follows the validated CPU factor truncation and 24-bit depth scale; the generated reference shader rounds the factor and uses a 2^24 depth scale. |
+| GPU projective texture-coordinate precision | `VideoBackends/Software/Rasterizer.cpp`, `Slope::GetValue`, `BuildBlock`, `Draw`, `CalculateLOD`; `VideoBackends/Software/Tev.cpp`, `Draw`; `VideoBackends/Software/TextureSampler.cpp`, `Sample`, `SampleMip` | Preserve separately rounded float reciprocal, Q product, quotient and S/T products before signed 17.7 conversion and derivative LOD. Double division rounded to float avoids a native driver's approximate quotients. |
 | Decoded texture cache and GPU sampling | `VideoBackends/Software/TextureSampler.cpp`, `Sample`, `SampleMip`; `VideoCommon/TextureCacheBase.cpp`, `LoadImpl`, `GetTexture`, `GetSamplerState`, `BindTextures`; `VideoCommon/TextureInfo.cpp`, `FromStage`; `VideoCommon/TextureDecoder_Common.cpp`, `TexDecoder_GetPaletteSize`; `VideoCommon/VertexManagerBase.cpp`, `Flush` | Texture decoding, reachable source/palette extents, independent sampler state, wraps, fixed filtering weights, mip selection and exact content invalidation. |
 | Raw EFB storage, GPU blending and CPU access | `VideoBackends/Software/SWEfbInterface.cpp`, `BlendTev`, `SetColor`, `SetDepth`, `ZCompare`; `VideoCommon/EFBInterface.cpp`, `HardwareEFBInterface::PokeColor`, `PokeDepth`; `VideoCommon/FramebufferManager.cpp`, `PokeEFBColor`, `PokeEFBDepth`; `Core/PowerPC/MMU.cpp`, `EFB_Write` | Pixel packing, blend/logic masks, depth ordering, ARGB pokes, bounds and unconditional poke stores. |
 | GPU XFB encoding, packed readback and copy-trigger clear | `VideoBackends/Software/SWEfbInterface.cpp`, `EncodeXFB`, `SetColor`, `SetDepth`; `VideoBackends/Software/EfbCopy.cpp`, `ClearEfb`; `VideoCommon/TextureCacheBase.cpp`, `GetRAMCopyFilterCoefficients`, `CopyRenderTargetToTexture`; `VideoCommon/TextureConversionShader.cpp`, `WriteXFBEncoder`; `VideoCommon/FramebufferManager.cpp`, `FlushEFBPokes`, `InvalidatePeekCache` | Filter coefficients, gamma quantization, YUYV packing, scaled staging rows, RAM visibility and clear ordering. The compute path retains the validated software chroma weights where the generated encoder differs. |

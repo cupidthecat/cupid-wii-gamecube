@@ -1,11 +1,39 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cupid/core/memory.hpp"
 #include <algorithm>
+#include <bit>
 #include <cstring>
 #include <sstream>
 
 namespace cupid {
 namespace {
+template <typename T> T reverse_bytes(T value) {
+  if constexpr (sizeof(T) == 1)
+    return value;
+  else if constexpr (sizeof(T) == 2)
+    return static_cast<T>((value >> 8) | (value << 8));
+  else if constexpr (sizeof(T) == 4)
+    return ((value & 0xffu) << 24) | ((value & 0xff00u) << 8) | ((value >> 8) & 0xff00u) |
+           (value >> 24);
+  else
+    return (static_cast<u64>(reverse_bytes(static_cast<u32>(value))) << 32) |
+           reverse_bytes(static_cast<u32>(value >> 32));
+}
+
+template <typename T> T read_big_endian(const u8 *bytes) {
+  T value;
+  std::memcpy(&value, bytes, sizeof(value));
+  if constexpr (std::endian::native == std::endian::little)
+    value = reverse_bytes(value);
+  return value;
+}
+
+template <typename T> void write_big_endian(u8 *bytes, T value) {
+  if constexpr (std::endian::native == std::endian::little)
+    value = reverse_bytes(value);
+  std::memcpy(bytes, &value, sizeof(value));
+}
+
 [[noreturn]] void bad_address(u32 address, bool write) {
   std::ostringstream reason;
   reason << "Unmapped physical " << (write ? "write" : "read") << " at 0x" << std::hex << address;
@@ -86,6 +114,16 @@ u32 Memory::instruction_cache_key(u32 physical) const {
   if (physical & 0x10000000)
     return 0x10000000 | (physical & (mem2_size - 1));
   return physical & (mem1_allocated_size - 1);
+}
+
+bool Memory::stable_instruction_cache_key(u32 physical, u32 &key) const {
+  if (physical & 3)
+    return false;
+  const u32 backing = (physical & 0x3fffffff) & ~31u;
+  if (backing >= mem1_size && (backing < 0x10000000 || backing - 0x10000000 >= mem2_.size()))
+    return false;
+  key = instruction_cache_key(physical);
+  return true;
 }
 
 bool Memory::read_instruction_words(u32 physical, std::span<u32> words) {
@@ -174,10 +212,16 @@ u64 Memory::read_cpu_data(u32 physical, unsigned byte_count) {
     memory_access_error();
     return 0;
   }
-  u64 value = 0;
-  for (const u8 byte : bytes)
-    value = (value << 8) | byte;
-  return value;
+  switch (byte_count) {
+  case 1:
+    return bytes[0];
+  case 2:
+    return read_big_endian<u16>(bytes.data());
+  case 4:
+    return read_big_endian<u32>(bytes.data());
+  default:
+    return read_big_endian<u64>(bytes.data());
+  }
 }
 
 void Memory::write_cpu_data(u32 physical, u32 value, unsigned byte_count) {
@@ -198,8 +242,40 @@ void Memory::write_cpu_data(u32 physical, u32 value, unsigned byte_count) {
     memory_access_error();
     return;
   }
-  for (unsigned n = 0; n < byte_count; ++n)
-    bytes[n] = static_cast<u8>(value >> ((byte_count - n - 1) * 8));
+  switch (byte_count) {
+  case 1:
+    bytes[0] = static_cast<u8>(value);
+    break;
+  case 2:
+    write_big_endian(bytes.data(), static_cast<u16>(value));
+    break;
+  case 3:
+    bytes[0] = static_cast<u8>(value >> 16);
+    bytes[1] = static_cast<u8>(value >> 8);
+    bytes[2] = static_cast<u8>(value);
+    break;
+  default:
+    write_big_endian(bytes.data(), value);
+    break;
+  }
+}
+
+bool Memory::try_clear_cpu_ram_line(u32 physical) {
+  if (physical & 31)
+    return false;
+  const auto bytes = cpu_range(physical, 32);
+  if (bytes.empty())
+    return false;
+  std::fill(bytes.begin(), bytes.end(), u8{0});
+  return true;
+}
+
+std::span<u8> Memory::plain_cpu_ram(u32 physical, unsigned byte_count) {
+  if (byte_count != 1 && byte_count != 2 && byte_count != 4 && byte_count != 8)
+    return {};
+  if ((physical & 4095) + byte_count > 4096)
+    return {};
+  return cpu_range(physical, byte_count);
 }
 
 bool Memory::write_page_table32(u32 physical, u32 value) {

@@ -64,6 +64,8 @@ std::unique_ptr<MMIO::Mapping> acquire_mmio() {
 }
 } // namespace
 
+#include "unused_jit_adapters.inc"
+
 namespace Core {
 struct System::Impl {
   explicit Impl(System &system) : jit(system), pi(system) {
@@ -542,9 +544,12 @@ unsigned compare_loads() {
                            std::optional<unsigned> quantization, unsigned scale) {
     ++comparisons;
     std::fill(physical_memory.begin(), physical_memory.end(), 0);
-    Memory::MemoryManager memory(system);
-    PowerPC::PowerPCManager manager(system);
-    PowerPC::MMU mmu(system, memory, manager);
+    auto memory_owner = std::make_unique<Memory::MemoryManager>(system);
+    auto &memory = *memory_owner;
+    auto manager_owner = std::make_unique<PowerPC::PowerPCManager>(system);
+    auto &manager = *manager_owner;
+    auto mmu_owner = std::make_unique<PowerPC::MMU>(system, memory, manager);
+    auto &mmu = *mmu_owner;
     auto &reference = manager.GetPPCState();
     Interpreter executor(system, reference, mmu, manager.GetBranchWatch(), manager.GetSymbolDB());
     const u32 original_msr =
@@ -587,7 +592,8 @@ unsigned compare_loads() {
                                             read_physical_word(hash_group(8) + 4)};
     std::copy(initial_memory.begin(), initial_memory.end(), physical_memory.begin());
     GuestBus bus;
-    cupid::cpu::Interpreter guest(bus);
+    auto guest_owner = std::make_unique<cupid::cpu::Interpreter>(bus);
+    auto &guest = *guest_owner;
     auto &state = guest.state();
     state.pc = 0x1000;
     state.msr = original_msr;
@@ -682,9 +688,12 @@ unsigned compare_stores() {
             ++comparisons;
             std::fill(physical_memory.begin(), physical_memory.end(), 0);
             std::fill(physical_memory.begin() + 0x4000, physical_memory.begin() + 0xa000, 0x5a);
-            Memory::MemoryManager memory(system);
-            PowerPC::PowerPCManager manager(system);
-            PowerPC::MMU mmu(system, memory, manager);
+            auto memory_owner = std::make_unique<Memory::MemoryManager>(system);
+            auto &memory = *memory_owner;
+            auto manager_owner = std::make_unique<PowerPC::PowerPCManager>(system);
+            auto &manager = *manager_owner;
+            auto mmu_owner = std::make_unique<PowerPC::MMU>(system, memory, manager);
+            auto &mmu = *mmu_owner;
             auto &reference = manager.GetPPCState();
             Interpreter executor(system, reference, mmu, manager.GetBranchWatch(),
                                  manager.GetSymbolDB());
@@ -727,7 +736,8 @@ unsigned compare_stores() {
             const auto expected_pi_snapshots = reference_pi_snapshots;
             std::copy(initial.begin(), initial.end(), physical_memory.begin());
             GuestBus bus;
-            cupid::cpu::Interpreter guest(bus);
+            auto guest_owner = std::make_unique<cupid::cpu::Interpreter>(bus);
+            auto &guest = *guest_owner;
             auto &state = guest.state();
             state.pc = 0x1000;
             state.msr = original_msr;
@@ -797,9 +807,12 @@ unsigned compare_quantized_stores() {
                 ++comparisons;
                 std::fill(physical_memory.begin(), physical_memory.end(), 0);
                 std::fill(physical_memory.begin() + 0x4000, physical_memory.begin() + 0xa000, 0x5a);
-                Memory::MemoryManager memory(system);
-                PowerPC::PowerPCManager manager(system);
-                PowerPC::MMU mmu(system, memory, manager);
+                auto memory_owner = std::make_unique<Memory::MemoryManager>(system);
+                auto &memory = *memory_owner;
+                auto manager_owner = std::make_unique<PowerPC::PowerPCManager>(system);
+                auto &manager = *manager_owner;
+                auto mmu_owner = std::make_unique<PowerPC::MMU>(system, memory, manager);
+                auto &mmu = *mmu_owner;
                 auto &reference = manager.GetPPCState();
                 Interpreter executor(system, reference, mmu, manager.GetBranchWatch(),
                                      manager.GetSymbolDB());
@@ -847,7 +860,8 @@ unsigned compare_quantized_stores() {
                 const auto expected_pi_snapshots = reference_pi_snapshots;
                 std::copy(initial.begin(), initial.end(), physical_memory.begin());
                 GuestBus bus;
-                cupid::cpu::Interpreter guest(bus);
+                auto guest_owner = std::make_unique<cupid::cpu::Interpreter>(bus);
+                auto &guest = *guest_owner;
                 auto &state = guest.state();
                 state.pc = 0x1000;
                 state.msr = original_msr;
@@ -930,9 +944,12 @@ unsigned compare_bat_stores() {
             ++comparisons;
             std::fill(physical_memory.begin(), physical_memory.end(), 0);
             std::fill(physical_memory.begin() + 0x4000, physical_memory.begin() + 0xa000, 0x5a);
-            Memory::MemoryManager memory(system);
-            PowerPC::PowerPCManager manager(system);
-            PowerPC::MMU mmu(system, memory, manager);
+            auto memory_owner = std::make_unique<Memory::MemoryManager>(system);
+            auto &memory = *memory_owner;
+            auto manager_owner = std::make_unique<PowerPC::PowerPCManager>(system);
+            auto &manager = *manager_owner;
+            auto mmu_owner = std::make_unique<PowerPC::MMU>(system, memory, manager);
+            auto &mmu = *mmu_owner;
             auto &reference = manager.GetPPCState();
             Interpreter executor(system, reference, mmu, manager.GetBranchWatch(),
                                  manager.GetSymbolDB());
@@ -977,7 +994,8 @@ unsigned compare_bat_stores() {
             const auto expected_pi_snapshots = reference_pi_snapshots;
             std::copy(initial.begin(), initial.end(), physical_memory.begin());
             GuestBus bus;
-            cupid::cpu::Interpreter guest(bus);
+            auto guest_owner = std::make_unique<cupid::cpu::Interpreter>(bus);
+            auto &guest = *guest_owner;
             auto &state = guest.state();
             state.pc = 0x1000;
             state.msr = original_msr;
@@ -1037,9 +1055,12 @@ unsigned compare_tlb_stores() {
       for (unsigned operation : {38u, 44u, 36u}) {
         std::fill(physical_memory.begin(), physical_memory.end(), 0);
         std::fill(physical_memory.begin() + 0x4000, physical_memory.begin() + 0xa000, 0x5a);
-        Memory::MemoryManager memory(system);
-        PowerPC::PowerPCManager manager(system);
-        PowerPC::MMU mmu(system, memory, manager);
+        auto memory_owner = std::make_unique<Memory::MemoryManager>(system);
+        auto &memory = *memory_owner;
+        auto manager_owner = std::make_unique<PowerPC::PowerPCManager>(system);
+        auto &manager = *manager_owner;
+        auto mmu_owner = std::make_unique<PowerPC::MMU>(system, memory, manager);
+        auto &mmu = *mmu_owner;
         auto &reference = manager.GetPPCState();
         Interpreter executor(system, reference, mmu, manager.GetBranchWatch(),
                              manager.GetSymbolDB());
@@ -1060,7 +1081,8 @@ unsigned compare_tlb_stores() {
         auto reference_memory = physical_memory;
         auto guest_memory = physical_memory;
         GuestBus bus;
-        cupid::cpu::Interpreter guest(bus);
+        auto guest_owner = std::make_unique<cupid::cpu::Interpreter>(bus);
+        auto &guest = *guest_owner;
         auto &state = guest.state();
         state.msr = reference.msr.Hex;
         state.sr[4] = 0x123;
@@ -1146,9 +1168,12 @@ unsigned compare_bat_load_boundaries() {
               for (unsigned page = 0; page < 8; ++page)
                 physical_memory[page * 0x20000 + 0x20] = static_cast<u8>(page + 0x80);
               system.SetIsWii(console != 0);
-              Memory::MemoryManager memory(system);
-              PowerPC::PowerPCManager manager(system);
-              PowerPC::MMU mmu(system, memory, manager);
+              auto memory_owner = std::make_unique<Memory::MemoryManager>(system);
+              auto &memory = *memory_owner;
+              auto manager_owner = std::make_unique<PowerPC::PowerPCManager>(system);
+              auto &manager = *manager_owner;
+              auto mmu_owner = std::make_unique<PowerPC::MMU>(system, memory, manager);
+              auto &mmu = *mmu_owner;
               auto &reference = manager.GetPPCState();
               Interpreter executor(system, reference, mmu, manager.GetBranchWatch(),
                                    manager.GetSymbolDB());
@@ -1172,8 +1197,9 @@ unsigned compare_bat_load_boundaries() {
               decoded.hex = opcode;
               Interpreter::lbz(executor, decoded);
               GuestBus bus;
-              cupid::cpu::Interpreter guest(bus, console ? cupid::Console::Wii
-                                                         : cupid::Console::GameCube);
+              auto guest_owner = std::make_unique<cupid::cpu::Interpreter>(
+                  bus, console ? cupid::Console::Wii : cupid::Console::GameCube);
+              auto &guest = *guest_owner;
               auto &state = guest.state();
               state.pc = 0x1000;
               state.msr = cupid::cpu::msr::dr;
@@ -1222,9 +1248,12 @@ unsigned compare_bat_translations() {
           const u32 upper = virtual_base | (mask << 2) | (configuration < 2048 ? 3u : next() & 3);
           const u32 lower = physical_base | (next() & 0x7f);
           system.SetIsWii(console != 0);
-          Memory::MemoryManager memory(system);
-          PowerPC::PowerPCManager manager(system);
-          PowerPC::MMU mmu(system, memory, manager);
+          auto memory_owner = std::make_unique<Memory::MemoryManager>(system);
+          auto &memory = *memory_owner;
+          auto manager_owner = std::make_unique<PowerPC::PowerPCManager>(system);
+          auto &manager = *manager_owner;
+          auto mmu_owner = std::make_unique<PowerPC::MMU>(system, memory, manager);
+          auto &mmu = *mmu_owner;
           auto &reference = manager.GetPPCState();
           const unsigned bat = bank < 4 ? SPR_DBAT0U + bank * 2 : SPR_DBAT4U + (bank - 4) * 2;
           reference.spr[bat] = upper;
@@ -1237,8 +1266,9 @@ unsigned compare_bat_translations() {
           reference.pagetable_mask = 0xffff;
           mmu.DBATUpdated();
           GuestBus bus;
-          cupid::cpu::Interpreter guest(bus,
-                                        console ? cupid::Console::Wii : cupid::Console::GameCube);
+          auto guest_owner = std::make_unique<cupid::cpu::Interpreter>(
+              bus, console ? cupid::Console::Wii : cupid::Console::GameCube);
+          auto &guest = *guest_owner;
           auto &state = guest.state();
           state.pc = 0x1000;
           state.spr[bat] = upper;
@@ -1278,6 +1308,121 @@ unsigned compare_bat_translations() {
   return comparisons;
 }
 
+unsigned compare_mutable_bat_banks() {
+  auto &system = Core::System::GetInstance();
+  unsigned comparisons = 0;
+  u32 random = 0x835713df;
+  const auto next = [&] {
+    random ^= random << 13;
+    random ^= random >> 17;
+    random ^= random << 5;
+    return random;
+  };
+  std::fill(physical_memory.begin(), physical_memory.end(), 0);
+  for (bool wii : {false, true})
+    for (bool instruction : {false, true})
+      for (bool user : {false, true}) {
+        system.SetIsWii(wii);
+        auto memory_owner = std::make_unique<Memory::MemoryManager>(system);
+        auto &memory = *memory_owner;
+        auto manager_owner = std::make_unique<PowerPC::PowerPCManager>(system);
+        auto &manager = *manager_owner;
+        auto mmu_owner = std::make_unique<PowerPC::MMU>(system, memory, manager);
+        auto &mmu = *mmu_owner;
+        auto &reference = manager.GetPPCState();
+        GuestBus bus;
+        auto guest_owner = std::make_unique<cupid::cpu::Interpreter>(
+            bus, wii ? cupid::Console::Wii : cupid::Console::GameCube);
+        auto &guest = *guest_owner;
+        auto &state = guest.state();
+        for (auto &segment : state.sr)
+          segment = 0x321;
+        const auto base_for = [&](unsigned bank) {
+          return bank < 4 ? (instruction ? SPR_IBAT0U : SPR_DBAT0U) + bank * 2
+                          : (instruction ? SPR_IBAT4U : SPR_DBAT4U) + (bank - 4) * 2;
+        };
+        for (unsigned iteration = 0; iteration < 2048; ++iteration) {
+          for (unsigned bank = 0; bank < 8; ++bank) {
+            const unsigned base = base_for(bank);
+            // Both valid and malformed bases/masks, all WIMG and PP bits.
+            const u32 upper = next(), lower = next();
+            reference.spr[base] = state.spr[base] = upper;
+            reference.spr[base + 1] = state.spr[base + 1] = lower;
+          }
+          for (unsigned query = 0; query < 8; ++query) {
+            const unsigned bank = next() & 7, base = base_for(bank);
+            if (query == 2 || query == 5) {
+              // Mutations occur on an already-used CPU instance, including
+              // enabling/disabling a higher overlapping entry.
+              reference.spr[base] = state.spr[base] = next();
+              reference.spr[base + 1] = state.spr[base + 1] = next();
+            }
+            if (query >= 4) {
+              const unsigned other = base_for((bank + 3) & 7);
+              reference.spr[other] = state.spr[other] = state.spr[base];
+              reference.spr[other + 1] = state.spr[other + 1] = next();
+            }
+            reference.spr[SPR_HID4] = state.spr[cupid::cpu::spr::hid4] =
+                query & 1 ? 0x02000000u : 0;
+            if (instruction)
+              mmu.IBATUpdated();
+            else
+              mmu.DBATUpdated();
+            const u32 mask = (state.spr[base] & 0x1ffc) << 15;
+            u32 address = (state.spr[base] & 0xfffe0000) | (next() & (mask | 0x1ffff));
+            if (query == 0 || query == 3)
+              address = next();
+            const auto &table = instruction ? mmu.GetIBATTable() : mmu.GetDBATTable();
+            const u32 entry = table[address >> PowerPC::BAT_INDEX_SHIFT];
+            const std::optional<u32> expected =
+                entry & PowerPC::BAT_MAPPED_BIT
+                    ? std::optional<u32>((entry & PowerPC::BAT_RESULT_MASK) |
+                                         (address & (PowerPC::BAT_PAGE_SIZE - 1)))
+                    : std::nullopt;
+            state.pc = 0x13579000;
+            state.msr = (instruction ? cupid::cpu::msr::ir : cupid::cpu::msr::dr) |
+                        (user ? cupid::cpu::msr::pr : 0);
+            const auto before = state;
+            std::optional<u32> observed;
+            try {
+              observed = guest.translate(address, instruction, query & 1);
+            } catch (const std::exception &) {
+              throw;
+            } catch (...) {
+              require(!expected, comparisons, "unexpected mutable BAT fault");
+              require(state.spr[cupid::cpu::spr::srr0] == (instruction ? address : before.pc),
+                      comparisons, "mutable BAT saved PC");
+              require(state.spr[cupid::cpu::spr::srr1] ==
+                          ((before.msr & 0x87c0ffff) | (instruction ? 0x40000000u : 0)),
+                      comparisons, "mutable BAT saved MSR");
+              if (!instruction)
+                require(state.spr[cupid::cpu::spr::dar] == address &&
+                            state.spr[cupid::cpu::spr::dsisr] ==
+                                (0x40000000u | (query & 1 ? 0x02000000u : 0)),
+                        comparisons, "mutable BAT data fault");
+            }
+            ++comparisons;
+            require(expected == observed, comparisons, "mutable IBAT/DBAT table output");
+            require(state.gpr == before.gpr && state.sr == before.sr && state.cr == before.cr &&
+                        state.fpscr == before.fpscr && state.pc == before.pc &&
+                        state.last_pc == before.last_pc &&
+                        state.last_opcode == before.last_opcode &&
+                        state.instructions == before.instructions &&
+                        state.cycles == before.cycles && state.timebase == before.timebase,
+                    comparisons, "mutable BAT retained CPU state");
+            for (unsigned n = 0; n < state.fpr.size(); ++n)
+              require(state.fpr[n].bits == before.fpr[n].bits, comparisons,
+                      "mutable BAT FPR state");
+            if (expected)
+              require(state.spr == before.spr && state.msr == before.msr, comparisons,
+                      "mutable BAT successful register retention");
+          }
+        }
+      }
+  require(comparisons == 131072, comparisons, "mutable BAT case count");
+  return comparisons;
+}
+
 int main() {
   try {
     const auto loads = compare_loads();
@@ -1285,11 +1430,13 @@ int main() {
         compare_stores() + compare_quantized_stores() + compare_bat_stores() + compare_tlb_stores();
     const auto bat_loads = compare_bat_load_boundaries();
     const auto bat_addresses = compare_bat_translations();
+    const auto mutable_bats = compare_mutable_bat_banks();
     require(reference_warning_calls != 0 && !reference_warning_samples.empty(), bat_addresses,
             "BAT warning adapter exercised");
     std::cout << loads << " direct source load comparisons and " << stores
               << " store/BAT/TLB comparisons, plus " << bat_loads << " BAT load cases and "
-              << bat_addresses << " BAT address cases passed\n";
+              << bat_addresses << " BAT address cases and " << mutable_bats
+              << " mutable IBAT/DBAT table cases passed\n";
     return 0;
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';

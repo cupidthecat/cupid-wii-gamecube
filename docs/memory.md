@@ -10,6 +10,19 @@ Host RAM spans and DMA copies discard the top two address bits, then require the
 
 An unresolved CPU data read requests the PI memory-access interrupt and returns zero; an unresolved store requests that interrupt and discards its data. Successful address translation is preserved without manufacturing a DSI or changing DAR. Invalid host spans produce a `BusFault`. The target's host helpers alert and return no pointer; the product uses an exception to prevent its caller from continuing with an invalid span. MMIO, graphics FIFO and EFB transactions keep their existing dedicated paths. CPU byte and halfword device reads narrow the callback result to the requested width; EFB binary64 reads retain the zero-extended color word.
 
+An aligned `dcbz` line translates once, then clears 32 bytes directly when the
+bus supplies plain CPU RAM backing. This includes allocated MEM1 padding and
+its physical mirrors, Wii MEM2 and the implemented locked-cache region. A
+declined transfer retains the eight ordered word stores, including their fault
+offsets. Alignment and translation faults occur before admission. Observable
+buses decline by default. The capability changes no host-span or fetch bounds.
+
+`plain_cpu_ram` separately exposes a complete mutable CPU data span for widths
+one, two, four or eight within one 4 KiB page. It uses the same CPU RAM bounds
+and declines devices, missing memory and split-page accesses without callbacks,
+interrupts, error counters or memory changes. The CPU caller owns translation
+and cache policy; a returned span is valid for its current instruction group.
+
 ## Page-table updates and instruction fetch
 
 Page-table searches read through the CPU data path. Reference/change-bit updates use a bounded host write. A table in MEM1 allocation padding can therefore supply a valid translation while rejecting the backing R/C update. The interpreter retains its local translated flags and TLB state. `page_table_write_errors` records rejected backing updates independently of PI requests and guest exceptions; clearing memory resets it.

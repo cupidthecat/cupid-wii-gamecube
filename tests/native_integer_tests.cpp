@@ -134,6 +134,109 @@ u32 immediate(unsigned primary, unsigned source, unsigned address, unsigned valu
   return (primary << 26) | (source << 21) | (address << 16) | value;
 }
 
+u32 extended(unsigned operation, unsigned destination, unsigned left, unsigned right, bool record,
+             bool overflow = false) {
+  return (31u << 26) | (destination << 21) | (left << 16) | (right << 11) | (operation << 1) |
+         (overflow ? 0x400u : 0) | static_cast<u32>(record);
+}
+
+void register_integer_tests() {
+  constexpr std::array<u32, 16> values{0,          1,          2,          31,
+                                       32,         63,         64,         0xffffffff,
+                                       0xfffffffe, 0x80000000, 0x80000001, 0x7fffffff,
+                                       0x7ffffffe, 0xaaaaaaaa, 0x55555555, 0x12345678};
+  constexpr std::array<std::array<unsigned, 3>, 7> aliases{
+      {{3, 4, 5}, {3, 3, 5}, {3, 4, 3}, {3, 4, 4}, {3, 3, 3}, {0, 0, 31}, {31, 0, 31}}};
+  u64 comparisons = 0;
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    Pair pair(console);
+    // XER spare bits, both incoming carries, and all sticky SO/OV combinations
+    // must survive the operation or change only where that instruction permits.
+    for (unsigned operation :
+         {8u, 10u, 40u, 104u, 136u, 138u, 200u, 202u, 232u, 234u, 266u, 11u, 75u, 235u})
+      for (const auto &[destination, left, right] : aliases)
+        for (u32 first : values)
+          for (u32 second : values)
+            for (unsigned flags = 0; flags < 8; ++flags)
+              for (bool overflow : {false, true})
+                for (bool record : {false, true}) {
+                  State state = seed(destination, flags & 4);
+                  state.spr[spr::xer] = (flags << 29) | 0x1234ffff;
+                  state.gpr[left] = first;
+                  state.gpr[right] = second;
+                  pair.operation(extended(operation, destination, left, right, record, overflow),
+                                 state);
+                }
+    for (unsigned operation :
+         {24u, 26u, 28u, 60u, 124u, 284u, 316u, 412u, 444u, 476u, 536u, 792u, 824u, 922u, 954u})
+      for (const auto &[source, destination, count] : aliases)
+        for (u32 value : values)
+          for (unsigned shift = 0; shift < 64; ++shift)
+            for (unsigned flags = 0; flags < 8; ++flags)
+              for (bool record : {false, true}) {
+                State state = seed(destination, flags & 4);
+                state.spr[spr::xer] = (flags << 29) | 0x1234ffff;
+                state.gpr[source] = value;
+                if (operation != 824)
+                  state.gpr[count] = 0xffffffc0u + shift;
+                pair.operation(extended(operation, source, destination,
+                                        operation == 824 ? shift & 31u : count, record),
+                               state);
+              }
+    CHECK(pair.earlier_memory.bytes == pair.native_memory.bytes);
+    comparisons += pair.comparisons;
+  }
+  std::cout << comparisons << " complete-state emitted register-integer comparisons passed\n";
+}
+
+void immediate_and_compare_tests() {
+  constexpr std::array<u32, 12> values{0,          1,          0xffff,     0x10000,
+                                       0x7fff,     0x8000,     0xffff7fff, 0xffff8000,
+                                       0xffffffff, 0x7fffffff, 0x80000000, 0xaaaaaaaa};
+  u64 comparisons = 0;
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    Pair pair(console);
+    for (unsigned primary : {7u, 8u, 12u, 13u})
+      for (unsigned source : {0u, 3u, 31u})
+        for (unsigned destination : {0u, 3u, 31u})
+          for (unsigned immediate_value : {0u, 1u, 0x7fffu, 0x8000u, 0xffffu, 0x1234u})
+            for (u32 value : values)
+              for (unsigned flags = 0; flags < 8; ++flags) {
+                State state = seed(destination, flags & 4);
+                state.spr[spr::xer] = (flags << 29) | 0x1234ffff;
+                state.gpr[source] = value;
+                pair.operation(immediate(primary, destination, source, immediate_value), state);
+              }
+    for (unsigned field = 0; field < 8; ++field)
+      for (unsigned source = 0; source < 32; ++source)
+        for (unsigned reserved = 0; reserved < 4; ++reserved)
+          for (bool summary : {false, true}) {
+            State state = seed(source, summary);
+            state.cr = 0x89abcdefu ^ (0x1234567u * source);
+            for (u32 first : values) {
+              state.gpr[source] = first;
+              for (unsigned primary : {10u, 11u})
+                for (unsigned immediate_value : {0u, 1u, 0x7fffu, 0x8000u, 0xffffu, 0x1234u})
+                  pair.operation((primary << 26) | (field << 23) | (reserved << 21) |
+                                     (source << 16) | immediate_value,
+                                 state);
+              for (unsigned right : {0u, source, 31u})
+                for (u32 second : values) {
+                  State both = state;
+                  both.gpr[right] = second;
+                  for (unsigned operation : {0u, 32u})
+                    pair.operation((31u << 26) | (field << 23) | (reserved << 21) | (source << 16) |
+                                       (right << 11) | (operation << 1),
+                                   both);
+                }
+            }
+          }
+    CHECK(pair.earlier_memory.bytes == pair.native_memory.bytes);
+    comparisons += pair.comparisons;
+  }
+  std::cout << comparisons << " complete-state emitted immediate/compare comparisons passed\n";
+}
+
 void arithmetic_and_rotate_tests() {
   u64 total = 0;
   for (Console console : {Console::GameCube, Console::Wii}) {
@@ -291,6 +394,41 @@ void bounded_cache_tests() {
   }
 }
 
+void rejected_hint_tests() {
+  NativeInteger native(2);
+  State state = seed(0, false);
+  const State unchanged = state;
+  CHECK(!native.execute(state, 0));
+  CHECK(native.statistics().cached_fallbacks == 0);
+  CHECK(!native.execute(state, 0));
+  CHECK(native.statistics().cached_fallbacks == 1);
+  equal_state(state, unchanged);
+  for (unsigned n = 0; n < 1000; ++n) {
+    CHECK(!native.execute(state, immediate(32, 3, 4, 0)));
+    equal_state(state, unchanged);
+  }
+  CHECK(native.statistics().fallback == 1002 && native.statistics().cached_fallbacks == 1000);
+  const u32 first = extended(138, 3, 4, 5, true, true);
+  const u32 second = extended(792, 3, 4, 5, true);
+  const u32 rejected = extended(235, 3, 4, 5, true, true);
+  CHECK(native.execute(state, first));
+  CHECK(native.execute(state, second));
+  const State full = state;
+  for (unsigned n = 0; n < 1000; ++n) {
+    CHECK(!native.execute(state, rejected));
+    equal_state(state, full);
+  }
+  CHECK(native.statistics().capacity_fallbacks == 1000);
+  CHECK(native.statistics().cached_fallbacks == 1999);
+  CHECK(native.execute(state, first));
+  CHECK(native.statistics().compiled_operations == 2 && native.statistics().cache_hits == 1);
+  native.reset();
+  CHECK(native.statistics().cached_fallbacks == 0);
+  CHECK(native.execute(state, rejected));
+  CHECK(native.statistics().compiled_operations == 1 &&
+        native.statistics().capacity_fallbacks == 0);
+}
+
 void clock_monitor_and_fault_tests() {
   for (Console console : {Console::GameCube, Console::Wii}) {
     Pair pair(console);
@@ -349,9 +487,12 @@ int main() {
     return 77;
   }
   return run_tests([] {
+    register_integer_tests();
+    immediate_and_compare_tests();
     arithmetic_and_rotate_tests();
     fetch_and_fallback_tests();
     bounded_cache_tests();
+    rejected_hint_tests();
     clock_monitor_and_fault_tests();
   });
 }

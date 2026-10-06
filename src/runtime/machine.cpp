@@ -2,8 +2,10 @@
 #include "cupid/runtime/machine.hpp"
 #include "cupid/build_info.hpp"
 #include "cupid/runtime/elf.hpp"
+#include <algorithm>
 #include <array>
 #include <iomanip>
+#include <limits>
 #include <random>
 #include <sstream>
 #ifdef _WIN32
@@ -294,7 +296,7 @@ void Machine::load_disc(const std::filesystem::path &path) {
   }
 }
 
-void Machine::step() {
+template <bool Grouped> void Machine::step_internal() {
   if (shutdown_requested_)
     throw LimitReached("guest-shutdown");
   const auto &state = cpu_.state();
@@ -328,6 +330,75 @@ void Machine::step() {
         ios_.set_remote(port, input.remotes[port]);
     }
   }
+  if constexpr (Grouped) {
+    if (!trace_.is_open() && cpu_.integer_run_possible()) {
+      constexpr u64 maximum = std::numeric_limits<u64>::max();
+      u64 instructions =
+          std::min({u64{4096}, maximum - state.instructions, maximum - step_attempts_,
+                    u64{4096} - (step_attempts_ - last_poll_)});
+      if (limits_.instructions)
+        instructions = std::min(instructions, limits_.instructions - step_attempts_);
+      if (input_replay_)
+        instructions = std::min(instructions, input_replay_->event_free_instructions(
+                                                  state.instructions, devices_.field_count()));
+      const u64 cycles =
+          std::min({u64{4096}, graphics_.event_free_cycles(), dsp_.event_free_cycles(),
+                    ios_.event_free_cycles(), devices_.event_free_cycles()});
+      if (instructions >= 2 && cycles >= 2) {
+        cpu_.set_external_interrupt(devices_.external_interrupt_pending());
+        const auto grouped =
+            cpu_.try_integer_run(static_cast<u32>(instructions), static_cast<u32>(cycles));
+        if (grouped.instructions) {
+          step_attempts_ += grouped.instructions;
+          instructions -= grouped.instructions;
+          u64 remaining_cycles = cycles - grouped.cycles;
+          u32 elapsed = grouped.cycles;
+          // Entry callbacks can reach a limit or the next host poll. Keep the
+          // existing single admission when that boundary is already due.
+          const bool single_group =
+              shutdown_requested_ ||
+              (limits_.instructions && step_attempts_ >= limits_.instructions) ||
+              (limits_.frames && output_ && output_->presented_frames() >= limits_.frames) ||
+              step_attempts_ - last_poll_ >= 4096;
+          bool declined = false;
+          const auto flush = [&] {
+            graphics_.advance(elapsed);
+            dsp_.advance(elapsed);
+            ios_.advance(elapsed);
+            devices_.advance(elapsed);
+          };
+          try {
+            while (!single_group && instructions >= 2 && remaining_cycles >= 2) {
+              if (!cpu_.integer_run_possible()) {
+                declined = true;
+                break;
+              }
+              const auto next = cpu_.try_integer_run(static_cast<u32>(instructions),
+                                                     static_cast<u32>(remaining_cycles));
+              if (!next.instructions) {
+                declined = true;
+                break;
+              }
+              step_attempts_ += next.instructions;
+              instructions -= next.instructions;
+              remaining_cycles -= next.cycles;
+              elapsed += next.cycles;
+            }
+          } catch (...) {
+            // Make completed groups visible before a failed admission unwinds.
+            flush();
+            throw;
+          }
+          flush();
+          if (!declined)
+            return;
+          // The next instruction can access MMIO or deliver an interrupt.
+          // Flush the quiet interval before executing it, without retrying
+          // the rejected group.
+        }
+      }
+    }
+  }
   const u32 before = state.pc;
   cpu_.set_external_interrupt(devices_.external_interrupt_pending());
   ++step_attempts_;
@@ -355,9 +426,13 @@ void Machine::step() {
   }
 }
 
+void Machine::step() {
+  step_internal<false>();
+}
+
 void Machine::run() {
   for (;;)
-    step();
+    step_internal<true>();
 }
 
 void Machine::persist() {
@@ -395,6 +470,14 @@ void Machine::write_state(std::ostream &out, const std::string &outcome) const {
       << ",\"native_capacity_fallbacks\":" << native.capacity_fallbacks
       << ",\"native_cache_entries\":" << native.cache_entries
       << ",\"native_executable_bytes\":" << native.executable_bytes
+      << ",\"native_block_runs\":" << native.block_runs
+      << ",\"native_block_executed\":" << native.block_executed
+      << ",\"native_block_compilations\":" << native.block_compilations
+      << ",\"native_block_cache_hits\":" << native.block_cache_hits
+      << ",\"native_block_replacements\":" << native.block_replacements
+      << ",\"native_block_cache_entries\":" << native.block_cache_entries
+      << ",\"native_block_executable_bytes\":" << native.block_executable_bytes
+      << ",\"native_block_compilation_failures\":" << native.block_compilation_failures
       << ",\"cpu_state_hash\":" << cpu_state_hash(state)
       << ",\"memory_state_hash\":" << memory_.state_hash() << ",\"input_replay_updates\":"
       << (input_replay_follower_ ? input_replay_follower_->accepted_updates() : 0)

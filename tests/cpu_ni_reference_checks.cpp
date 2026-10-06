@@ -15,8 +15,16 @@ CPUInfo cpu_info;
 PowerPC::InstructionCache::~InstructionCache() = default;
 
 namespace {
-double arithmetic(PowerPC::PowerPCState &state, unsigned operation, bool single, double a, double b,
-                  double c) {
+// Keep arithmetic behind a call boundary so optimization cannot move it
+// across the host SIMD rounding-mode changes in the comparison loop.
+#if defined(_MSC_VER)
+__declspec(noinline)
+#elif defined(__GNUC__)
+__attribute__((noinline))
+#endif
+double
+arithmetic(PowerPC::PowerPCState &state, unsigned operation, bool single, double a, double b,
+           double c) {
   switch (operation) {
   case 18:
     return NI_div(state, a, b).value;

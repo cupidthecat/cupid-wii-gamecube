@@ -50,6 +50,7 @@ private:
 
   std::span<const u32> bp_, xf_;
   Plane depth_{};
+  std::vector<TransformedVertex> primitive_vertices_;
   std::array<u32, 7> scissor_state_{};
   std::vector<Scissor> scissor_rectangles_;
   bool scissor_state_valid_ = false;

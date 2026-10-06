@@ -5,6 +5,7 @@
 #include "cupid/core/types.hpp"
 #include <array>
 #include <functional>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -38,7 +39,28 @@ public:
   bool handles(u32 address) const;
   u32 read(u32 address, unsigned width_bytes);
   void write(u32 address, u32 value, unsigned width_bytes);
-  void advance(u64 cpu_cycles);
+
+  void advance(u64 cpu_cycles) {
+    if (cpu_cycles < next_deadline_ && cpu_cycles <= std::numeric_limits<u64>::max() - cycles_) {
+      cycles_ += cpu_cycles;
+      next_deadline_ -= cpu_cycles;
+      deferred_cycles_ += cpu_cycles;
+      // Level causes reassert on every timing update, including a zero-cycle one.
+      pi_[0] = (pi_[0] & ~0x70u) | level_interrupts_;
+      return;
+    }
+    advance_events(cpu_cycles);
+  }
+
+  // Inclusive maximum advance before the next scheduled device update. If an
+  // update is N cycles away, N - 1 cycles are safe; the boundary itself is excluded.
+  // A pending PI level reassertion or an already due update returns zero.
+  u64 event_free_cycles();
+
+  u32 interrupt_causes(u32 mask) const noexcept {
+    return pi_[0] & mask;
+  }
+
   bool external_interrupt_pending() const;
   void set_interrupt(u32 cause, bool active);
 
@@ -114,7 +136,9 @@ private:
   u32 canonical(u32 address) const;
   void flush_elapsed();
   void rebuild_deadline();
+  void advance_quiet(u64 amount);
   void advance_state(u64 amount);
+  void advance_events(u64 amount);
   u64 next_deadline_ = 0, deferred_cycles_ = 0;
   u32 level_interrupts_ = 0;
   u32 read_word(u32 address);
@@ -122,6 +146,7 @@ private:
   u16 read_half(u32 address);
   void write_half(u32 address, u16 value);
   void update_interrupts(u32 devices = 0xffffffffu);
+  void update_video_timing();
   void video_halfline();
   u32 video_halflines(unsigned field) const;
   u32 video_ticks_per_sample() const;
@@ -145,6 +170,11 @@ private:
   std::array<u32, 13> pi_{};
   std::array<u16, 0x2e> mi_{};
   std::array<u16, 0x3b> vi_{};
+  std::array<u32, 2> video_field_halflines_{};
+  std::array<u32, 2> video_field_last_halflines_{};
+  u32 video_sample_ticks_ = 0;
+  u64 video_halfline_ticks_ = 0;
+  bool video_active_ = false;
   u64 video_remainder_ = 0, fields_ = 0;
   u32 halfline_ = 0, si_next_poll_ = 15;
   std::array<u32, 10> di_{};

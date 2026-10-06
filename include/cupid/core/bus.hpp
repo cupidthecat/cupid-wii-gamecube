@@ -70,6 +70,14 @@ public:
     return physical;
   }
 
+  // Opt in only when all eight aligned words have stable, side-effect-free
+  // RAM backing and cache identity. The default keeps observable buses stepped.
+  virtual bool stable_instruction_cache_key(u32 physical, u32 &key) const {
+    (void)physical;
+    (void)key;
+    return false;
+  }
+
   // CPU data transactions can have different bounds from host and fetch access.
   virtual u64 read_cpu_data(u32 physical, unsigned byte_count) {
     switch (byte_count) {
@@ -105,6 +113,22 @@ public:
     default:
       throw std::invalid_argument("Invalid CPU data write width");
     }
+  }
+
+  // Clear an aligned line only when the complete transfer has plain RAM
+  // backing. Declining must preserve memory and produce no bus observations.
+  virtual bool try_clear_cpu_ram_line(u32 physical) {
+    (void)physical;
+    return false;
+  }
+
+  // Opt in only for a complete, side-effect-free CPU data transaction. The
+  // caller owns translation and cache policy; declining observes no bus state.
+  // Returned backing stays valid for the current instruction group.
+  virtual std::span<u8> plain_cpu_ram(u32 physical, unsigned byte_count) {
+    (void)physical;
+    (void)byte_count;
+    return {};
   }
 
   // A rejected instruction backing copy retains all destination words.

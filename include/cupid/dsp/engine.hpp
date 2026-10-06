@@ -79,6 +79,13 @@ public:
     advance_update(cpu_cycles);
   }
 
+  // Excludes the update boundary and any cycle-counter overflow.
+  u64 event_free_cycles() const noexcept {
+    const u64 remaining = update_remaining_ ? update_remaining_ - 1 : 0;
+    const u64 available = std::numeric_limits<u64>::max() - cycles_;
+    return remaining < available ? remaining : available;
+  }
+
   u32 program_hash() const;
   const BootDescriptor &boot_descriptor() const;
 

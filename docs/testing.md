@@ -1,5 +1,25 @@
 # Tests
 
+The 224-file CPU fallthrough and portable fog snapshot passes all 65 Linux GCC
+Release/LTO tests with zero skips. Formatting and static analysis pass all 42
+product translation units. The complete Windows MSVC Release/LTO retry passes
+all 64 tests with zero skips in 294.11 seconds. Its corrected configuration uses
+a 180-second CPU grouping bound. The first matrix's 63 passes and one timeout
+at 60 seconds remain recorded; the unchanged CPU executable separately passes
+all 1,210,222 state and ordered-bus comparisons in 80.31 seconds.
+
+The retry reuses 59 byte-identical sealed executables after checking all 478
+compile commands, 186 generated/dependency headers and normalized link commands.
+Only the CMake bound and this document differ from the original source; no C++
+source, header, fixture or compiler flag changes. The original source manifest
+is `456efec2b1e1f10dfea0e8d9bb9915aea2de8250329e75fdf52727a310c03fbb`;
+the corrected configuration manifest is
+`d6fa440a27c40589b984e74587b0e415b32410cca0af6a275c07f2251538c787`.
+The fresh complete Clang Debug sanitizer matrix remains pending. Its expanded
+252-case runtime fixture passes in 1,230.15 seconds under the unchanged
+1,800-second bound. These matrices precede the later ordered GPU batching
+integration; complete checks on that combined source remain required.
+
 Public tests run without console firmware, commercial discs, save files or keys:
 
 ```sh
@@ -396,3 +416,259 @@ All listed configurations use strict floating-point flags and treat project warn
 Clang-format 18, the 256 generated audio coefficients and Clang 18 static analysis of all 40 product translation units pass. Static analysis includes the SDL/OpenGL branches. The sealed inputs retain their hashes through the Clang and GCC sanitizer checks. The guest follower passes in 174.36 seconds on GCC and 118.19 seconds on Clang within its unchanged 180-second budget. Extracted Windows and Linux GCC packages pass help, version and synthetic execution checks.
 
 Separate matched native software/OpenGL commercial runs reach three billion Sunshine and one billion Galaxy step attempts. Every reported state field except the three hardware counters matches, including CPU/RAM, frame and PCM hashes; final PPM bytes and persistent storage bytes match too. See [hardware rendering](hardware-rendering.md) for counters, image scope, source provenance and shared-host timing limits. These runs do not establish gameplay or full speed. Build logs, binary hashes, test reports and source receipts remain in the ignored local artifact directories.
+
+## Event-bounded candidate after `f8dc5ee`
+
+The sealed candidate contains 222 source, header, build, test and documentation
+inputs. Its SHA256 manifest is
+`475439c5ecef2d20e3a0fb1bfc9e27c4f9a6767e6e212cda03b2c70d978490b4`;
+the configured executable label is `emulation-candidate-20261004`. This label is
+development metadata, separate from the source receipt. Later working-tree
+changes are outside that validation snapshot.
+
+Windows MSVC Release with LTO, strict floating-point behavior and project
+warnings as errors passes all 64 registered tests: 46 public suites, 17 direct
+comparisons and the enabled private Sunshine boot test. No test is skipped.
+The required OpenGL suites execute on the RTX 3060, including both authored
+CPU-to-VI guests. The actual-disc test covers its bounded boot assertions,
+not gameplay. Logs and exact build commands remain in
+`.cache/goal-emulation-20261004/`.
+
+The same sealed source builds with strict GCC 13.3 Release and LTO on Linux.
+All 65 registered tests pass: the same 64 tests plus the owned PulseAudio
+shutdown fixture. Both required OpenGL suites run through Mesa llvmpipe under
+Xvfb; the private Sunshine boot test is enabled. There are no failures or skips.
+The full formatting check reports six files in this snapshot, including older
+headers; its original log remains recorded. Formatting corrections belong to
+the following snapshot. The test pass does not imply that every developer
+check passed.
+
+Clang 18 static analysis passes all 42 product translation units, including
+SDL/OpenGL branches. Its configured target suppresses 175 diagnostics from
+non-project code; the complete output is retained. The frozen source and staged
+Linux copy still match all 222 original file hashes after the checks.
+
+The initial Windows baseline exposed two comparison-harness failures. A scalar
+subtraction expectation was optimized across an intended host rounding change;
+placing the arithmetic behind a non-inlined call restores that boundary.
+The unchanged product arithmetic then passes all 2,435,072 results and lanes
+under four rounding modes with NI enabled and disabled. The memory comparison
+overflowed the original 1 MiB host stack because large fixtures and a nested
+BAT-update temporary overlapped. Heap ownership reduces its fixture frame from
+927,744 to 368 bytes while preserving constructor/destructor order, all 53
+checks and all 62 loops. Its unchanged 782,464 cases pass on Windows and GCC,
+with the original stack limit. Neither repair relaxes an expected value.
+
+A Windows Sunshine control compares the stock grouped runtime with repeated
+public `Machine::step()` at three billion attempts. All 60 final JSON fields,
+PPM bytes and persistent files match exactly. A separately compiled checkpoint
+recorder also matches the frozen baseline stock CLI at that bound. These runs
+reach 320 VI fields and produce 338,464 guest PCM values, including 62,194
+nonzero values. They cover deterministic startup execution with headless output
+and host audio disabled; they establish no gameplay or full-speed result.
+
+## RAM runtime after `f8dc5ee`
+
+The following sealed runtime contains 223 inputs with SHA256 manifest
+`d3e3b6719bf0fc093e9adec0d184ac221d020bdf766c1cdfbbeb1aaf5eceeebb`.
+Its executable label is `ram-runtime-20261004`. Resident scalar RAM groups,
+cross-line polling and the 4,096-cycle quiet ceiling are included. The two
+renderer files remain the earlier candidate versions; the later empty-coverage
+change has separate required-device validation.
+
+Strict GCC 13.3 Release/LTO passes all 65 registered tests in 197.66 seconds,
+including the private actual-disc boot, required Mesa rendering and owned
+PulseAudio shutdown scopes. Formatting passes, and Clang 18 static analysis
+passes all 42 product translation units. Its 175 suppressed diagnostics are
+from non-project code. The initial build was interrupted by a WSL restart;
+its logs remain separate from the completed persistent-directory rerun.
+
+Windows MSVC strict Release/LTO passes all 64 tests in 207.74 seconds with
+the same frozen product. Five comparison fixtures use the recorded portable
+adapter overlay. The overlay adds missing unused virtual-function definitions
+and retains explicit failure for unsupported calls; expected values and case
+loops are unchanged. An earlier direct-termination destructor triggered a
+warning under `/WX`; indirect termination preserves the failure behavior and
+passes that configuration. Original allocation, build and incomplete-test
+failures remain recorded. The corrected Linux portable-adapter run also passes
+all 65 tests in 177.42 seconds, with unchanged product commands and core bytes.
+The first overlay changed the comparison object's link order and failed one
+ordered-copy check; restoring the original object order closes that failure.
+Its original log remains preserved.
+
+The first complete Clang 18 Debug ASan/UBSan run executes all 65 scopes with
+zero skips: 58 pass and seven fail. Six fail at their original time bounds:
+event budget, CPU memory, physical memory, fragment, XFB copy and host-audio
+comparisons. The EFB copy comparison reports a misaligned word load in the
+separately pinned encoder, whose pixels have a three-byte stride. That original
+failure is retained. All seven scopes pass their focused corrected checks,
+preserving the original cases. CPU memory takes 905.06 seconds with only
+external comparison translation units at `-O1`; product and fixture code
+remain Debug `-O0`. Fragment, XFB and host-audio diagnostics pass in 125.18,
+547.20 and 127.00 seconds. Their measured allowances are recorded separately
+from the original timeouts. No complete corrected sanitizer pass is claimed.
+
+The optional sanitizer encoder comparison generates a private build input
+with exactly 18 defined byte-copy word loads. A pinned normalized checksum,
+load-site count and byte-identical reverse transform guard the recipe; the
+external checkout remains unchanged. Original and defined loads both match
+all 267,659,520 output bytes across 180,480 cases under strict GCC/LTO. The
+defined-load Clang Debug sanitizer comparison passes the identical scope in
+97.67 seconds with the original encoder optimization. No sanitizer category,
+comparison case or expected byte is removed. The corrected full matrix uses
+the public preparation recipe and measured test bounds, retaining Debug
+product/fixtures and all instrumentation.
+
+The new Sunshine stock CLI, ordinary checkpoint recorder and repeated public
+stepping agree at three billion attempts on all 60 final state fields, raw
+frame bytes and persistent storage. All five shared checkpoints agree too.
+The native backend matches the interpreter on the same guest results, with
+only the explicitly selected CPU backend and native execution counters
+excluded. The new Galaxy interpreter/OpenGL prefix at 1,000,200,000 attempts
+also matches its earlier control on all guest state, frame bytes and storage.
+Configured build labels are compared separately. These checks cover bounded
+startup execution with host audio disabled; they establish no gameplay or
+full-speed result. Commands, source selections, binary hashes, original
+failures and completed audits remain in `.cache/goal-emulation-20261004/`.
+
+A separately sealed RAM/empty-coverage combination completes Sunshine through
+field 10,000 with ordinary left/right movement, release, jumping and landing
+in the rendered airstrip level. All 86 shared checkpoints through field 5,160
+match the earlier capture on guest state and raw frames, with explicitly
+recorded backend and replay metadata differences. [Compatibility](compatibility.md)
+records its separate manifest, input windows and remaining playability limits.
+
+## Cache-flush loops and runtime quiet intervals
+
+Fresh strict MSVC CPU and native suites pass the cache-flush extension. The
+grouped fixture executes 1,217,464 complete state/RAM/ordered-bus comparisons
+and 58,455,150 grouped retirements. Clang 18 `-O1` address/undefined-behavior
+checks with assertions pass those same CPU suites. CPU source and object
+hashes remain unchanged across those executions; receipts are under
+`.cache/cpu-production-20261005/{msvc,clang-san}/verification.json`.
+
+The Windows runtime fixture passes all 634 cases. It retains the earlier 252
+cases, adds 298 cache-flush cases with twelve independently warmed hidden DEC
+phases, and adds 84 longer varying-address RAM cases at instruction, device,
+frame and decrementer boundaries. Comparisons include complete CPU and RAM,
+reported state, ordered callbacks with CPU snapshots and sample bytes, MMIO
+and trace bytes.
+
+A separate complete 41-translation-unit headless Clang 18 `-O1` sanitizer
+build passes runtime grouping in 215.28 seconds and event budgets in 16.73
+seconds. This is an optimized private instrumented snapshot, with assertions
+and system compression dependencies. It is separate from the public Debug
+`-O0` matrix. Later texture edits are outside that frozen snapshot; its CPU,
+runtime, peripheral and fixture hashes still match their checked inputs.
+The exact source, library and binary hashes remain in
+`.cache/cpu-production-20261005/runtime-clang-san/verification.json`.
+
+Eight ordinary stock-CLI software-rendered captures compare the supplied
+games at one billion attempts. All reported state fields other than the
+configured revision, raw frames and copied persistent files match. Their
+startup-only scope and shared-host timing are recorded in
+[performance](performance.md). Complete current Release and public Debug
+sanitizer matrices have their own source and execution records.
+
+The same sealed core passes stock-versus-checkpoint-recorder OpenGL comparisons
+at one billion attempts on both supplied games. All reported state fields,
+including GPU counters, raw frame bytes and persistent storage match. The
+captures reach 72 Sunshine fields and 76 Galaxy fields on the RTX 3060.
+Host playback is disabled, and the scope remains startup. Receipts are retained
+in `.cache/continuation-runtime-20261005/hardware-observer-parity.json`.
+
+An intermediate prepared-texture Windows matrix executes all 64 scopes: 63
+pass, and the authored hardware guest fails its earlier expectation of at
+least twelve physical raster calls. All preceding pixels, frame hashes,
+controller redraw and fragment checks pass. A deterministic repeat preserves
+the failure. An independently compiled diagnostic against the same sealed
+headers and core measures exactly three batches, 768 fragments and zero
+fallbacks on each console. The corrected fixture asserts those two counters
+separately and retains every pixel/state check. The original complete failure
+and the focused diagnostic remain under
+`.cache/continuation-integrated-20261005/`.
+
+The runtime fixture now also includes 122 register/compare/conditional-loop
+boundary cases, for 756 total. These cover instruction and VI cuts, decrementer
+interrupts, DMA, DSP, IOS, replay replacement, host polls, trace bytes and
+external interrupts. Strict MSVC validation against the sealed earlier core
+passes with every shared CPU/RAM/callback/state observation equal. That result
+validates the fixture independently of the new CPU admission path; the final
+combined runtime has separate execution receipts.
+
+The sealed 227-file combined source completes all 64 Windows Release/LTO
+scopes with zero failures or skips in 654.30 seconds. The runtime fixture
+takes 178.32 seconds and the CPU group fixture takes 179.95 seconds, both
+within their original 180-second bounds. All sealed executables remain
+unchanged. The authored manifest is
+`db84f05925ccd4af0f1e0c22b26007de79515f8e3549081e289a9d023b3c8df6`;
+the receipt is
+`.cache/continuation-integrated-20261005/windows-final-matrix-receipt.json`.
+
+A subsequent test-configuration change gives the two enlarged Release
+fixtures 300 seconds and the public Debug sanitizer runtime fixture 5,400
+seconds. The latter now runs 756 cases, three times its earlier 252-case
+scope. These allowances retain every case, assertion and sanitizer category.
+Reconfiguration audits compare compile/link commands, executables, generated
+headers and compiled inputs byte for byte. Only CTest metadata changes;
+the configuration manifest is
+`f4244c67f36a5fa861be327b1ee0d72009bb9039332f8954dc7bb7dcc3e90204`.
+
+The current CPU packet passes 1,755,652 full CPU/RAM/ordered-bus comparisons
+and 59,371,574 grouped retirements under strict MSVC and Clang 18 address and
+undefined-behavior checks. A separate 42-translation-unit current core passes
+all 756 runtime cases and event-budget checks with Clang 18 `-O1`, assertions
+and the same sanitizer categories. That private headless build uses system
+compression dependencies. Its source and dependency hashes match before and
+after execution; it remains separate from the public SDL-enabled Debug
+`-O0` matrix. Receipts are in
+`.cache/cpu-register-branch-20261005/runtime-clang-san-final/verification.json`.
+
+The earlier 224-file fallthrough/fog/runtime snapshot completes all 65 public
+Debug sanitizer scopes with zero failures or skips in 4,844.22 seconds.
+Product and authored fixture translation units remain at `-O0`; `-O1`
+overrides occur only in separately compiled external comparisons. That
+manifest is
+`d6fa440a27c40589b984e74587b0e415b32410cca0af6a275c07f2251538c787`.
+The full log, JUnit results, scope audit and source manifest remain under
+`.cache/goal-emulation-20261004/linux-fallthrough-fog-runtime-bounds-clang-sanitizers/`.
+This complete pass belongs to that later source, and does not replace the
+earlier 223-file matrix's recorded failures. The current 227-file public
+Debug matrix is still running.
+
+The sealed current GCC core also passes stock-versus-recorder comparisons at
+one billion attempts on both supplied games through the physical Linux
+D3D12/NVIDIA path. Every reported field, including GPU counters, raw frame
+bytes and persisted files matches. The bounds reach 72 Sunshine fields and
+76 Galaxy fields. Host playback is disabled, so these startup comparisons
+establish no gameplay audio or frame-rate result. Source, dependency, binary
+and capture receipts remain in
+`.cache/continuation-runtime-20261005/linux-final-hardware-parity/verification.json`.
+
+The sealed current GCC Release/LTO matrix completes all 65 scopes with zero
+failures or skips in 530.03 seconds. The 756-case runtime fixture takes 189.43
+seconds under the approved 300-second allowance, and the CPU group fixture
+takes 90.23 seconds. All 60 sealed executables remain unchanged, and all 43
+product translation units retain strict warning, floating-point and LTO
+flags. LLVM 18 formatting and static analysis also pass. Receipts and full
+logs remain under `.cache/continuation-integrated-20261005/`.
+
+Both required Linux physical D3D12/NVIDIA graphics scopes pass on that same
+sealed source. Guest video completes in 16.86 seconds. The unchanged full
+renderer executable first reaches its 120-second watchdog, then completes
+all checks in about 199 seconds under an explicit 600-second watchdog.
+These include 1,129 XFB profiles, 919 rejected staging boundaries and
+5,536,481,280 compared RAM bytes. The original timeout and unchanged binary
+hash remain recorded in `linux-final-physical-receipt.json`. Three concurrent
+gameplay processes share the GPU, so this execution does not isolate the
+cause of the longer physical-driver time.
+
+A separate Sunshine comparison checks 118 shared checkpoints through
+field 7,080. Every reported value except the configured revision, including
+graphics and replay counters, and every raw frame byte matches between the
+sealed intermediate Windows core and the final Linux GCC core. Host audio
+is disabled. These observations cover those completed checkpoints, before
+later replay replacement; they do not compare full RAM or establish gameplay
+audio, save/load or speed. Exact binaries, invocations and checkpoint hashes
+remain in
+`.cache/continuation-runtime-20261005/live-sunshine-cross-platform-prefix.json`.

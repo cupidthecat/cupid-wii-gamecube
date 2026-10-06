@@ -9,6 +9,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <utility>
 #include <vector>
 
 using namespace cupid;
@@ -318,6 +319,110 @@ void serial_interface() {
   CHECK(devices.read(si + 0x34, 4) & 0x20000000);
   CHECK(devices.read(si + 0x38, 4) & 0x80000);
   CHECK_THROWS(devices.set_pad(4, pad));
+}
+
+void controller_poll_field_boundary() {
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    Devices devices(console);
+    const u64 halfline = (console == Console::Wii ? 27ull : 18ull) * 429;
+    // A 17-halfline field and a one-line poll interval put the second poll
+    // exactly at the beginning of the even field.
+    devices.write(vi, 16, 2);
+    devices.write(vi + 0x0c, 15, 4);
+    devices.write(vi + 0x10, 15, 4);
+    devices.write(si + 0x30, 1u << 16, 4);
+    devices.write(si + 0x34, 0x08000000, 4);
+    devices.write(pi + 4, 8, 4);
+    PadState pad;
+    pad.connected = true;
+    pad.buttons = 0x100;
+    devices.set_pad(0, pad);
+    devices.advance(16 * halfline);
+    CHECK(devices.external_interrupt_pending());
+    CHECK(devices.read(si + 4, 4) == 0x01808080);
+    CHECK(!devices.external_interrupt_pending());
+    devices.advance(2 * halfline - 1);
+    CHECK(!devices.external_interrupt_pending());
+    pad.buttons = 0x200;
+    devices.set_pad(0, pad);
+    devices.advance(1);
+    CHECK(devices.external_interrupt_pending());
+    CHECK(devices.read(si + 4, 4) == 0x02808080);
+    CHECK(!devices.external_interrupt_pending());
+    // The boundary also rearms the first poll of the new field 15 halflines
+    // later; the old two-halfline cadence must not continue across the field.
+    devices.advance(15 * halfline - 1);
+    CHECK(!devices.external_interrupt_pending());
+    devices.advance(1);
+    CHECK(devices.external_interrupt_pending());
+  }
+}
+
+void video_timing_register_updates() {
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    const u64 fast_sample = console == Console::Wii ? 27 : 18;
+    Devices devices(console);
+    devices.write(vi + 4, 5, 4);
+    devices.advance(7);
+    CHECK(devices.event_free_cycles() == 5 * fast_sample - 8);
+    devices.write(vi + 6, 3, 2);
+    CHECK(devices.event_free_cycles() == 3 * fast_sample - 8);
+    devices.write(vi + 4, 0xabcd, 2);
+    CHECK(devices.event_free_cycles() == 3 * fast_sample - 8);
+    devices.write(vi + 0x6c, 0, 2);
+    CHECK(devices.event_free_cycles() == 6 * fast_sample - 8);
+    devices.write(vi + 0x6c, 1, 2);
+    CHECK(devices.event_free_cycles() == 3 * fast_sample - 8);
+    devices.advance(3 * fast_sample - 7);
+    CHECK(devices.read(vi + 0x2c, 2) == 1);
+    CHECK(devices.read(vi + 0x2e, 2) == 4);
+    devices.write(vi + 6, 0, 2);
+    CHECK(devices.event_free_cycles() == 0);
+
+    struct FieldTiming {
+      u16 vertical, odd_before, odd_after, even_before, even_after;
+      u32 odd_length, even_length, odd_output, even_output;
+    };
+
+    // Output positions account for the different postblank lengths of the fields.
+    constexpr std::array<FieldTiming, 4> timings{{
+        {0x21, 2, 1, 3, 4, 10, 14, 9, 23},
+        {0x12, 0, 7, 4, 1, 15, 13, 8, 21},
+        {0x30, 1, 9, 8, 2, 16, 16, 7, 23},
+        {0x03, 1, 2, 3, 4, 12, 16, 0, 0},
+    }};
+    for (const auto &timing : timings) {
+      Devices output(console);
+      output.write(vi + 6, 1, 2);
+      output.write(vi + 0x1c, 0x10000020, 4);
+      output.write(vi + 0x24, 0x10000040, 4);
+      output.write(vi, timing.vertical, 2);
+      // Exercise each half independently so no write can conceal stale geometry.
+      output.write(vi + 0x0c, timing.odd_after, 2);
+      output.write(vi + 0x0e, timing.odd_before, 2);
+      output.write(vi + 0x10, timing.even_after, 2);
+      output.write(vi + 0x12, timing.even_before, 2);
+      std::vector<std::pair<unsigned, u64>> frames;
+      output.xfb_present = [&](const Xfb &frame) {
+        CHECK(frame.address == (frame.field == 0 ? 0x400u : 0x800u));
+        frames.emplace_back(frame.field, frame.cycles);
+      };
+      const u64 total = u64(timing.odd_length + timing.even_length) * fast_sample;
+      for (u64 tick = 0; tick < total; ++tick)
+        output.advance(1);
+      CHECK(output.read(vi + 0x2c, 2) == 1);
+      CHECK(output.read(vi + 0x2e, 2) == 1);
+      if (timing.odd_output == 0) {
+        CHECK(frames.empty());
+        CHECK(output.field_count() == 0);
+      } else {
+        const std::vector<std::pair<unsigned, u64>> expected{{0, timing.odd_output * fast_sample},
+                                                             {1, timing.even_output * fast_sample}};
+        CHECK(frames == expected);
+        CHECK(output.field_count() == 2);
+      }
+    }
+  }
 }
 
 void audio_and_aram() {
@@ -1116,6 +1221,294 @@ void timed_callback_failure() {
   }
 }
 
+void aram_dma_bank_boundaries() {
+  for (u32 start : {0x003fffe0u, 0x00ffffe0u}) {
+    Devices devices(Console::GameCube);
+    std::array<u8, 64> input{}, output{};
+    for (std::size_t i = 0; i < input.size(); ++i)
+      input[i] = u8(37 * i + 19);
+    std::vector<u32> reads, writes;
+    devices.dma_read = [&](u32 address, std::span<u8> bytes) {
+      CHECK(bytes.size() == 32);
+      CHECK(address == 0 || address == 32);
+      std::copy_n(input.begin() + address, bytes.size(), bytes.begin());
+      reads.push_back(address);
+    };
+    devices.dma_write = [&](u32 address, std::span<const u8> bytes) {
+      CHECK(bytes.size() == 32);
+      CHECK(address == 0 || address == 32);
+      std::copy(bytes.begin(), bytes.end(), output.begin() + address);
+      writes.push_back(address);
+    };
+    devices.write(dsp + 0x12, 4, 2);
+    // Unaligned descriptor bits are discarded before the two hardware blocks
+    // are copied, including the blocks adjacent to bank boundaries.
+    devices.write(dsp + 0x20, 19, 4);
+    devices.write(dsp + 0x24, start | 17, 4);
+    devices.write(dsp + 0x28, 79, 4);
+    CHECK(reads == (std::vector<u32>{0, 32}));
+    CHECK(writes.empty());
+    CHECK(devices.read(dsp + 0x20, 4) == 64);
+    CHECK(devices.read(dsp + 0x24, 4) == start + 64);
+    std::array<u8, 32> block{};
+    devices.read_aram(start, block);
+    CHECK(std::equal(block.begin(), block.end(), input.begin()));
+    devices.read_aram((start + 32) & 0xffffff, block);
+    CHECK(std::equal(block.begin(), block.end(), input.begin() + 32));
+    if (start == 0x003fffe0) {
+      devices.read_aram(0x007fffe0, block);
+      CHECK(std::equal(block.begin(), block.end(), input.begin()));
+      devices.read_aram(0x00800000, block);
+      CHECK(std::all_of(block.begin(), block.end(), [](u8 byte) { return byte == 0; }));
+    }
+    devices.advance(492);
+    devices.write(dsp + 0x20, 0, 4);
+    devices.write(dsp + 0x24, start, 4);
+    devices.write(dsp + 0x28, 0x80000040, 4);
+    CHECK(writes == (std::vector<u32>{0, 32}));
+    CHECK(output == input);
+    devices.advance(491);
+    CHECK(devices.read(dsp + 10, 2) & 0x200);
+    devices.advance(1);
+    CHECK((devices.read(dsp + 10, 2) & 0x200) == 0);
+  }
+}
+
+void event_free_boundaries() {
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    Devices devices(console);
+    const u64 halfline = (console == Console::Wii ? 27ull : 18ull) * 429;
+    CHECK(devices.event_free_cycles() == halfline - 1);
+    devices.advance(17);
+    CHECK(devices.event_free_cycles() == halfline - 18);
+    CHECK(devices.read(vi + 0x2e, 2) == 1 + 429 * 17 / halfline);
+    CHECK(devices.event_free_cycles() == halfline - 18);
+    devices.write(vi + 4, 1, 4);
+    // A period write recomputes the deadline from the already elapsed phase.
+    CHECK(devices.event_free_cycles() == (console == Console::Wii ? 9u : 0u));
+    devices.advance(console == Console::Wii ? 10 : 1);
+    CHECK(devices.read(vi + 0x2c, 2) == 1);
+    devices.write(vi + 4, 429, 4);
+
+    const u64 sample =
+        devices.ticks_per_second() * (console == Console::Wii ? 2250u : 2248u) / 108000000;
+    devices.write(pi + 4, 32, 4);
+    devices.write(ai + 12, 1, 4);
+    devices.write(ai, 7, 4);
+    CHECK(devices.event_free_cycles() == std::min(sample - 1, halfline - 1));
+    // Use event-free pieces so a different periodic update may precede the AI sample.
+    u64 elapsed = 0;
+    while (elapsed < sample) {
+      const u64 safe = devices.event_free_cycles();
+      const u64 piece = std::min(sample - elapsed, safe ? safe : 1);
+      devices.advance(piece);
+      elapsed += piece;
+    }
+    CHECK(devices.interrupt_causes(32) == 32);
+    devices.write(pi, 32, 4);
+    CHECK(devices.interrupt_causes(32) == 0);
+    CHECK(devices.event_free_cycles() == 0);
+    devices.advance(0);
+    CHECK(devices.interrupt_causes(32) == 32);
+    CHECK(devices.event_free_cycles() > 0);
+    devices.write(ai, 14, 4);
+    CHECK(devices.interrupt_causes(32) == 0);
+  }
+}
+
+void event_free_partitions() {
+  struct Event {
+    u32 kind;
+    u64 cycles;
+    u32 address;
+    std::vector<u8> bytes;
+    bool operator==(const Event &) const = default;
+  };
+
+  struct Fixture {
+    Devices devices;
+    std::array<u8, 8192> ram{};
+    std::vector<Event> events;
+
+    explicit Fixture(Console console) : devices(console) {
+      for (std::size_t i = 0; i < ram.size(); ++i)
+        ram[i] = u8(i * 37 + 9);
+      devices.dma_read = [this](u32 address, std::span<u8> bytes) {
+        const u32 offset = address & 8191;
+        CHECK(bytes.size() <= ram.size() - offset);
+        std::copy_n(ram.begin() + offset, bytes.size(), bytes.begin());
+        events.push_back({1, devices.cycles(), address, {bytes.begin(), bytes.end()}});
+      };
+      devices.dma_write = [this](u32 address, std::span<const u8> bytes) {
+        const u32 offset = address & 8191;
+        CHECK(bytes.size() <= ram.size() - offset);
+        std::copy(bytes.begin(), bytes.end(), ram.begin() + offset);
+        events.push_back({2, devices.cycles(), address, {bytes.begin(), bytes.end()}});
+      };
+      devices.disc_read = [this](u64 address, std::span<u8> bytes) {
+        for (std::size_t i = 0; i < bytes.size(); ++i)
+          bytes[i] = u8((address + i) * 13);
+        events.push_back({3, devices.cycles(), u32(address), {bytes.begin(), bytes.end()}});
+      };
+      devices.audio_samples = [this](std::span<const s16> samples, u32 rate) {
+        std::vector<u8> bytes;
+        for (s16 sample : samples) {
+          bytes.push_back(u8(u16(sample) >> 8));
+          bytes.push_back(u8(sample));
+        }
+        events.push_back({4, devices.cycles(), rate, std::move(bytes)});
+      };
+      devices.disc_audio_samples = [this](std::span<const s16> samples, u32 rate, u8 left,
+                                          u8 right) {
+        std::vector<u8> bytes{left, right};
+        for (s16 sample : samples) {
+          bytes.push_back(u8(u16(sample) >> 8));
+          bytes.push_back(u8(sample));
+        }
+        events.push_back({5, devices.cycles(), rate, std::move(bytes)});
+      };
+      devices.xfb_present = [this](const Xfb &frame) {
+        events.push_back(
+            {6,
+             frame.cycles,
+             frame.address,
+             {u8(frame.field), u8(frame.width), u8(frame.height), u8(frame.stride_bytes)}});
+      };
+      devices.write(pi + 4, 0x17c, 4);
+      devices.write(vi, 32, 2);
+      devices.write(vi + 0x0c, 0x100002, 4);
+      devices.write(vi + 0x10, 0x100002, 4);
+      devices.write(vi + 0x1c, 0x10000010, 4);
+      devices.write(vi + 0x24, 0x10000020, 4);
+      devices.write(si + 0x30, 0x20080, 4);
+      devices.write(si + 0x34, 0x08000000, 4);
+      PadState pad;
+      pad.connected = true;
+      pad.buttons = 0x123;
+      devices.set_pad(0, pad);
+      devices.write(ai + 12, 4, 4);
+      devices.write(ai, 7, 4);
+      devices.write(dsp + 0x0a, 0x154, 2);
+      devices.write(dsp + 0x30, 0x400, 4);
+      devices.write(dsp + 0x36, 0x8003, 2);
+      devices.write(dsp + 0x20, 0x800, 4);
+      devices.write(dsp + 0x24, 0x100, 4);
+      devices.write(dsp + 0x28, 96, 4);
+      devices.write(di, 0x2a, 4);
+      devices.write(di + 8, 0xa8000000, 4);
+      devices.write(di + 12, 0x80, 4);
+      devices.write(di + 16, 64, 4);
+      devices.write(di + 20, 0xc00, 4);
+      devices.write(di + 24, 64, 4);
+      devices.write(di + 28, 3, 4);
+      devices.prepare_disc_boot(true, 10);
+      CHECK(!devices.disc_immediate(0xe1000000, 0x800, 4096).failed);
+      devices.set_memory_card(0, Devices::format_memory_card(4, 3));
+      devices.write(exi, 0x8d, 4);
+      const auto send = [this](u32 value, unsigned count) {
+        devices.write(exi + 16, value, 4);
+        devices.write(exi + 12, 5 | ((count - 1) << 4), 4);
+      };
+      send(0x81010000, 2);
+      devices.write(exi, 13, 4);
+      devices.write(exi, 0x8d, 4);
+      send(0xf2000100, 4);
+      send(0, 1);
+      send(0xabcdef01, 4);
+      devices.write(exi, 13, 4);
+      devices.write(exi, 0x8d, 4);
+      send(0x52000100, 4);
+      send(0, 1);
+      devices.write(exi + 4, 0x1000, 4);
+      devices.write(exi + 8, 7, 4);
+      devices.write(exi + 12, 3, 4);
+    }
+
+    std::vector<u32> snapshot() {
+      std::vector<u32> result;
+      for (u32 offset : {0u, 4u, 0xcu, 0x10u, 0x14u, 0x1cu, 0x24u, 0x28u, 0x30u})
+        result.push_back(devices.read(pi + offset, 4));
+      for (u32 offset = 0; offset < 0x28; offset += 4)
+        result.push_back(devices.read(di + offset, 4));
+      for (u32 offset = 0; offset < 0x40; offset += 4)
+        result.push_back(devices.read(si + offset, 4));
+      for (u32 offset = 0; offset < 0x3c; offset += 4)
+        result.push_back(devices.read(exi + offset, 4));
+      for (u32 offset = 0; offset < 0x10; offset += 4)
+        result.push_back(devices.read(ai + offset, 4));
+      for (u32 offset = 0; offset <= 0x74; offset += 2)
+        result.push_back(devices.read(vi + offset, 2));
+      for (u32 offset : {0xau, 0x12u, 0x16u, 0x1au, 0x20u, 0x22u, 0x24u, 0x26u, 0x28u, 0x2au, 0x30u,
+                         0x32u, 0x36u, 0x3au})
+        result.push_back(devices.read(dsp + offset, 2));
+      result.push_back(u32(devices.field_count()));
+      result.push_back(devices.rtc_seconds());
+      result.push_back(devices.memory_card_dirty(0));
+      return result;
+    }
+  };
+
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    Fixture stepped(console), grouped(console);
+    CHECK(stepped.snapshot() == grouped.snapshot());
+    unsigned boundaries = 0, grouped_calls = 0;
+    for (u64 target : {u64(99), u64(245), u64(246), u64(4999), u64(5000), u64(60001), u64(145799),
+                       u64(145800), u64(218700), u64(500003), u64(1000000), u64(3000000)}) {
+      while (grouped.devices.cycles() < target) {
+        const u64 budget = grouped.devices.event_free_cycles();
+        const u64 piece = std::min(target - grouped.devices.cycles(), budget ? budget : 1);
+        const u64 first = piece / 2;
+        if (first) {
+          grouped.devices.advance(first);
+          for (u64 cycle = 0; cycle < first; ++cycle)
+            stepped.devices.advance(1);
+          // MMIO reads materialize elapsed cycles without moving the next
+          // completion or dispatching callbacks inside a quiet interval.
+          CHECK(stepped.snapshot() == grouped.snapshot());
+          CHECK(grouped.devices.event_free_cycles() == budget - first);
+          CHECK(stepped.events == grouped.events);
+        }
+        const u32 causes = grouped.devices.interrupt_causes(0xffffffff);
+        grouped.devices.advance(piece - first);
+        ++grouped_calls;
+        boundaries += !budget;
+        if (budget)
+          CHECK(grouped.devices.interrupt_causes(0xffffffff) == causes);
+        for (u64 cycle = first; cycle < piece; ++cycle)
+          stepped.devices.advance(1);
+        CHECK(stepped.events == grouped.events);
+        CHECK(stepped.devices.interrupt_causes(0xffffffff) ==
+              grouped.devices.interrupt_causes(0xffffffff));
+      }
+      CHECK(stepped.snapshot() == grouped.snapshot());
+      CHECK(stepped.ram == grouped.ram);
+      CHECK(std::equal(stepped.devices.sram().begin(), stepped.devices.sram().end(),
+                       grouped.devices.sram().begin()));
+      CHECK(std::equal(stepped.devices.card_image(0).begin(), stepped.devices.card_image(0).end(),
+                       grouped.devices.card_image(0).begin()));
+      if (console == Console::GameCube) {
+        std::array<u8, 128> first{}, second{};
+        stepped.devices.read_aram(0x100, first);
+        grouped.devices.read_aram(0x100, second);
+        CHECK(first == second);
+      }
+      // PI acknowledge and period changes invalidate a previously queried budget.
+      for (Fixture *fixture : {&stepped, &grouped}) {
+        (void)fixture->devices.event_free_cycles();
+        fixture->devices.write(pi, 0x17c, 4);
+        fixture->devices.write(ai + 12, u32(target / 37), 4);
+        fixture->devices.write(vi + 4, target & 1 ? 427 : 429, 4);
+      }
+      CHECK(stepped.snapshot() == grouped.snapshot());
+    }
+    CHECK(boundaries > 100);
+    CHECK(grouped_calls < 3000);
+    for (u32 kind : {1u, 2u, 3u, 4u, 5u, 6u})
+      CHECK(std::any_of(grouped.events.begin(), grouped.events.end(),
+                        [kind](const Event &event) { return event.kind == kind; }));
+  }
+}
+
 } // namespace
 
 int main() {
@@ -1123,15 +1516,20 @@ int main() {
     period_accounting();
     timed_interrupt_boundaries();
     timed_callback_failure();
+    event_free_boundaries();
+    event_free_partitions();
     processor_interface();
     memory_interface();
     video_interface();
     video_aspect_ratio();
+    video_timing_register_updates();
     disc_interface();
     disc_dma_aliases();
     serial_interface();
+    controller_poll_field_boundary();
     audio_and_aram();
     disconnected_aram_live_descriptor();
+    aram_dma_bank_boundaries();
     disconnected_aram_port();
     wii_aram_dma();
     expansion_interface();

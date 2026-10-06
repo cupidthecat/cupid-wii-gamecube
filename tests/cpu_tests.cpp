@@ -5,6 +5,7 @@
 #include "test_support.hpp"
 #include <algorithm>
 #include <bit>
+#include <cfenv>
 #include <cmath>
 #include <limits>
 #include <optional>
@@ -135,6 +136,85 @@ void exhaustive_rotate_tests() {
                 }
   }
   CHECK(cases == 1179648);
+}
+
+void mutable_bat_bank_tests() {
+  u32 random = 0x5738ab19;
+  const auto next = [&] {
+    random ^= random << 13;
+    random ^= random >> 17;
+    random ^= random << 5;
+    return random;
+  };
+  unsigned cases = 0;
+  for (Console console : {Console::GameCube, Console::Wii})
+    for (bool instruction : {false, true})
+      for (bool user : {false, true}) {
+        Memory memory;
+        Interpreter cpu(memory, console);
+        auto &state = cpu.state();
+        const auto base_for = [&](unsigned bank) {
+          return bank < 4 ? (instruction ? 528u : 536u) + bank * 2
+                          : (instruction ? 560u : 568u) + (bank - 4) * 2;
+        };
+        for (unsigned iteration = 0; iteration < 4096; ++iteration) {
+          for (unsigned bank = 0; bank < 8; ++bank) {
+            const unsigned base = base_for(bank);
+            state.spr[base] =
+                0x80000000u | ((next() & 31) << 17) | ((next() & 31) << 2) | (next() & 3);
+            state.spr[base + 1] = next();
+          }
+          for (unsigned query = 0; query < 4; ++query) {
+            const unsigned bank = next() & 7, base = base_for(bank);
+            const unsigned other = base_for((bank + 5) & 7);
+            state.spr[other] = state.spr[base];
+            state.spr[other + 1] = next();
+            state.spr[spr::hid4] = query & 1 ? 0x02000000u : 0;
+            const u32 address =
+                (state.spr[base] & 0xfffe0000u) | ((next() & 63) << 17) | (next() & 0x1ffff);
+            std::optional<u32> expected;
+            const unsigned count = console == Console::Wii && (query & 1) ? 8 : 4;
+            // Enumerate the mapped blocks independently of the lookup formula.
+            for (unsigned entry = 0; entry < count; ++entry) {
+              const unsigned selected = base_for(entry);
+              const u32 upper = state.spr[selected], lower = state.spr[selected + 1];
+              if (!(upper & 3))
+                continue;
+              const u32 blocks = (upper >> 2) & 2047;
+              for (u32 block = 0; block <= blocks; ++block)
+                if ((block & blocks) == block &&
+                    ((upper & 0xfffe0000u) | (block << 17)) == (address & 0xfffe0000u))
+                  expected = (lower & 0xfffe0000u) | (block << 17) | (address & 0x1ffff);
+            }
+            state.pc = 0x12345000;
+            state.msr = (instruction ? msr::ir : msr::dr) | (user ? msr::pr : 0);
+            const State before = state;
+            std::optional<u32> observed;
+            try {
+              observed = cpu.translate(address, instruction, query & 1);
+            } catch (const std::exception &) {
+              throw;
+            } catch (...) {
+              CHECK(!expected);
+              CHECK(state.spr[spr::srr0] == (instruction ? address : before.pc));
+              CHECK(state.spr[spr::srr1] ==
+                    ((before.msr & 0x87c0ffff) | (instruction ? 0x40000000u : 0)));
+              if (!instruction)
+                CHECK(state.spr[spr::dar] == address &&
+                      state.spr[spr::dsisr] == (0x40000000u | (query & 1 ? 0x02000000u : 0)));
+            }
+            CHECK(observed == expected);
+            CHECK(state.gpr == before.gpr && state.sr == before.sr && state.pc == before.pc);
+            CHECK(state.cr == before.cr && state.fpscr == before.fpscr);
+            CHECK(state.cycles == before.cycles && state.instructions == before.instructions &&
+                  state.timebase == before.timebase);
+            if (expected)
+              CHECK(state.spr == before.spr && state.msr == before.msr);
+            ++cases;
+          }
+        }
+      }
+  CHECK(cases == 131072);
 }
 
 struct Access {
@@ -847,6 +927,71 @@ void cache_zero_transaction_tests() {
   CHECK_THROWS(f.run(ext(1014, 0, 7, 8)));
   CHECK(f.s.pc == 0x1000 && f.s.cycles == cycles && f.s.instructions == instructions);
   CHECK(f.s.spr[spr::dar] == dar && f.s.spr[spr::dsisr] == dsisr);
+}
+
+void cache_zero_ram_capability_tests() {
+  class ClearMemory final : public Memory {
+  public:
+    bool enabled = false;
+    unsigned clears = 0, writes = 0;
+    u32 physical = 0;
+
+    bool try_clear_cpu_ram_line(u32 address) override {
+      ++clears;
+      physical = address;
+      if (!enabled)
+        return false;
+      CHECK((address & 31) == 0 && address + 32 <= bytes.size());
+      std::fill_n(bytes.begin() + address, 32, u8{0});
+      return true;
+    }
+
+    void write_cpu_data(u32 address, u32 value, unsigned size) override {
+      ++writes;
+      Memory::write_cpu_data(address, value, size);
+    }
+  };
+
+  for (Console console : {Console::GameCube, Console::Wii})
+    for (bool enabled : {false, true})
+      for (bool locked : {false, true})
+        for (unsigned offset = 0; offset < 32; ++offset) {
+          ClearMemory memory;
+          memory.enabled = enabled;
+          Interpreter cpu(memory, console);
+          cpu.configure_boot();
+          auto &state = cpu.state();
+          state.pc = 0x1000;
+          state.msr = msr::dr | msr::fp;
+          state.spr[spr::hid0] = 0x4000;
+          state.spr[spr::hid2] = 0x30000000;
+          state.cr = 0x18ab5327;
+          state.gpr[7] = 0x80002000 + offset;
+          std::fill(memory.bytes.begin() + 0x1ffc, memory.bytes.begin() + 0x2024, u8{0xa5});
+          memory.write32(0x1000, locked ? fp(1014, 0, 7, 8, 0, 4) : ext(1014, 0, 7, 8));
+          CHECK(cpu.step() == (locked ? 1u : 5u));
+          CHECK(memory.clears == 1 && memory.physical == 0x2000);
+          CHECK(memory.writes == (enabled ? 0u : 8u));
+          CHECK(state.pc == 0x1004 && state.cr == 0x18ab5327 && state.instructions == 1);
+          for (unsigned n = 0; n < 32; ++n)
+            CHECK(memory.bytes[0x2000 + n] == 0);
+          CHECK(memory.bytes[0x1fff] == 0xa5 && memory.bytes[0x2020] == 0xa5);
+        }
+  for (bool translated : {false, true}) {
+    ClearMemory memory;
+    memory.enabled = true;
+    Interpreter cpu(memory);
+    auto &state = cpu.state();
+    state.pc = 0x1000;
+    state.spr[spr::hid0] = translated ? 0x4000 : 0;
+    state.msr = translated ? msr::dr : 0;
+    state.gpr[7] = 0x40002007;
+    memory.write32(0x1000, ext(1014, 0, 7));
+    CHECK(cpu.step() == 5);
+    CHECK(state.pc == (translated ? 0x300u : 0x600u));
+    CHECK(state.spr[spr::dar] == (translated ? 0x40002000u : 0x40002007u));
+    CHECK(memory.clears == 0 && memory.writes == 0);
+  }
 }
 
 void string_store_transaction_tests() {
@@ -2556,6 +2701,133 @@ void mmu_tests() {
   CHECK(wii.translate(0x90001234) == 0x10001234 && wii.translate(0xd0001234) == 0x10001234);
 }
 
+void floating_host_rounding_tests() {
+  struct HostEnvironment {
+    std::fenv_t saved{};
+#if defined(_M_X64) || defined(__x86_64__)
+    unsigned simd = _mm_getcsr();
+#endif
+
+    HostEnvironment() {
+      CHECK(std::fegetenv(&saved) == 0);
+    }
+
+    ~HostEnvironment() {
+      std::fesetenv(&saved);
+#if defined(_M_X64) || defined(__x86_64__)
+      _mm_setcsr(simd);
+#endif
+    }
+  } environment;
+
+  constexpr std::array<int, 4> modes{FE_TONEAREST, FE_TOWARDZERO, FE_UPWARD, FE_DOWNWARD};
+#if defined(_M_X64) || defined(__x86_64__)
+  constexpr std::array<unsigned, 4> simd_modes{0u, 0x6000u, 0x4000u, 0x2000u};
+#endif
+  unsigned cases = 0;
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    Memory memory;
+    Interpreter cpu(memory, console);
+    auto &state = cpu.state();
+    for (unsigned host = 0; host < modes.size(); ++host)
+      for (unsigned guest = 0; guest < modes.size(); ++guest)
+        for (unsigned primary : {4u, 59u, 63u})
+          for (bool negative : {false, true})
+            for (bool rc : {false, true}) {
+              CHECK(std::fesetround(modes[host]) == 0);
+              state.pc = 0x1000;
+              state.msr = msr::fp;
+              state.spr[spr::hid0] = 0;
+              state.spr[spr::hid2] = 0xa0000000;
+              state.fpscr = guest;
+              state.fpr[1].bits = {negative ? 0xbff0000000000000ull : 0x3ff0000000000000ull,
+                                   0xbff0000000000000ull};
+              const u64 half = primary == 63 ? 0x3ca0000000000000ull : 0x3e70000000000000ull;
+              state.fpr[2].bits = {half | (negative ? 0x8000000000000000ull : 0),
+                                   half | 0x8000000000000000ull};
+              state.fpr[3].bits = {0x123456789abcdef0ull, 0x9182736455463728ull};
+              const auto before = state;
+              const u32 opcode = fp(21, 3, 1, 2, 0, primary, rc);
+              memory.write32(0x1000, opcode);
+              CHECK(cpu.step() == 1);
+              const bool outward = negative ? guest == 3 : guest == 2;
+              const u64 sign = negative ? 0x8000000000000000ull : 0;
+              const u64 increment = primary == 63 ? 1ull : 0x20000000ull;
+              const u64 first = sign | (0x3ff0000000000000ull + (outward ? increment : 0));
+              const u64 second = primary == 4 ? 0xbff0000000000000ull + (guest == 3 ? increment : 0)
+                                 : primary == 59 ? first
+                                                 : before.fpr[3].bits[1];
+              CHECK(state.fpr[3].bits[0] == first && state.fpr[3].bits[1] == second);
+              CHECK(std::fegetround() == modes[host]);
+#if defined(_M_X64) || defined(__x86_64__)
+              CHECK((_mm_getcsr() & 0x6000u) == simd_modes[host]);
+#endif
+              CHECK(state.gpr == before.gpr && state.spr == before.spr && state.sr == before.sr);
+              CHECK(state.msr == before.msr && state.pc == 0x1004);
+              CHECK(state.cycles == before.cycles + 1 &&
+                    state.instructions == before.instructions + 1);
+              for (unsigned reg = 0; reg < state.fpr.size(); ++reg)
+                if (reg != 3)
+                  CHECK(state.fpr[reg].bits == before.fpr[reg].bits);
+              ++cases;
+            }
+
+    for (unsigned host = 0; host < modes.size(); ++host)
+      for (unsigned guest = 0; guest < modes.size(); ++guest) {
+        CHECK(std::fesetround(modes[host]) == 0);
+        state.pc = 0x1000;
+        state.msr = msr::fp;
+        state.fpscr = guest;
+        state.spr[912] = 1; // Rejected quantization throws after acquiring guest rounding.
+        memory.write32(0x1000, imm(60, 3, 0, 0x200));
+        bool rejected = false;
+        try {
+          cpu.step();
+        } catch (const UnsupportedInstruction &) {
+          rejected = true;
+        }
+        CHECK(rejected && std::fegetround() == modes[host]);
+#if defined(_M_X64) || defined(__x86_64__)
+        CHECK((_mm_getcsr() & 0x6000u) == simd_modes[host]);
+#endif
+        ++cases;
+      }
+
+#if defined(_M_X64) || defined(__x86_64__)
+    // A host can have different scalar and SIMD controls. Both must match before
+    // a guest operation can reuse the incoming rounding mode.
+    for (unsigned host = 0; host < modes.size(); ++host)
+      for (unsigned simd = 0; simd < modes.size(); ++simd) {
+        CHECK(std::fesetround(modes[host]) == 0);
+        _mm_setcsr((_mm_getcsr() & ~0x6000u) | simd_modes[simd]);
+        const int incoming = std::fegetround();
+        const auto incoming_mode = std::find(modes.begin(), modes.end(), incoming);
+        // C libraries report split controls differently. A valid saved mode
+        // restores both controls; an unrecognized one leaves guest rounding.
+        const unsigned restored = incoming_mode == modes.end()
+                                      ? host
+                                      : static_cast<unsigned>(incoming_mode - modes.begin());
+        state.pc = 0x1000;
+        state.msr = msr::fp;
+        state.fpscr = host;
+        state.fpr[1].bits[0] = 0x3ff0000000000000ull;
+        state.fpr[2].bits[0] = 0x3ca0000000000000ull;
+        memory.write32(0x1000, fp(21, 3, 1, 2));
+        CHECK(cpu.step() == 1);
+        CHECK(state.fpr[3].bits[0] == 0x3ff0000000000000ull + (host == 2 ? 1 : 0));
+        CHECK(std::fegetround() == modes[restored]);
+        CHECK((_mm_getcsr() & 0x6000u) == simd_modes[restored]);
+        ++cases;
+      }
+#endif
+  }
+#if defined(_M_X64) || defined(__x86_64__)
+  CHECK(cases == 448);
+#else
+  CHECK(cases == 416);
+#endif
+}
+
 void floating_tests() {
   CHECK(binary32_to_binary64(0x7fa01234) == 0x7ff4024680000000ull);
   CHECK(binary32_to_binary64(1) == std::bit_cast<u64>(std::ldexp(1.0, -149)));
@@ -3400,6 +3672,7 @@ int main() {
     physical_data_memory_tests();
     physical_cache_alias_tests();
     cache_zero_transaction_tests();
+    cache_zero_ram_capability_tests();
     string_store_transaction_tests();
     uncached_write_tests();
     page_write_attribute_result_tests();
@@ -3423,6 +3696,8 @@ int main() {
     mmu_tests();
     bat_mapping_boundary_tests();
     bat_register_change_tests();
+    mutable_bat_bank_tests();
+    floating_host_rounding_tests();
     floating_tests();
     paired_tests();
     cache_tests();

@@ -316,7 +316,9 @@ void guest_video(Console console, bool hardware) {
   CHECK(state.str().find("\"gx_fragments\":768") != std::string::npos);
   if (hardware) {
     const auto stats = machine.graphics().hardware_stats();
-    CHECK(stats.dispatches >= 12 && stats.fragments == 768);
+    // The texture copy and two XFB copies flush the three ordered draw phases.
+    CHECK(stats.dispatches == 3);
+    CHECK(stats.fragments == 768);
     CHECK(stats.fallback_rectangles == 0);
     CHECK(machine.graphics().hardware_fallback_reason().empty());
     std::cout << (console == Console::GameCube ? "GameCube" : "Wii")

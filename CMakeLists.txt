@@ -91,6 +91,7 @@ set(cupid_sources
   src/gfx/rasterizer.cpp
   src/gfx/hardware_renderer.cpp
   src/gfx/texture.cpp
+  src/gfx/texture_decode.cpp
   src/gfx/fragment.cpp
   src/gfx/efb_copy.cpp
   src/gfx/xfb_copy.cpp
@@ -118,7 +119,7 @@ include(cmake/DeveloperChecks.cmake)
 
 if(CUPID_BUILD_TESTS)
   enable_testing()
-  foreach(suite IN ITEMS cpu native_integer core disc disc_stream device remote remote_speaker host_mixer extension_cipher sdp sdp_transport runtime elf fonts dsp handheld ios network sysconf gfx vertex texture fragment rasterizer efb_copy xfb_copy efb_access guest_video input_replay input_replay_follow input_replay_follow_guest audio_stats pointer)
+  foreach(suite IN ITEMS cpu native_integer cpu_integer_run core disc disc_stream device event_budget remote remote_speaker host_mixer extension_cipher sdp sdp_transport runtime runtime_group elf fonts dsp handheld ios network sysconf gfx vertex texture fragment rasterizer efb_copy xfb_copy efb_access guest_video input_replay input_replay_follow input_replay_follow_guest audio_stats pointer)
     add_executable(cupid_${suite}_tests tests/${suite}_tests.cpp)
     target_include_directories(cupid_${suite}_tests PRIVATE tests)
     target_link_libraries(cupid_${suite}_tests PRIVATE cupid_core)
@@ -126,11 +127,19 @@ if(CUPID_BUILD_TESTS)
     set_tests_properties(${suite} PROPERTIES TIMEOUT 60 LABELS "public;unit")
   endforeach()
   set_tests_properties(native_integer PROPERTIES SKIP_RETURN_CODE 77)
+  # The complete state and ordered-bus fixture needs headroom on a shared host.
+  set_tests_properties(cpu_integer_run PROPERTIES TIMEOUT 300 LABELS "public;unit;cpu")
+  set_tests_properties(runtime_group PROPERTIES LABELS "public;guest;integration;cpu")
+  set_tests_properties(event_budget PROPERTIES LABELS "public;guest;integration;cpu")
   if(CUPID_ENABLE_SANITIZERS)
     # The complete multi-codec sector/hash fixtures take 153 seconds under Clang Debug sanitizers.
     set_tests_properties(disc PROPERTIES TIMEOUT 300)
+    # Exhaustive CPU/native state comparisons retain every case under Debug instrumentation.
+    set_tests_properties(cpu native_integer PROPERTIES TIMEOUT 300)
   endif()
   set_tests_properties(guest_video PROPERTIES TIMEOUT 180 LABELS "public;guest;integration")
+  # The 756-case run/step scope retains full RAM and ordered event comparisons.
+  set_tests_properties(runtime_group PROPERTIES TIMEOUT 300)
   set_tests_properties(input_replay PROPERTIES LABELS "public;guest;input")
   set_tests_properties(input_replay_follow PROPERTIES LABELS "public;unit;input")
   set_tests_properties(input_replay_follow_guest PROPERTIES TIMEOUT 180 LABELS "public;guest;integration;usb;input")
@@ -450,6 +459,19 @@ if(CUPID_BUILD_TESTS)
       "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/IOS/USB/Bluetooth/WiimoteHIDAttr.cpp")
     set(cupid_efb_copy_reference
       "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/VideoBackends/Software/TextureEncoder.cpp")
+    if(CUPID_ENABLE_SANITIZERS)
+      # Packed pixels have a three-byte stride. Define the external comparison's
+      # word loads without changing its algorithms or disabling instrumentation.
+      find_package(Python3 REQUIRED COMPONENTS Interpreter)
+      set(cupid_packed_encoder_source "${cupid_efb_copy_reference}")
+      set(cupid_efb_copy_reference "${CMAKE_CURRENT_BINARY_DIR}/comparisons/packed_encoder.cpp")
+      execute_process(COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/prepare_packed_encoder.py"
+        "${cupid_packed_encoder_source}" "${cupid_efb_copy_reference}"
+        COMMAND_ERROR_IS_FATAL ANY)
+      set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${cupid_packed_encoder_source}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/prepare_packed_encoder.py")
+    endif()
     set(cupid_xfb_copy_reference
       "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/VideoBackends/Software/SWEfbInterface.cpp")
     set(cupid_host_audio_reference
@@ -503,6 +525,17 @@ if(CUPID_BUILD_TESTS)
       "${CMAKE_CURRENT_BINARY_DIR}/generated")
     set_source_files_properties(${cupid_rasterizer_references} ${cupid_texture_reference} ${cupid_fragment_reference} "${cupid_sdp_reference}" "${cupid_efb_copy_reference}" "${cupid_xfb_copy_reference}" "${cupid_host_audio_reference}" ${cupid_pointer_reference}
       PROPERTIES COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->;$<$<CXX_COMPILER_ID:GNU>:-O1>")
+    if(CUPID_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+      # Match the existing external-source optimization policy while keeping
+      # product code and authored fixtures at their selected Debug optimization.
+      set(cupid_sanitizer_references ${cupid_memory_references} ${cupid_physical_memory_references}
+        ${cupid_step_references} ${cupid_dispatch_references} "${cupid_vertex_reference}"
+        ${cupid_rasterizer_references} ${cupid_texture_reference} ${cupid_fragment_reference}
+        "${cupid_sdp_reference}" "${cupid_efb_copy_reference}" "${cupid_xfb_copy_reference}"
+        "${cupid_host_audio_reference}" ${cupid_pointer_reference})
+      list(REMOVE_DUPLICATES cupid_sanitizer_references)
+      set_property(SOURCE ${cupid_sanitizer_references} APPEND PROPERTY COMPILE_OPTIONS -O1)
+    endif()
     set_property(SOURCE "${cupid_efb_copy_reference}" APPEND PROPERTY COMPILE_OPTIONS
       "$<$<CXX_COMPILER_ID:GNU,Clang>:-Wno-error=unused-parameter>")
     set_property(SOURCE "${cupid_xfb_copy_reference}" APPEND PROPERTY COMPILE_OPTIONS
@@ -597,6 +630,28 @@ if(CUPID_BUILD_TESTS)
       "SKIP: private-asset integration is disabled; enable CUPID_ENABLE_LOCAL_INTEGRATION with CUPID_LOCAL_GAME")
     set_tests_properties(local_disc_integration PROPERTIES
       SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;integration")
+  endif()
+  if(CUPID_ENABLE_SANITIZERS)
+    # Complete RAM hashes and ordered device comparisons take over 230 seconds
+    # under Debug instrumentation. Keep every case and allow shared-host headroom.
+    set_tests_properties(event_budget runtime_group hardware_renderer
+      cpu_memory_reference_checks physical_memory_reference_checks cpu_dispatch_reference_checks
+      fragment_reference_checks efb_copy_reference_checks xfb_copy_reference_checks
+      host_audio_reference_checks
+      PROPERTIES TIMEOUT 600)
+    set_tests_properties(cpu_integer_run PROPERTIES TIMEOUT 300)
+    # The 252-case Debug run took 1230.15 seconds; this scope has three times as many cases.
+    set_tests_properties(runtime_group PROPERTIES TIMEOUT 5400)
+    set_tests_properties(cpu_memory_reference_checks PROPERTIES TIMEOUT 1800)
+    set_tests_properties(xfb_copy_reference_checks PROPERTIES TIMEOUT 900)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      # SDL retains process-global D-Bus data by default. Its documented debug
+      # teardown hint lets owned test processes validate leaks at SDL_Quit.
+      get_property(cupid_registered_tests DIRECTORY PROPERTY TESTS)
+      foreach(cupid_test IN LISTS cupid_registered_tests)
+        set_property(TEST ${cupid_test} APPEND PROPERTY ENVIRONMENT SDL_SHUTDOWN_DBUS_ON_QUIT=1)
+      endforeach()
+    endif()
   endif()
 endif()
 

@@ -271,6 +271,81 @@ void clipping_and_depth_tests() {
   CHECK_THROWS(f.draw({invalid, f.vertex(4, 0), f.vertex(0, 4)}));
 }
 
+void wide_culled_depth_tests() {
+  // Culling still remembers the plane for a later zfreeze draw. These origins
+  // exceed the coverage arithmetic's range without requiring any edge work.
+  for (unsigned axis = 0; axis < 2; ++axis)
+    for (float distance : {-8000000.0f, 8000000.0f}) {
+      Fixture f;
+      f.bp[0] |= 3 << 14;
+      const auto a = f.vertex(axis == 0 ? distance : 0.0f, axis == 1 ? distance : 0.0f, 875);
+      const auto b = f.vertex(0, 0, 750);
+      const auto c = f.vertex(axis == 0 ? 0.0f : 8.0f, axis == 1 ? 0.0f : 8.0f, 250);
+      f.draw({a, b, c});
+      CHECK(f.samples.empty());
+      f.bp[0] = (1 << 4) | (1 << 19);
+      std::optional<RasterPlane> remembered;
+      f.rasterizer.hardware = [&](const RasterWork &work) {
+        remembered = work.depth;
+        return true;
+      };
+      f.draw({f.vertex(0, 0, 100), f.vertex(4, 0, 100), f.vertex(0, 4, 100)});
+      CHECK(remembered.has_value());
+      CHECK(remembered->value == 875);
+      CHECK(remembered->dx == (axis == 0 ? 125 / distance : -62.5f));
+      CHECK(remembered->dy == (axis == 1 ? 125 / distance : -62.5f));
+      CHECK(remembered->x_origin == (axis == 0 ? static_cast<int>(distance) : 0));
+      CHECK(remembered->y_origin == (axis == 1 ? static_cast<int>(distance) : 0));
+      CHECK(remembered->x_offset == 0.495f && remembered->y_offset == 0.495f);
+    }
+}
+
+void captured_strip_depth_tests() {
+  // Reduction of an opening-transition strip: a degenerate first triangle
+  // preserves strip parity before a culled triangle with a wide depth origin.
+  Fixture f;
+  f.bp.fill(0);
+  f.xf.fill(0);
+  f.bp[0] = 0x4011;
+  f.bp[0x59] = 0x2acab;
+  f.put(0x101a, 320);
+  f.put(0x101b, -224);
+  f.put(0x101d, 662);
+  const std::array<std::array<u32, 4>, 4> positions{std::array<u32, 4>{0, 0, 0, 0},
+                                                    {0xc582113a, 0, 0, 0xbe95d000},
+                                                    {0, 0x435557de, 0, 0x44ff47e6},
+                                                    {0, 0, 0, 0x450091bb}};
+  std::array<std::optional<TransformedVertex>, 4> vertices;
+  for (unsigned i = 0; i < vertices.size(); ++i) {
+    vertices[i].emplace();
+    for (unsigned axis = 0; axis < 4; ++axis)
+      vertices[i]->clip_position[axis] = std::bit_cast<float>(positions[i][axis]);
+  }
+  f.rasterizer.draw(0x98, vertices);
+  CHECK(f.samples.empty());
+  f.bp[0] = (1 << 4) | (1 << 19);
+  f.bp[0x20] = (342 << 12) | 342;
+  f.bp[0x21] = (357 << 12) | 357;
+  f.put(0x101a, 8);
+  f.put(0x101b, 8);
+  f.put(0x101c, 1000);
+  f.put(0x101d, 350);
+  f.put(0x101e, 350);
+  f.put(0x101f, 1000);
+  std::optional<RasterPlane> remembered;
+  f.rasterizer.hardware = [&](const RasterWork &work) {
+    remembered = work.depth;
+    return true;
+  };
+  f.draw({f.vertex(0, 0, 100), f.vertex(4, 0, 100), f.vertex(0, 4, 100)});
+  CHECK(remembered.has_value());
+  CHECK(std::bit_cast<u32>(remembered->value) == 0);
+  CHECK(std::bit_cast<u32>(remembered->dx) == 0x80000000);
+  CHECK(std::bit_cast<u32>(remembered->dy) == 0x80000000);
+  CHECK(remembered->x_origin == 4552191 && remembered->y_origin == -342);
+  CHECK(remembered->x_offset == 0.495f && remembered->y_offset == 0.495f);
+}
+
 void line_and_point_tests() {
   Fixture f;
   f.bp[0x22] = 12 | (12 << 8);
@@ -328,6 +403,8 @@ int main() {
     scissor_tests();
     scissor_state_change_tests();
     clipping_and_depth_tests();
+    captured_strip_depth_tests();
+    wide_culled_depth_tests();
     line_and_point_tests();
   });
 }

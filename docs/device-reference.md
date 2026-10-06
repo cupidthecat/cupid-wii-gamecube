@@ -69,6 +69,28 @@ An independent build of the complete unchanged memory-card device matched 512 ov
 
 VI presentation sends the field's XFB address, width, height, byte stride and active-area aspect ratio to the rendering callback. Aspect uses programmed blanking, nominal sample duration and even-field duration with the pinned NTSC/PAL normalizations; invalid timing retains its 4:3 fallback. Raw field pixels need this separate display ratio because they usually hold only one field's active lines. VI does not render GX commands or alter the guest image. Register changes during a scanout are not yet collated into a per-line display model.
 
+VI geometry and tick calculations are cached until a timing halfword or clock
+write invalidates them. A randomized comparison applies 200,000 register
+mutations and 409,466,224 cycles on each console, matching every observed VI
+register, beam value, deadline, interrupt and field descriptor with the previous
+calculation. SI polling that falls exactly on a field boundary now occurs
+before the next field installs its initial poll deadline. The previous ordering
+discarded that poll; the unchanged boundary regression fails on that ordering
+and passes after the repair.
+
+Aligned GameCube ARAM transfers copy each contiguous 32-byte block directly.
+The RAM callback order, 246-cycle delay per block, 16 MiB wrapping and mode-four
+duplicate bank remain unchanged. Boundary fixtures check copied bytes,
+callbacks, register advancement and the 492-cycle completion of two blocks.
+
+Materializing a proven quiet interval updates only elapsed countdowns and
+remainders, without repeating periodic divisions or rebuilding an unchanged
+deadline. MMIO reads still expose current state, including their acknowledgement
+side effects. Event-boundary updates retain the full callback and interrupt
+path. Interleaved-read fixtures and 200,000 VI mutations per console match all
+observations. Complete runtime callbacks additionally compare CPU state, IRQ
+causes, XFB geometry and every audio/disc packet byte in order.
+
 `tests/ios_tests.cpp` verifies IPC and IOS services with synthetic guest requests and real temporary files. Wii storage is confined to `wii` under the explicit user-data directory. The runtime records node ownership, modes, attributes and creation order in `wii-fs-metadata.txt` beside that directory; its format starts with `CFS1`. The guest's UID is assigned through the real big endian `/sys/uid.sys` record format, and its group comes from the active TMD. Metadata changes persist through file replacement, and reconstruction tests verify the retained UID, group, attributes and access modes.
 
 Filesystem usage accepts one 64-byte path vector and two four-byte output vectors. Each ordinary file contributes its size rounded up to 16 KiB clusters; directories contribute only inodes, including the queried directory itself. Returned totals are capped at the defined filesystem geometry: `0x7bc0` clusters and `0x17ff` inodes. The query intentionally does not check caller UID or GID, matching its specified operation. Host-only root files, invalid host names and symlinks remain outside the guarded guest namespace. Missing or invalid paths and malformed vectors retain the output bytes; an incomplete host scan returns an access error rather than a partial count.

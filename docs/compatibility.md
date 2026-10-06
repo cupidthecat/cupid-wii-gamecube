@@ -1,16 +1,18 @@
 # Compatibility
 
-Complete playability and full-speed execution remain unverified. Both supplied games reach file selection and generate nonzero guest PCM on Windows and Linux. Sunshine accepts menu movement, jumping and slot input. Galaxy accepts pointer and slot input, reopens guest-created data, and reaches an outdoor plaza where ordinary stick and A input produce movement and jumping. These observations use private local dumps and normal guest input.
+Complete playability and full-speed execution remain unverified. Current retained captures show Sunshine airstrip movement and jumping on Windows, plus file selection, opening sequences and nonzero guest PCM for both supplied games on Windows and Linux. The table records those captures. Earlier endpoint-audio observations below retain their original source scope and have not been recertified by these runs.
 
 | Game | Platform | Strongest observed behavior | Still unverified |
 | --- | --- | --- | --- |
-| Super Mario Sunshine, USA (`GMSE01`) | Windows, MSVC Release | Accepted Start, menu movement, jumping and slot A; rendered opening movie. A separate GPU run's actual SDL samples match Windows endpoint capture. | Controllable level gameplay, guest save creation and reopening, full speed. |
-| Super Mario Sunshine, USA (`GMSE01`) | Linux, GCC Release | Accepted menu controls and slot A; the 48-billion-step run progresses through the opening airstrip/movie scenes. | Controllable level gameplay, save/load, commercial host playback, full speed. |
-| Super Mario Galaxy, USA (`RMGE01`) | Windows, MSVC Release | Guest-created files reopen exactly, the restored slot launches, and opening-story input reaches the outdoor plaza. Ordinary Nunchuk forward, right and left input and A produce visible movement and jumping. A separate replay run's nonzero SDL samples match Windows endpoint capture. | Broader gameplay controls, complete gameplay save/load behavior, full speed. |
-| Super Mario Galaxy, USA (`RMGE01`) | Linux, GCC Release | Title, pointer, file-slot hover and slot selection accepted; file-creation confirmation reached. | Accepted live controls through gameplay, complete save creation/reload, commercial host playback, full speed. |
+| Super Mario Sunshine, USA (`GMSE01`) | Windows, MSVC Release, RTX 3060 | Completed field 10,000; rendered airstrip level with ordinary left/right movement, release, jumping and landing; nonzero guest PCM. | FLUDD use, level completion, gameplay save/load, host playback, full speed. |
+| Super Mario Sunshine, USA (`GMSE01`) | Linux, GCC Release, Mesa | Title/file selection and opening sequence through field 4,620; nonzero guest PCM. | Controllable level gameplay, gameplay save/load, commercial host playback, physical GPU execution, full speed. |
+| Super Mario Galaxy, USA (`RMGE01`) | Windows, MSVC Release, RTX 3060 | Pointer/slot selection, normal Play input and opening storybook through field 2,970; nonzero guest PCM. | Gameplay controls, gameplay save/load, host playback, full speed. |
+| Super Mario Galaxy, USA (`RMGE01`) | Linux, GCC Release, Mesa | Title, pointer/slot selection and opening storybook through field 2,130; nonzero guest PCM. | Gameplay controls, gameplay save/load, commercial host playback, physical GPU execution, full speed. |
 
-The menu and gameplay observations use software graphics, headless output,
-disabled host audio, bounded execution and private copies of user storage.
+The current captures use OpenGL graphics, headless output, disabled host audio,
+bounded execution and private copies of user storage. Linux uses Mesa llvmpipe,
+which is a software driver. These conditions do not establish host playback
+or physical GPU acceleration on Linux.
 Sunshine uses structurally validated USA IPL font slots. Galaxy uses its real
 partition metadata and required IOS33 profile. The separate Sunshine audio
 probe uses headless OpenGL and SDL audio; [host audio](host-audio.md) records
@@ -19,7 +21,77 @@ retain their separate scope.
 
 Exact older bounds, frame/audio hashes, controls and source snapshots are preserved in [the run history](compatibility-history.md). Menu-input checkpoints include `c140c115aa881c19338936ca565668884578698e` and the subsequent validated input-follow snapshots. That history distinguishes an executable's configured revision string from the source snapshot actually used to build it.
 
-## Current continuation runs
+## Retained candidate and RAM runtime checks
+
+The latest source manifest contains 222 files and has SHA256
+`475439c5ecef2d20e3a0fb1bfc9e27c4f9a6767e6e212cda03b2c70d978490b4`.
+Windows executables report `emulation-candidate-20261004`; the Linux build
+reports `unknown`. Receipts identify the actual source and binary separately
+from those configured labels. Windows passes all 64 registered tests and Linux
+all 65, with actual private-disc boot checks and required graphics execution.
+These tests establish their stated behavior, not commercial playability.
+
+The stock Windows Sunshine CLI, checkpoint recorder and repeated single-step
+control agree exactly at three billion attempted steps: all 60 reported state
+fields, frame bytes and persistent files match. The run reaches 320 fields,
+with 338,464 guest PCM values and 62,194 nonzero values. GPU startup checkpoints
+at fields 60 through 300 also match the software frame bytes. Longer ordinary
+input captures reach the bounds listed above with zero reported memory errors.
+The Windows captures end with allocation errors during host commit exhaustion;
+the Linux captures are interrupted by WSL restarts. Their partial state and
+images remain preserved. Neither is a completed gameplay or speed result.
+
+The following RAM runtime contains 223 inputs with manifest SHA256
+`d3e3b6719bf0fc093e9adec0d184ac221d020bdf766c1cdfbbeb1aaf5eceeebb`.
+The frozen product passes all 64 Windows and 65 Linux Release tests; the
+Windows comparison harness uses its recorded portable adapter overlay.
+Its Sunshine stock, recorded, repeated-step and native controls agree on
+guest results, frames and storage at three billion attempts. The Galaxy
+interpreter/OpenGL prefix agrees with its earlier control at 1,000,200,000
+attempts. These startup comparisons do not recertify later compatibility
+observations. [Testing](testing.md) records the precise source and test scope.
+
+The supplied USA 2 MiB container fails complete retail-firmware checksum
+validation. Its independently validated font blocks remain usable through
+`--ipl-fonts`; these runs do not treat the container as a valid complete BIOS.
+Commands, immutable input and storage copies, source/binary hashes, checkpoint
+frames and final receipts remain under `.cache/goal-emulation-20261004/`.
+
+## Sunshine airstrip controls
+
+The RAM runtime combined with the separately validated empty-coverage renderer
+completes 10,000 fields normally on Windows. Its 223-file source manifest is
+`35e438ee6d88483576f67adc2eeaae079b7a8eba17065b67a4edbf1ffe7bfdc7`;
+the interpreter/OpenGL checkpoint executable has SHA256
+`5d214b28997b0d8258a002d35495c5591ad040708ea1ec3ddc20e3bba681eaea`.
+All 86 shared checkpoints through field 5,160 match the earlier native capture
+on guest state and raw frame bytes. Build labels, native counters, three GPU
+execution counters and accepted replay-update counts are recorded separately.
+The renderer's existing dispatch cap can repartition later work between the
+GPU and checked CPU path after empty dispatches are removed.
+
+Execution passes the earlier field-6,717 rendering failure. Field 7,140 shows
+Mario, Peach and the aircraft in the airstrip level. Ordinary stick holds at
+fields 7,590–7,650 and 7,770–7,830 move Mario in both directions; subsequent
+released-input frames show his displaced position. A presses at 7,600 and
+7,780 produce airborne frames followed by landing. Two replay versions are
+accepted with zero rejections, preserving the consumed input prefix.
+
+The final state records 80,178,884,970 retired instructions, 10,000 presented
+fields and 10,682,464 guest PCM values, including 10,320,440 nonzero values.
+Both memory-error counters, DAR and DSISR remain zero. The bounded run takes
+2,596.62 seconds with checkpoint output and shared-host work; this is not a
+full-speed result. Host audio is disabled. Changed persisted card bytes alone
+do not establish a gameplay save and reload. FLUDD use, level completion,
+host playback and gameplay save/load remain unverified. The source, final
+state, raw frames, replay versions and memory telemetry are audited in
+`.cache/goal-emulation-20261004/sunshine-airstrip-controls-receipt.json`.
+
+## Earlier continuation records
+
+The following observations describe their original snapshots. The older
+`local-artifacts` directories named below are absent from the current workspace;
+their documented observations have not been recertified by the latest runs.
 
 The October 4, 2026 Sunshine native continuation uses a sealed working snapshot after `563d1a8853a351184d35f0f0e35d6b4f0a13392a`, including aligned cache reads, carry corrections and queued card-DMA completion. Its separate Linux build passes the public headless suites. Both plain CLIs and forwarding observers produce identical complete reported state at the 100-million-attempt bound on both platforms. Retained commercial prefixes at fields 30, 120, 300 and 450 also match the earlier Linux observer apart from configured revision metadata. This verifies those prefixes, not the unfinished run's future outcome.
 
@@ -70,14 +142,26 @@ ends with an explicit raster-coordinate error at field 6,717 and instruction
 DSISR and both memory-error counters remain zero. Original source and binary
 hashes, input, final state and RAM are preserved in
 `local-artifacts/gameplay-hardware-fixed-native-20261004`. This observed
-rendering failure is under diagnosis and prevents a level-playability claim.
+rendering failure prevents a level-playability claim.
+
+The exact failing draw was captured and reduced from a 13-vertex strip to four
+vertices. Its culled triangle needs a depth-plane origin at projected X
+4,552,191; the coverage-coordinate guard rejected that origin before the
+primitive could be culled. Separate interpolation-origin conversion repairs
+the draw without clamping coordinates or dropping a primitive. Both the full
+and reduced draws match all seven final depth-plane words from the unchanged
+compiled arithmetic, including under arithmetic sanitizers. A fresh continuation
+uses the isolated repair, identical frozen storage and ordinary replay. Its
+early checkpoints match the failed run; execution beyond field 6,717 and level
+playability remain unverified. [Rasterizer checks](rasterizer-reference.md)
+record the captured input and regression scope.
 
 A new Galaxy GPU continuation uses the sealed integrated source described in
 [testing](testing.md), the default interpreter and copied restored-slot data.
 The stock CLI and rebuilt forwarding observer match all 52 reported state
 fields, final frame bytes and persistent files at one billion attempts, with
-actual GPU fragment execution. The long continuation is unfinished; its capture
-hooks and normal input establish no outcome beyond observed checkpoints.
+actual GPU fragment execution. These observations cover that bounded prefix;
+later comparisons retain their own source and capture scope.
 
 A completed software control uses the same integrated core, seed and immutable
 replay through field 1,050. All 35 captured checkpoints agree on every reported
@@ -85,8 +169,18 @@ non-graphics guest state field. Frame and memory hashes first differ at field
 690, where 17 PPM bytes differ. At field 1,050, full CPU state and all 24 MiB of
 main RAM match; 28 bytes in secondary RAM and 16 PPM bytes differ. The retained
 comparison is `local-artifacts/galaxy-software-control-20261004/completed-comparison.json`.
-The rendering discrepancy is under diagnosis; these results establish no
-broader graphics-equivalence claim.
+The original discrepancy remains recorded with that source snapshot.
+
+The repaired projection and graphics-state cache complete a fresh GPU run
+through the same field 1,050 bound. All 35 checkpoint frames and reported
+non-backend state fields match the software control. Final full CPU state, all
+main and secondary RAM bytes, PCM and persisted files match exactly. The run
+executes 12,747,664,586 instructions, 268,063 GPU dispatches and 1,487,715,052 GPU
+fragments, with 406 fallback rectangles and seven CPU fragments. This closes
+the captured mismatch for that frozen core. The later shader-coordinate reuse
+has separate public pixel and captured-draw checks; broader gameplay graphics
+still need evidence. [Hardware rendering](hardware-rendering.md) records the
+source isolation and retained receipts.
 
 The separate nine-billion-attempt Galaxy audio run uses ordinary replay input
 to advance past wrist-strap instructions. Its actual Windows endpoint samples
@@ -97,6 +191,35 @@ guest PCM. The Linux Sunshine endpoint attempt instead fails: guest execution
 and PCM match the stock CLI, but the Pulse transport stops callbacks and hangs
 during shutdown. [Host audio](host-audio.md) preserves both successful and failed
 capture scopes, final-buffer limits and attribution controls.
+
+Two current Linux Output replays deliver the entire captured Sunshine DMA
+waveform exactly through an owned Pulse sink with zero guest queue drops.
+Pausing that owned server reproduces stopped callbacks and queue drops while
+the producer continues; close still completes while the server is paused.
+The current shared WSLg probe instead delivers partial signal before its server
+refuses connections. Reliable physical Linux playback remains unverified.
+These endpoint results do not establish gameplay or full speed.
+
+A separate sealed intermediate Windows core completes Sunshine through field
+10,000 using the interpreter and physical RTX 3060 OpenGL. Ordinary replay
+inputs produce rendered movement, jumping, release and C-stick camera changes
+on the airstrip. The run takes 3,445.33 seconds on the shared host, executes
+80,179,453,444 instructions and generates 10,320,343 nonzero guest PCM values.
+Host playback is disabled. All five replay versions are accepted, with zero
+rejected replacements or instruction-memory errors. The two initially
+preformatted raw cards contain no game entries. The guest creates a valid
+seven-block Sunshine file on card A; its header, both directories and both
+allocation tables pass checksum checks. Card B and every original seed file
+remain unchanged. This verifies guest file creation, while saved level
+progress, restart/load, FLUDD use and level completion remain unverified.
+The completed capture and corrected card audit remain in
+`.cache/continuation-runtime-20261005/sunshine-gameplay/verification.json`.
+
+The final Linux GCC core matches that Windows capture at all 118 shared
+checkpoints through field 7,080, including every reported value except the
+configured revision and every raw frame byte. Later replay replacements have
+separate version records. Host playback is disabled on both platforms, and
+the final Linux gameplay continuation has its own bounded execution receipt.
 
 ## Firmware and performance
 

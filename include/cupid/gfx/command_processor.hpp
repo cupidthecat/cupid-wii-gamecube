@@ -5,6 +5,7 @@
 #include "cupid/gfx/rasterizer.hpp"
 #include "cupid/hw/devices.hpp"
 #include <array>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -21,6 +22,15 @@ public:
     }
     command_cycles_ = 0;
     devices_.set_interrupts(0xe00, interrupt_causes_);
+  }
+
+  // FIFO consumption and level-cause reassertion take place on the next call.
+  // Token/finish updates exclude the completion boundary.
+  u64 event_free_cycles() const noexcept {
+    if (((registers_[1] & 1) && fifo(0x30) >= 32) ||
+        devices_.interrupt_causes(0xe00) != interrupt_causes_)
+      return 0;
+    return event_remaining_ ? event_remaining_ - 1 : std::numeric_limits<u64>::max();
   }
 
   void reset_fifo();

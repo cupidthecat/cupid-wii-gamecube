@@ -41,6 +41,31 @@ divisors and rate steps outside the portable integer range fail explicitly.
 
 ## Diagnostics and validation
 
+A current 224-file Windows Sunshine startup completes 320 fields with SDL's
+WASAPI driver and the selected Razer Kraken V3 X endpoint. A private callback
+observer records 2,155,520 stereo frames, including 363,651 nonzero samples.
+All 4,311,040 signed-16-bit sample values divided by 32,768 match the endpoint's
+float32 bits at one constant 64-frame offset. The 2,185,440 captured endpoint
+frames are zero before and after that complete callback recording. No gain
+adjustment, tolerance or omitted callback segment is used.
+
+All 4,553 packets have contiguous device positions. The first packet has a
+discontinuity flag when the inactive endpoint starts delivering data; later
+packets have none, and timestamp errors are zero. Foreign audio sessions have
+zero measured peaks. The inactive baseline produces no packets, so continuity
+is asserted for the recorded active stream. Recording follows Microsoft's
+[WASAPI loopback procedure](https://learn.microsoft.com/en-us/windows/win32/coreaudio/loopback-recording).
+
+The observer first matches the unmodified audio-disabled CLI's complete state,
+frame and storage. Enabling audio then preserves all 627 compared guest-state
+values across ten checkpoints and the final state, every raw frame and all four
+persisted files. Only the three host callback fields are excluded. Queue drops
+remain zero. A 101-file sealed private packet and independent waveform receipt
+remain in `.cache/goal-emulation-20261004/`. This capture uses the software
+rasterizer and source manifest
+`456efec2b1e1f10dfea0e8d9bb9915aea2de8250329e75fdf52727a310c03fbb`;
+audio during controllable gameplay and real-time execution remain outstanding.
+
 The existing `audio_samples`, `audio_nonzero_samples`, `audio_peak` and
 `audio_hash` fields describe the original main DMA values before host mixing.
 Remote packets and disc audio do not change them. The separate `disc_audio_samples`,
@@ -355,6 +380,103 @@ The receipt has SHA-256
 `3dc90b1f140fbc190b21f825d943e8f0281c502b476da4c78400e844b0263862`.
 This checks shutdown liveness and lifetime; commercial endpoint playback remains
 outside that comparison.
+
+A separate October 4 commercial run used the coherent frozen Sunshine runtime
+with the staged SDL library and its actual callback observer. SDL's Pulse driver
+played into an owned, clocked 48 kHz stereo signed-16-bit null sink. The shared
+WSLg server still timed out on a bounded read-only query, so this run used no
+shared endpoint and makes no physical-output claim.
+
+At three billion CPU attempts, the run reached 320 VI fields. Its CPU, memory,
+frame and guest DMA hashes match the earlier stock observation. Guest DMA
+contained 62,194 nonzero values; the actual callback contained 3,002,084, and the
+sink monitor contained 3,002,066. The process exited normally. A separate watcher
+observed 0.140 seconds between the normal guest-stop message and process exit,
+and the owned server reported no remaining playback stream after close. All
+copied build inputs match their hashes before and after execution.
+
+The strict comparison of the whole callback at one constant alignment failed.
+The monitor instead matches four callback segments exactly, at offsets of 818,
+908, 965 and 1,170 frames. Between these segments it inserts 90, 66 and 205 silent
+frames and omits nine stereo callback frames containing 18 nonzero values.
+All other captured values match, and no other playback stream used the owned
+sink. This establishes nonzero commercial PCM delivery and clean shutdown
+through the isolated Linux audio engine, while preserving the timing gaps as
+a failed continuity check. It does not establish uninterrupted output, physical
+listening or full-speed gameplay. This frozen Output precedes the newer
+disabled-Remote optimization; the gaps alone do not identify a defect in the
+current callback.
+
+The private build receipt and copied inputs are under
+`local-artifacts/linux-audio-runtime-20261004/`. The observation directory is
+`run-1791151123132142772/`; it contains `completed.json`, the failed
+`analysis.json`, `gap-analysis.json` and `shutdown-timing.json`. Callback PCM
+SHA-256 is
+`053d4fcfd008d5854a88bb5d459310698306d9f1a85c464105639498d0f44993`;
+monitor PCM SHA-256 is
+`9a72d5123eedc7610623f1e145d8e88b61b73a0e7b2961d8d7d2609f4ce74a58`.
+The observation executable SHA-256 is
+`8656fa85fe64f44bb57e737765bfd576aed0c806a7ea965b0279434b93024a14`.
+
+The current Output and SampleFifo were then tested separately with the sealed
+commercial trace's 338,464 guest values. A small driver feeds the captured DMA
+through the public Output API at the original 3,372-divisor cadence, after the
+owned sink starts clocking callbacks. It executes the current audio sources and
+links the copied staged SDL library directly; it links no historical guest
+core. Its private observer records the actual completed callback buffers.
+
+Two independent runs pass the strict whole-callback comparison. Their 285,696
+and 281,600 callback frames each contain 93,954 nonzero values and match the
+48 kHz sink monitor exactly at a constant 769-frame offset. Guest values,
+nonzero count and hash match the sealed trace. Both runs have zero dropped
+granules, no extra endpoint signal, no other playback stream and normal close.
+This verifies the current callback's delivery of captured commercial DMA at
+that cadence; it does not replay the original guest's slower wall-clock
+schedule or reproduce its historical continuity failure.
+
+The source, strict GCC build and input hashes are in
+`current-output-1791151862112394849/` under the same artifact root. The two
+receipts and waveform comparisons are in `run-1791151909543897916/` and
+`run-1791151968353042481/`. The driver SHA-256 is
+`aa843b7519b7a16434573969e7b67a05719ab2d33ce29648fe7d68c2bacd009b`.
+
+A later read-only probe found the shared WSLg server responding in a new
+environment epoch. The same current driver was then tried through `RDPSink`
+with a native 44.1 kHz monitor. It produced 50,176 callback frames containing
+32,460 nonzero values; the monitor retained 84,644 frames containing 27,910
+nonzero values. The stream stopped progressing, the FIFO reported 854 dropped
+granules, and the driver's explicit no-drop assertion failed. It exited with
+status one without reaching the 18-second outer bound. The final server query
+reported connection refusal. The wrapper closed only its driver and recorder.
+It did not restart a shared service.
+
+This partial observation does not verify complete waveform delivery or
+reliable shared-endpoint playback. The monitor's rate conversion also prevents
+an unchanged 48 kHz sample comparison. Its receipt and private PCM are in
+`shared-run-1791152103315790604/` beside the two successful current-Output runs.
+Read-only environment records retain the changed PID 1 start times and socket
+creation times; a newly responding server is not evidence that an earlier
+failed playback recovered.
+
+A private paired control isolates the queue-drop mechanism with the same
+captured DMA and copied current audio sources. Both runs reach 55,296 callback
+frames and 42,700 nonzero callback values before the intervention, with zero
+drops. The healthy owned server continues to 282,624 callback frames and
+consumes all guest values without drops. When only the owned server is paused,
+the callback remains at 55,296 frames during 4.285 seconds of continued DMA and
+the bounded FIFO reports 827 dropped granules. Guest values and PCM hash remain
+unchanged. Output closes in 0.0443 seconds while that server is still stopped;
+the wrapper then resumes and reaps its own server.
+
+The producer and callback share the product audio mutex, while SDL's Pulse
+write wait runs outside it. A stopped callback therefore allows guest enqueueing
+to continue until the ring is full, which is where SampleFifo increments its
+drop counter. This control reproduces the observed stalled-consumer symptom
+without changing guest samples or mixer code. It does not identify why the
+shared transport stopped. The private paired receipt is
+`drop-diagnosis-1791152681943257116/paired-receipt.json` under the same artifact
+root, with SHA-256
+`f8f1a6c4e824e56573ce951e00a71351964728c8b56c0d2b5201f11fdf652033`.
 
 ## Behavior mapping
 

@@ -5,6 +5,9 @@
 #include <cfenv>
 #include <cmath>
 #include <limits>
+#if defined(_M_X64) || defined(__x86_64__)
+#include <xmmintrin.h>
+#endif
 
 namespace cupid::cpu {
 namespace {
@@ -12,16 +15,24 @@ class HostRounding {
 public:
   explicit HostRounding(u32 mode) : saved_(std::fegetround()) {
     constexpr int modes[] = {FE_TONEAREST, FE_TOWARDZERO, FE_UPWARD, FE_DOWNWARD};
-    if (std::fesetround(modes[mode & 3]) != 0)
+    bool matching = saved_ == modes[mode & 3];
+#if defined(_M_X64) || defined(__x86_64__)
+    constexpr unsigned simd_modes[] = {0u, 0x6000u, 0x4000u, 0x2000u};
+    matching = matching && (_mm_getcsr() & 0x6000u) == simd_modes[mode & 3];
+#endif
+    changed_ = !matching;
+    if (changed_ && std::fesetround(modes[mode & 3]) != 0)
       throw std::runtime_error("Host floating rounding mode is unavailable");
   }
 
   ~HostRounding() {
-    std::fesetround(saved_);
+    if (changed_)
+      std::fesetround(saved_);
   }
 
 private:
   int saved_;
+  bool changed_ = false;
 };
 
 constexpr u32 invalid_mask = 0x01f80700, exception_mask = 0x1ff80700;

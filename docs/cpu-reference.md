@@ -18,6 +18,7 @@ The behavioral reference is pinned at `562875dd60fd0ff50b65dbbb611a2096802cd1b9`
 | Locked-cache DMA registers and physical transfers | `Interpreter_SystemRegisters.cpp`: `mtspr`; `Source/Core/Core/PowerPC/MMU.cpp`: `DMA_MemoryToLC`, `DMA_LCToMemory`; `Source/Core/Core/HW/Memmap.cpp`: range and alias handling | `src/cpu/interpreter.cpp`: `write_spr`; `src/core/memory.cpp`: `locked_cache_dma` |
 | SPRs, segment registers, privilege checks, FPSCR updates | `Source/Core/Core/PowerPC/Interpreter/Interpreter_SystemRegisters.cpp`: `mfspr`, `mtspr`, `mfmsr`, `mtmsr`, FPSCR handlers | `src/cpu/interpreter.cpp`; `src/cpu/floating.cpp` |
 | BATs, primary/secondary page hashes, reference/change bits, two-way TLBs and invalidation | `Source/Core/Core/PowerPC/MMU.cpp`: `UpdateBATs`, `TranslateAddress`, `TranslatePageAddress`, `LookupTLBPageAddress`, `UpdateTLBEntry`, `InvalidateTLBEntry`, `SDRUpdated` | `src/cpu/interpreter.cpp`: `translate`, `invalidate_tlb` |
+| Live-register BAT mapping and host lookup tables | `Source/Core/Core/PowerPC/MMU.cpp`: `UpdateBATs`, `IBATUpdated`, `DBATUpdated`, `TranslateBatAddress`, `TranslateAddress`; `Interpreter_SystemRegisters.cpp`: BAT and HID4 `mtspr` callers | `include/cupid/cpu/interpreter.hpp`: `bat_address`, `bat_registers_equal`; `src/cpu/interpreter.cpp`: `refresh_bat_map`; `tests/cpu_tests.cpp`: `mutable_bat_bank_tests`; `tests/cpu_memory_reference_checks.cpp`: `compare_mutable_bat_banks` |
 | Write-through/cache-inhibited transactions and PI request | `Source/Core/Core/PowerPC/MMU.cpp`: `WriteToHardware`, `Write<u64>`, `TranslateAddress`, `TranslatePageAddress`, `TranslateAddressResult`, BAT/TLB callers; `Source/Core/Core/HW/ProcessorInterface.cpp`: `SetInterrupt` | `src/cpu/interpreter.cpp`: `translate_access`, `store`, `store_physical`; `src/core/memory.cpp`: `memory_access_error`; `src/runtime/machine.cpp`: physical memory binding |
 | Page-crossing read order and deferred data faults | `Source/Core/Core/PowerPC/MMU.cpp`: `ReadFromHardware`, `Read`, `GenerateDSIException`; `Interpreter_LoadStore.cpp`: integer and binary64 load handlers; `Interpreter_LoadStorePaired.cpp`: `ReadPair`, `Helper_Dequantize` | `src/cpu/interpreter.cpp`: `load`; `src/cpu/floating.cpp`: `quantized` |
 | CPU data backing, host spans and page-table update bounds | `Source/Core/Core/PowerPC/MMU.cpp`: `ReadFromHardware`, `WriteToHardware`, `TranslatePageAddress`, DMA callers; `Source/Core/Core/HW/Memmap.cpp`: `Init`, `GetSpanForAddress`, `GetPointerForRange`, `CopyFromEmu`, `CopyToEmu` | `include/cupid/core/bus.hpp`: CPU data and page-table methods; `src/core/memory.cpp`; `src/cpu/interpreter.cpp`: data and PTE transfers |
@@ -42,6 +43,10 @@ The behavioral reference is pinned at `562875dd60fd0ff50b65dbbb611a2096802cd1b9`
 BATs accept either validity bit and do not enforce block protection, matching the behavioral reference's current treatment. Hashed pages likewise do not enforce segment keys or page protection. The guest still receives instruction and data storage exceptions for missing translations, and instruction fetch rejects a segment's no-execute flag on a TLB miss.
 
 BAT matching also follows the entries produced by the pinned table updater for noncontiguous block masks and overlapping effective-base fields. Effective-base bits set within the block mask remain fixed in the incoming address; physical translation retains the OR of its block bits and the physical base. Higher numbered mappings take precedence. The extended bank is enabled only on Wii when HID4 SBE is set. Invalid BAT configurations here follow the observed software table output; no physical-console behavior is claimed.
+
+Instruction and data BAT lookups each use a lazily allocated 128 KiB host table. Every relocated access compares all raw upper and lower registers in the active bank against its snapshot. A register change or a change between four and eight active BATs rebuilds the table before lookup, including direct edits through `state()`. x86-64 uses exact SSE2 comparisons of the snapshots; other hosts use byte comparison. Rebuilding enumerates the block mask in ascending bank order, retaining malformed mappings, W/I attributes and overlap priority. The tables add two host pointers to the interpreter and do not change architectural state, bus transactions or page-table lookup order.
+
+The mutable-BAT fixture keeps its reference memory manager on the heap with ordinary `std::unique_ptr` ownership. Native MSVC Release with LTO initially failed with Windows stack-overflow status `c00000fd`: the minimized fixture reserved 1,063,856 bytes in one compiled frame against the executable's unchanged 1,048,576-byte stack reserve. The debugger stopped in the stack probe before comparisons began. Moving only the 524,720-byte reference memory-manager object to the heap reduced that frame to 539,152 bytes and retained all 131,072 cases and their assertions. The timeout and executable stack settings remain unchanged. The original failure, debugger output, unwind records and correction are retained in `.cache/cpu-bat-simd-20261004/native-memory-debug/debugger-receipt.json`.
 
 Single loads preserve NaN payloads and signaling bits. Single stores use the guest's bit transfer rules rather than a host rounding cast. Quantized integer transfers apply the six-bit signed scale, clamp to their integer range, and truncate. Single scalar results fill both register lanes; binary64 operations preserve the second lane.
 
@@ -236,6 +241,23 @@ Three alternating pairs per console and workload measure 65 million steps per sa
 | Wii rotate-heavy loop | 2.735790 | 3.288123 | 0.832 |
 
 The native backend is slower in these measurements, including an earlier out-of-line dispatch series. Other work shares the host, but no workload demonstrates a speedup. This is experimental native integer execution with validated interpreter fallback. It does not implement native basic blocks or establish full-speed execution. Both source variants, exact samples, tests and trace images remain in `.cache/cpu-native-integer-20261004/`; final inline-dispatch artifacts are in its `inline-dispatch/` subdirectory.
+
+## Reusing host rounding controls
+
+Scalar, paired-single and quantized operations use the guest FPSCR rounding
+mode. The host guard changes that mode only when the incoming controls differ.
+On x86-64 it checks both the C floating-point mode and the SIMD rounding bits.
+An operation that changes the controls restores the saved C mode when it exits,
+including guest faults and rejected quantization. Host C libraries can report
+split scalar/SIMD controls differently; the checks retain each library's saved
+mode behavior.
+
+The public fixture checks 448 scalar, paired, fault and split-control cases on
+x86-64 across both consoles and all four host and guest rounding modes. A
+separate frozen before/current trace matches 16,384 complete CPU states, ordered
+bus records, final RAM, host rounding controls and host exception flags byte for
+byte. [Performance measurements](performance.md) record the authored floating
+workload separately from commercial gameplay.
 
 ## Unfinished behavior
 

@@ -487,3 +487,28 @@ remain in `projection-identity-benchmark.txt`, all under
 `.cache/continuation-20261022/`. An inline instruction-cache probe was rejected:
 its alternating component samples were slower than the existing out-of-line
 path. That experiment remains private and is absent from the product changes.
+
+## XFB staging spans
+
+The software XFB encoder now selects a nearest source row once per contiguous
+compact-row span instead of once per byte. Seven counterbalanced samples per
+profile perform eight complete copies each. The private before/current driver
+also checks 1,054 defined layouts across all four host rounding modes, matching
+23,154,752 bytes including gaps and guards, source callback order/count and
+callback-failure atomicity. It rejects 994 undefined layouts through the shared
+unchanged planner.
+
+| Profile | Windows earlier/current milliseconds | Linux earlier/current milliseconds |
+| --- | ---: | ---: |
+| 640 by 480 | 22.320 / 15.186 | 13.731 / 10.713 |
+| 320 by 128, downscale | 2.212 / 1.804 | 1.791 / 1.440 |
+| 320 by 128, upscale | 3.637 / 2.004 | 1.647 / 1.218 |
+| 640 by 480, short stride | 18.216 / 13.759 | 10.929 / 10.012 |
+
+These strict MSVC/LTO and GCC component measurements share the host with game
+captures and builds. They do not establish commercial gameplay speed. Exact
+commands, frozen libraries, driver source and all samples remain under
+`.cache/continuation-20261022/xfb-runs-*` and `xfb-native/`.
+The final samples use a symbol-renamed, otherwise identical shipping copy
+function, including its nonzero compact-row invariant check. A normalized source
+hash and the earlier prototype samples remain beside the final measurements.

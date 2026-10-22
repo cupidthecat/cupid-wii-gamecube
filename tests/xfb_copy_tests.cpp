@@ -3,6 +3,8 @@
 #include "test_support.hpp"
 #include <algorithm>
 #include <array>
+#include <cfenv>
+#include <vector>
 
 using namespace cupid;
 using namespace cupid::gfx;
@@ -138,6 +140,94 @@ void clipped_and_full_bounds() {
   CHECK(memory.read8(0x1000 + 15 * 32) == 112);
 }
 
+void compact_staging_rows() {
+  struct RoundingGuard {
+    int mode = std::fegetround();
+
+    ~RoundingGuard() {
+      std::fesetround(mode);
+    }
+  } rounding;
+
+  struct Profile {
+    unsigned width, height, top, scale, stride;
+    bool inverse;
+  };
+
+  constexpr std::array profiles{
+      Profile{18, 8, 0, 256, 32, false},   Profile{18, 9, 520, 256, 32, false},
+      Profile{18, 16, 0, 128, 32, false},  Profile{18, 8, 0, 128, 32, true},
+      Profile{2, 1, 0, 4096, 32, false},   Profile{20, 8, 0, 256, 32, false},
+      Profile{34, 8, 0, 256, 64, false},   Profile{36, 8, 0, 256, 32, false},
+      Profile{48, 2, 0, 2048, 128, false}, Profile{640, 3, 0, 256, 640, false}};
+  const auto color = [](unsigned x, unsigned y) {
+    return (((x * 47 + y * 19 + 3) & 255) << 24) | (((x * 7 + y * 31 + 41) & 255) << 16) |
+           (((x * 23 + y * 11 + 103) & 255) << 8) | 255;
+  };
+  Memory memory(Console::GameCube);
+  for (int mode : {FE_TONEAREST, FE_TOWARDZERO, FE_UPWARD, FE_DOWNWARD}) {
+    CHECK(std::fesetround(mode) == 0);
+    for (unsigned gamma = 0; gamma < 4; ++gamma) {
+      for (const auto &profile : profiles) {
+        auto bp = registers(profile.width, profile.height);
+        bp[0x49] = profile.top << 10;
+        bp[0x4d] = profile.stride / 32;
+        bp[0x4e] = profile.scale;
+        bp[0x52] |= (gamma << 7) | (profile.inverse ? 1 << 10 : 0);
+        const auto plan = plan_efb_xfb(bp);
+        const auto &layout = plan.layout;
+        const unsigned packed_row_bytes = profile.width * 2;
+        // Capture each encoded source row without scaling across source rows.
+        // The large encoded height also defines padding for very narrow rows.
+        std::vector<std::vector<u8>> source_rows;
+        for (unsigned row = 0; row < plan.source_height; ++row) {
+          auto capture = registers(profile.width, 1);
+          capture[0x49] = (profile.top + row) << 10;
+          capture[0x4b] = 0x8000 / 32;
+          capture[0x4d] = ((profile.width + 15) & ~15u) / 16;
+          capture[0x4e] = 4096;
+          capture[0x52] |= gamma << 7;
+          copy_efb_xfb(memory, capture, color);
+          const auto bytes = memory.range(0x8000, packed_row_bytes);
+          source_rows.emplace_back(bytes.begin(), bytes.end());
+        }
+        const auto extent =
+            std::size_t(layout.height - 1) * layout.stride + layout.copied_row_bytes;
+        const auto encoded_rows = (extent + packed_row_bytes - 1) / packed_row_bytes;
+        std::vector<u8> encoded;
+        for (std::size_t row = 0; row < encoded_rows; ++row) {
+          // These profiles use exact binary ratios. Integer nearest selection
+          // independently checks ties and the clipped source height.
+          const auto selected =
+              (2 * row * plan.source_height + layout.encoded_height) / (2 * layout.encoded_height);
+          CHECK(selected < source_rows.size());
+          encoded.insert(encoded.end(), source_rows[selected].begin(), source_rows[selected].end());
+        }
+        auto destination = memory.range(0x1000, extent + layout.stride);
+        std::fill(destination.begin(), destination.end(), u8(0x6b));
+        std::vector<u8> expected(destination.size(), 0x6b);
+        for (unsigned row = 0; row < layout.height; ++row)
+          std::copy_n(encoded.begin() + std::size_t(row) * layout.stride, layout.copied_row_bytes,
+                      expected.begin() + std::size_t(row) * layout.stride);
+        unsigned samples = 0;
+        copy_efb_xfb(memory, bp, [&](unsigned x, unsigned y) {
+          const unsigned pixel = samples / 3, tap = samples % 3;
+          const unsigned source_y = profile.top + pixel / profile.width;
+          const unsigned previous = std::max(profile.top, source_y ? source_y - 1 : 0),
+                         next = std::min(profile.top + plan.source_height - 1, source_y + 1);
+          CHECK(x == pixel % profile.width);
+          CHECK(y == (tap == 0 ? previous : tap == 1 ? source_y : next));
+          CHECK(memory.read8(0x1000) == 0x6b);
+          ++samples;
+          return color(x, y);
+        });
+        CHECK(samples == 3 * profile.width * plan.source_height);
+        CHECK(std::equal(expected.begin(), expected.end(), destination.begin()));
+      }
+    }
+  }
+}
+
 void atomic_failures() {
   Memory memory(Console::GameCube);
   auto bp = registers();
@@ -204,6 +294,7 @@ int main() {
     filters_and_clamps();
     scaled_and_strided();
     clipped_and_full_bounds();
+    compact_staging_rows();
     atomic_failures();
   });
 }

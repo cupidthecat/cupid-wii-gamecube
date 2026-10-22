@@ -39,6 +39,23 @@ size and the configured stride. The compact encoded bytes are selected at
 different slices of one compact row. Padding or scaled extents that would expose
 unwritten staging bytes fail explicitly. RAM gaps retain their existing values.
 
+Readback copies contiguous spans that end at each compact encoded-row boundary.
+Every byte in a span selects the same nearest source row, so the original
+double multiply and `round` expression runs once per span. Destination stride
+may start a span partway through a compact row or cross several compact rows;
+each span keeps its own source-row selection. Encoding, color callbacks,
+filtering, gamma evaluation, temporary staging and the final RAM write order
+retain their previous behavior.
+
+The public staging regression covers ten layouts, four gamma selections and
+all four host rounding modes. It builds expected compact rows from separate
+single-source-row captures and uses integer nearest selection for exact binary
+ratios. Cases include widths not divisible by sixteen, eight compact spans in
+one destination row, clipped source height, scaling ties, short and long
+strides, untouched gaps and end guards. Callback order/count and destination
+atomicity are checked separately. A proposed static gamma-table shortcut was
+rejected because it changed channel results under directed host rounding.
+
 The module rejects zero scales, undefined float-to-integer extents, odd source
 widths, nonzero horizontal origins with undefined intermediate indexing, missing
 source rectangles, invalid pixel formats, address wrapping and readback selections

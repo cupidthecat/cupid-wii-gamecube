@@ -119,6 +119,9 @@ XfbCopyLayout copy_efb_xfb(Memory &memory, std::span<const u32> bp,
     throw std::invalid_argument("XFB copy requires BP state and a color source");
   const auto plan = plan_efb_xfb(bp);
   const auto &layout = plan.layout;
+  const u64 encoded_row_bytes = u64(layout.width) * 2;
+  if (encoded_row_bytes == 0)
+    throw std::logic_error("XFB planner produced an empty encoded row");
   const u32 control = bp[0x52];
   const unsigned top = plan.top, source_height = plan.source_height;
   const auto &weights = plan.weights;
@@ -148,15 +151,22 @@ XfbCopyLayout copy_efb_xfb(Memory &memory, std::span<const u32> bp,
   }
   std::vector<u8> staged(static_cast<std::size_t>(layout.height) * layout.copied_row_bytes);
   for (unsigned row = 0; row < layout.height; ++row) {
-    for (unsigned byte = 0; byte < layout.copied_row_bytes; ++byte) {
-      const u64 encoded_offset = u64(row) * layout.stride + byte;
-      const u64 pixel = encoded_offset / 2;
+    unsigned copied = 0;
+    while (copied < layout.copied_row_bytes) {
+      const u64 encoded_offset = u64(row) * layout.stride + copied;
+      const u64 encoded_row = encoded_offset / encoded_row_bytes;
+      const unsigned column = static_cast<unsigned>(encoded_offset % encoded_row_bytes);
+      const unsigned count = std::min(layout.copied_row_bytes - copied,
+                                      static_cast<unsigned>(encoded_row_bytes) - column);
+      // A compact encoded row selects one nearest source row. Copy its
+      // contiguous bytes together, including rows split by destination stride.
       const unsigned source_row =
-          static_cast<unsigned>(std::round(static_cast<double>(pixel / layout.width) * ratio));
-      const auto source_offset =
-          (u64(source_row) * layout.width + pixel % layout.width) * 2 + (encoded_offset & 1);
-      staged[static_cast<std::size_t>(row) * layout.copied_row_bytes + byte] =
-          source[static_cast<std::size_t>(source_offset)];
+          static_cast<unsigned>(std::round(static_cast<double>(encoded_row) * ratio));
+      const auto source_offset = u64(source_row) * encoded_row_bytes + column;
+      std::copy_n(source.begin() + static_cast<std::size_t>(source_offset), count,
+                  staged.begin() + static_cast<std::size_t>(row) * layout.copied_row_bytes +
+                      copied);
+      copied += count;
     }
   }
   for (unsigned row = 0; row < layout.height; ++row)

@@ -739,3 +739,21 @@ old 120-second limit. A private cold-cache reproduction with the exact pinned
 Windows software graphics driver passes every case in 185.519 seconds. The
 test now permits 600 seconds of bounded CPU headroom and retains every case.
 That local reproduction is separate from hosted CI qualification.
+
+The following XFB staging-span packet passes its public copy regression, full
+hardware renderer, hardware guest-video and compiled XFB comparison on native
+Windows and Linux. The compiled check matches 43,255,200 bytes over 5,487 defined
+cases and rejects 4,513 undefined cases before RAM changes. All four scopes also
+pass under Clang 18 ASan/UBSan with leak checking. LLVM 18 formatting and targeted
+static analysis of the changed product translation unit pass. A static-analysis
+warning about an opaque planner width is closed with an explicit nonzero-row
+invariant check; row layout and rejection rules retain their previous behavior.
+
+Eight additional stock software captures compare this packet with the preceding
+core across both games and both platforms. Every JSON value, frame byte and
+persisted file matches within each pair, at the same 320-field Sunshine and
+76-field Galaxy startup bounds. Raw receipts remain in
+`{windows,linux}-xfb-spans-stock-pairs/verification.json`. Final-source component
+timings, callback/rounding checks and source hashes remain beside the
+`xfb-staging-*` logs. The broad matrix above and these narrower checks retain
+their separate source scopes.

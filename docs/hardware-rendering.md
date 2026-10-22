@@ -664,6 +664,29 @@ Exact sources, captures, raw samples and rejected slower experiments remain in
 `.cache/gpu-texture-isolated-final-20261005/` and its recorded predecessor
 directories.
 
+## Exact division identities
+
+Both raster shaders bypass estimated division when a finite numerator has a
+signed unit divisor, or when finite nonzero operands have equal magnitudes.
+The result follows directly from the operand bits. Existing guards still handle
+zero, infinity and NaN first; other divisions retain midpoint correction.
+This avoids correction work for common unit projection factors without changing
+subnormal values or signed zero.
+
+The normal hardware suite checks 25,165,824 signed cases around every exponent's
+mantissa boundaries and midpoint. The optional
+`--division-identities-exhaustive` mode checks all 17,179,869,184 signed unit and
+equal-magnitude divisions, including special values. Expected values come from
+independent host-written buffer inputs. Two deliberately corrupted oracles must
+fail independently before the positive sweep counts. Both shaders' helper
+bodies remain compared at compile time.
+
+The exhaustive mode passes on Intel Iris Xe and Linux llvmpipe, including the
+ASan/UBSan build. Full hardware and hardware guest-video tests also pass on
+Windows and Linux. These checks establish exact arithmetic for the tested
+identities; [performance measurements](performance.md) record the separate
+component timings.
+
 ## Behavior mappings
 
 The behavioral checkout is pinned at

@@ -45,6 +45,10 @@ float rounded_divide(float numerator,float denominator) {
   if (dbits==0u || nbits==2139095040u) return uintBitsToFloat(2139095040u|sign);
   if (dbits==2139095040u) return uintBitsToFloat(sign);
   if (nbits==0u) return uintBitsToFloat(sign);
+  // Unit and equal-magnitude divisors are exact in every finite binary32
+  // class, including subnormals. Preserve their bits without an estimate.
+  if (dbits==1065353216u) return uintBitsToFloat(nbits|sign);
+  if (nbits==dbits) return uintBitsToFloat(1065353216u|sign);
   precise double n=positive_float_value(nbits),d=positive_float_value(dbits);
   uint candidate=floatBitsToUint(divide_estimate(numerator,denominator))&2147483647u;
   if (candidate>2139095040u) candidate=2139095040u;

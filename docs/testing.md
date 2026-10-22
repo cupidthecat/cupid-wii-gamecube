@@ -715,3 +715,27 @@ original failures, JUnit files and raw captures remain under the ignored
 `.cache/continuation-20261022/` directory and matching `/root/wii-20261022-*` logs.
 Commercial gameplay, saved level progress, host gameplay audio and full speed
 still require their own evidence.
+
+The subsequent FP RAM-group and exact GPU-identity packet passes all 64 native
+Windows scopes, including seventeen compiled behavioral comparisons and the
+enabled private boot check, with zero skips in 299.48 seconds. All 47 pinned
+Linux public scopes pass with zero skips in 189.20 seconds. Clang 18 ASan/UBSan
+CPU groups, devices and runtime boundaries pass with leak checks in 233.98
+seconds. The exhaustive GPU identity sweep passes on Intel and llvmpipe,
+including the sanitizer build; LLVM 18 formatting and all 43 static-analysis
+translation units also pass.
+
+Sixteen stock runs compare this packet with the preceding packaged core:
+Windows/Linux, software/OpenGL, both games and both source versions. Every
+reported JSON value, raw frame byte and persisted file matches within each
+pair. Sunshine reaches 320 fields at three billion attempts; Galaxy reaches
+76 fields at one billion. Host audio is disabled. The ignored receipts are
+`{windows,linux}-fp-identity-stock-pairs/verification.json` under the continuation
+cache. These fixed startup bounds establish equivalence, with no gameplay
+speed claim.
+
+The preceding hosted Windows run times out in the full hardware test at its
+old 120-second limit. A private cold-cache reproduction with the exact pinned
+Windows software graphics driver passes every case in 185.519 seconds. The
+test now permits 600 seconds of bounded CPU headroom and retains every case.
+That local reproduction is separate from hosted CI qualification.

@@ -161,7 +161,9 @@ if(CUPID_BUILD_TESTS)
     else()
       add_test(NAME hardware_renderer COMMAND cupid_hardware_renderer_tests)
     endif()
-    set_tests_properties(hardware_renderer PROPERTIES TIMEOUT 120 LABELS "public;backend;graphics"
+    # The complete suite takes 185 seconds with the pinned Windows software GL
+    # driver. Keep every profile and allow bounded headroom on hosted CPUs.
+    set_tests_properties(hardware_renderer PROPERTIES TIMEOUT 600 LABELS "public;backend;graphics"
       SKIP_RETURN_CODE 77)
     if(CUPID_REQUIRE_HARDWARE_TESTS)
       add_test(NAME guest_video_hardware COMMAND cupid_guest_video_tests --hardware --require-device)

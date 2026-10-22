@@ -259,6 +259,33 @@ bus records, final RAM, host rounding controls and host exception flags byte for
 byte. [Performance measurements](performance.md) record the authored floating
 workload separately from commercial gameplay.
 
+## Resident floating-point RAM transfers
+
+Resident groups also admit the eight immediate single/double load and store
+forms. Admission requires enabled FP execution, four-byte alignment, one mapped
+RAM page, and the existing stable, unobservable bus contract. A rejected access
+returns to ordinary execution, including after an already retired integer
+prefix, so FP-unavailable, alignment, translation and device exceptions retain
+their order. Double transfers at an address four bytes past an eight-byte
+boundary remain legal; a transfer across a page boundary remains stepped.
+
+Loads and stores reuse the interpreter's integer format conversions. Single
+loads replicate the converted value into both paired lanes; double loads change
+only the first lane. Stores preserve the source register. These transfers leave
+FPSCR, host rounding controls and host exception flags unchanged, including for
+signaling NaNs and subnormals. Update forms write the base register only after
+the admitted transfer completes. Native statistics count these operations as
+interpreter fallback within the resident group.
+
+Strict Windows and Linux CPU-group suites pass 1,824,092 complete-state and
+ordered-bus comparisons, retiring 59,418,918 grouped instructions. Added cases
+cover all eight forms, both consoles and backends, raw floating-point patterns,
+aliases, four/eight-byte alignment, instruction/cycle quotas, decrementer phases,
+blocked RAM, MMIO, invalid mappings and a rejected FP access after a valid
+integer prefix. The transfer rules map to `Interpreter_LoadStore.cpp`,
+`Interpreter.cpp` and `Interpreter_FPUtils.h` under the behavioral checkout's
+`Source/Core/Core/PowerPC/Interpreter/` directory.
+
 ## Unfinished behavior
 
 Little-endian execution, direct-store segments, NaN-to-integer quantization, locked-cache DMA queue timing, additional performance event selectors, and data cache visibility remain unfinished. Those recognized unfinished execution paths report explicit diagnostics. The timebase uses a twelve-cycle divider and the decrementer uses its own write phase. Full device scheduling and edge timing still need differential validation.

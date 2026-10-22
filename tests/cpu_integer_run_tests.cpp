@@ -3,6 +3,7 @@
 #include "test_support.hpp"
 #include <algorithm>
 #include <array>
+#include <cfenv>
 #include <iostream>
 #include <limits>
 #include <vector>
@@ -948,6 +949,260 @@ void program(Pair &pair, unsigned offset, std::span<const u32> words) {
   pair.first.state().spr[spr::lr] = pair.run.state().spr[spr::lr] = link;
   pair.first.state().spr[spr::xer] = pair.run.state().spr[spr::xer] = status;
   pair.pc(0x80000000 + start);
+}
+
+void floating_ram_bit_tests() {
+  struct Bits {
+    u32 single;
+    u64 wide;
+  };
+
+  constexpr std::array<Bits, 16> patterns{{
+      {0, 0},
+      {0x80000000, 0x8000000000000000ull},
+      {1, 0x36a0000000000000ull},
+      {0x007fffff, 0x380fffffc0000000ull},
+      {0x00800000, 0x3810000000000000ull},
+      {0x3f800001, 0x3ff0000020000000ull},
+      {0x7f7fffff, 0x47efffffe0000000ull},
+      {0x7f800000, 0x7ff0000000000000ull},
+      {0xff800000, 0xfff0000000000000ull},
+      {0x7f800001, 0x7ff0000020000000ull},
+      {0x7fc12345, 0x7ff82468a0000000ull},
+      {0xff812345, 0xfff02468a0000000ull},
+      {0x3f000000, 0x0000000000000001ull},
+      {0xbf800000, 0x3ff000001fffffffull},
+      {0x00800001, 0x7fefffffffffffffull},
+      {0x7fffffff, 0x7fffffffffffffffull},
+  }};
+  each_backend([&](Pair &pair) {
+    for (unsigned primary = 48; primary <= 55; ++primary)
+      for (unsigned offset : {0u, 6u, 7u})
+        for (unsigned alignment : {0u, 4u})
+          for (const auto &[destination, address] :
+               std::array<std::array<unsigned, 2>, 4>{{{3, 4}, {4, 4}, {0, 4}, {31, 0}}})
+            for (const auto &bits : patterns) {
+              pair.reset();
+              auto &state = pair.first.state();
+              state.msr |= msr::fp;
+              state.fpscr = 0xa5f84007;
+              state.gpr[address] = 0x80002000;
+              unsigned displacement = alignment;
+              if (!address && !(primary & 1)) {
+                state.msr &= ~msr::dr;
+                displacement += 0x2000;
+              }
+              pair.run.state() = state;
+              const bool single = !(primary & 2);
+              pair.install(0x2000 + alignment,
+                           single ? bits.single : static_cast<u32>(bits.wide >> 32));
+              pair.install(0x2004 + alignment, static_cast<u32>(bits.wide));
+              const std::array<u32, 3> words{immediate(primary, destination, address, displacement),
+                                             immediate(14, 8, 8, 1), 0x4bfffff8};
+              program(pair, offset, words);
+              const std::array<u64, 2> registers{bits.wide, 0x7ff00123456789abull};
+              pair.first.state().fpr[destination].bits = pair.run.state().fpr[destination].bits =
+                  registers;
+              const auto before = pair.run.native_statistics();
+              pair.attempt(3, 3, 3);
+              const auto &result = pair.run.state();
+              CHECK(result.fpscr == 0xa5f84007);
+              if (primary < 50)
+                CHECK(result.fpr[destination].bits[0] == result.fpr[destination].bits[1]);
+              else
+                CHECK(result.fpr[destination].bits[1] == registers[1]);
+              if (primary >= 52)
+                CHECK(result.fpr[destination].bits == registers);
+              if (pair.run.execution_backend() == ExecutionBackend::NativeInteger) {
+                const auto after = pair.run.native_statistics();
+                CHECK(after.executed - before.executed + after.fallback - before.fallback == 3);
+              }
+            }
+  });
+}
+
+void floating_ram_host_tests() {
+  const int saved_rounding = std::fegetround();
+  const int saved_exceptions = std::fetestexcept(FE_ALL_EXCEPT);
+  each_backend([](Pair &pair) {
+    for (int rounding : {FE_TONEAREST, FE_TOWARDZERO, FE_UPWARD, FE_DOWNWARD})
+      for (u32 fpscr : {0u, 1u, 2u, 3u, 4u, 0xfff807ffu}) {
+        pair.reset();
+        pair.first.state().msr |= msr::fp;
+        pair.first.state().fpscr = fpscr;
+        pair.first.state().gpr[4] = 0x80002000;
+        pair.run.state() = pair.first.state();
+        pair.install(0x2000, 0x7f800001);
+        const std::array<u32, 4> words{immediate(48, 3, 4, 0), immediate(52, 3, 4, 4),
+                                       immediate(50, 4, 4, 0), immediate(54, 4, 4, 8)};
+        program(pair, 6, words);
+        CHECK(std::fesetround(rounding) == 0);
+        CHECK(std::feclearexcept(FE_ALL_EXCEPT) == 0);
+        CHECK(std::feraiseexcept(FE_DIVBYZERO | FE_INEXACT) == 0);
+        const int exceptions = std::fetestexcept(FE_ALL_EXCEPT);
+#if defined(_M_X64) || defined(__x86_64__)
+        const unsigned control = _mm_getcsr();
+#endif
+        pair.attempt(4, 4, 4);
+        CHECK(pair.run.state().fpscr == fpscr);
+        CHECK(std::fegetround() == rounding);
+        CHECK(std::fetestexcept(FE_ALL_EXCEPT) == exceptions);
+#if defined(_M_X64) || defined(__x86_64__)
+        CHECK(_mm_getcsr() == control);
+#endif
+        CHECK(pair.run.state().fpr[3].bits[0] == 0x7ff0000020000000ull);
+        CHECK(pair.run_memory.read32(0x2004) == 0x7f800001);
+      }
+  });
+  CHECK(std::fesetround(saved_rounding) == 0);
+  CHECK(std::feclearexcept(FE_ALL_EXCEPT) == 0);
+  CHECK(std::feraiseexcept(saved_exceptions) == 0);
+}
+
+void floating_ram_guard_tests() {
+  each_backend([](Pair &pair) {
+    for (unsigned primary = 48; primary <= 55; ++primary)
+      for (unsigned offset : {0u, 6u, 7u})
+        for (unsigned cause = 0; cause < 12; ++cause) {
+          pair.reset();
+          pair.first.state().msr |= msr::fp;
+          pair.first.state().gpr[4] = 0x80002000;
+          pair.first.state().fpr[3].bits = {0x7ff0000020000000ull, 0x123456789abcdef0ull};
+          pair.run.state() = pair.first.state();
+          pair.install(0x2000, 0x3f800000);
+          pair.install(0x2004, 0x40000000);
+          const std::array<u32, 3> words{immediate(primary, 3, 4, 0), immediate(14, 8, 8, 1),
+                                         0x4bfffff8};
+          program(pair, offset, words);
+          switch (cause) {
+          case 0:
+            pair.first.state().msr = pair.run.state().msr &= ~msr::fp;
+            pair.first.state().gpr[4] = pair.run.state().gpr[4] = 0x50000001;
+            break;
+          case 1:
+          case 2:
+          case 3:
+            pair.first.state().gpr[4] = pair.run.state().gpr[4] += cause;
+            break;
+          case 4:
+            pair.first_memory.blocked = pair.run_memory.blocked = 0x2000;
+            break;
+          case 5:
+            pair.first.state().gpr[4] = pair.run.state().gpr[4] = 0x50000000;
+            break;
+          case 6:
+            pair.first.state().spr[537] = pair.run.state().spr[537] |= 0x20;
+            break;
+          case 7:
+            pair.first.state().spr[spr::hid0] = pair.run.state().spr[spr::hid0] = 0;
+            break;
+          case 8:
+            pair.first.state().msr = pair.run.state().msr |= msr::ee;
+            pair.first.set_external_interrupt(true);
+            pair.run.set_external_interrupt(true);
+            break;
+          case 9:
+            pair.first.state().spr[spr::mmcr0] = pair.run.state().spr[spr::mmcr0] = 1;
+            break;
+          case 10:
+            pair.first_memory.plain = pair.run_memory.plain = false;
+            break;
+          case 11:
+            pair.first_memory.stable = pair.run_memory.stable = false;
+            break;
+          }
+          const auto registers = pair.run.state().fpr;
+          const u32 base = pair.run.state().gpr[4];
+          pair.attempt(3, 3, 0);
+          pair.step();
+          if (cause <= 3 || cause == 5) {
+            CHECK(pair.run.state().gpr[4] == base);
+            for (unsigned n = 0; n < registers.size(); ++n)
+              CHECK(pair.run.state().fpr[n].bits == registers[n].bits);
+            CHECK(pair.run.state().pc == (cause == 0 ? 0x800u : cause <= 3 ? 0x600u : 0x300u));
+          }
+        }
+
+    // A valid integer prefix retires before a later unavailable, unaligned or
+    // faulting FP access. No floating state or update register changes early.
+    for (unsigned primary = 48; primary <= 55; ++primary)
+      for (unsigned cause = 0; cause < 4; ++cause) {
+        pair.reset();
+        pair.first.state().msr |= msr::fp;
+        pair.first.state().gpr[4] = 0x80002000;
+        pair.first.state().gpr[5] = 0x80003000;
+        pair.run.state() = pair.first.state();
+        const std::array<u32, 4> words{immediate(32, 7, 4, 0), immediate(14, 8, 8, 1),
+                                       immediate(primary, 3, 5, 0), 0x4bfffff4};
+        program(pair, 6, words);
+        if (cause == 0)
+          pair.first.state().msr = pair.run.state().msr &= ~msr::fp;
+        if (cause == 1)
+          pair.first.state().gpr[5] = pair.run.state().gpr[5] = 0x80003001;
+        if (cause == 2)
+          pair.first.state().gpr[5] = pair.run.state().gpr[5] = 0x50000000;
+        if (cause == 3)
+          pair.first_memory.blocked = pair.run_memory.blocked = 0x3000;
+        pair.attempt(4, 4, 2);
+        pair.step();
+      }
+
+    // The double transfer's legal four-byte alignment must not admit a split
+    // page. Ordinary execution completes both halves before reporting a DSI.
+    for (unsigned primary : {50u, 51u, 54u, 55u}) {
+      pair.reset();
+      pair.first.state().msr |= msr::fp;
+      pair.first.state().gpr[4] = 0x80002000;
+      pair.run.state() = pair.first.state();
+      const std::array<u32, 3> words{immediate(primary, 3, 4, 0), immediate(14, 8, 8, 1),
+                                     0x4bfffff8};
+      program(pair, 7, words);
+      pair.first.state().gpr[4] = pair.run.state().gpr[4] = 0x80002ffc;
+      pair.attempt(3, 3, 0);
+      pair.step();
+    }
+  });
+}
+
+void floating_ram_quota_tests() {
+  each_backend([](Pair &pair) {
+    const auto prepare = [&](unsigned offset) {
+      pair.reset();
+      pair.first.state().msr |= msr::fp;
+      pair.first.state().gpr[4] = 0x80002000;
+      pair.run.state() = pair.first.state();
+      for (u32 address = 0x2000; address < 0x2040; address += 4)
+        pair.install(address, address & 4 ? 0x7f800001 : 0x3f800000);
+      const std::array<u32, 8> words{immediate(49, 3, 4, 4),      immediate(50, 5, 4, 4),
+                                     immediate(52, 3, 4, 12),     immediate(55, 5, 4, 16),
+                                     immediate(14, 6, 6, 4),      immediate(48, 3, 4, 0xfffc),
+                                     immediate(54, 3, 4, 0xfff0), 0x4bffffe4};
+      program(pair, offset, words);
+    };
+    for (unsigned offset : {0u, 6u, 7u})
+      for (unsigned instructions = 0; instructions <= 9; ++instructions)
+        for (unsigned cycles = 0; cycles <= 9; ++cycles) {
+          prepare(offset);
+          const unsigned count = std::min({instructions, cycles, 8u});
+          pair.attempt(instructions, cycles, count >= 2 ? count : 0);
+        }
+    for (unsigned phase = 0; phase < 12; ++phase) {
+      prepare(6);
+      pair.first.state().spr[spr::dec] = pair.run.state().spr[spr::dec] = 1;
+      pair.first.state().msr = pair.run.state().msr |= msr::ee;
+      for (unsigned n = 0; n < phase; ++n) {
+        pair.pc(0x80001028);
+        pair.step();
+      }
+      pair.pc(0x80001018);
+      const unsigned count = std::min(8u, 11 - phase);
+      pair.attempt(8, 8, count >= 2 ? count : 0);
+      for (unsigned n = 0; n < 16; ++n) {
+        pair.pc(0x80001028);
+        pair.step();
+      }
+    }
+  });
 }
 
 bool taken(unsigned bo, unsigned bi, u32 ctr, u32 cr) {
@@ -2044,6 +2299,10 @@ int main() {
     aliased_sequence_tests();
     cache_flush_run_tests();
     scalar_run_tests();
+    floating_ram_bit_tests();
+    floating_ram_host_tests();
+    floating_ram_guard_tests();
+    floating_ram_quota_tests();
     byte_copy_tests();
     later_memory_tests();
     executed_poll_prefix_tests();

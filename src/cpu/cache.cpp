@@ -162,7 +162,7 @@ InstructionCache::Line *InstructionCache::obtain_other(Bus &bus, u32 physical, u
       if (NativeInteger::can_group(loaded.words[n]))
         loaded.integer_mask |= static_cast<u8>(1u << n);
       const unsigned primary = loaded.words[n] >> 26, operation = (loaded.words[n] >> 1) & 1023;
-      if (primary >= 32 && primary <= 45)
+      if ((primary >= 32 && primary <= 45) || (primary >= 48 && primary <= 55))
         loaded.scalar_mask |= static_cast<u8>(1u << n);
       if (primary == 16 || primary == 18 ||
           (primary == 19 &&

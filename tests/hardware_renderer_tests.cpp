@@ -11,10 +11,157 @@
 #include <limits>
 #include <memory>
 #include <random>
+#include <string_view>
 #include <vector>
+#ifndef SDL_MAIN_HANDLED
+#define SDL_MAIN_HANDLED
+#endif
+#include <SDL.h>
+#include <SDL_opengl.h>
+#include <SDL_opengl_glext.h>
 
 namespace {
 using namespace cupid;
+
+template <typename Function> Function graphics_function(const char *name) {
+  const auto result = reinterpret_cast<Function>(SDL_GL_GetProcAddress(name));
+  if (!result)
+    throw std::runtime_error(std::string("Missing graphics test entry point: ") + name);
+  return result;
+}
+
+void division_identity_checks(bool exhaustive) {
+  Memory memory(Console::GameCube);
+  std::vector<u8> tmem(1024 * 1024);
+  gfx::HardwareRenderer renderer(memory, tmem);
+#define CUPID_TEST_GL(type, name) const auto name = graphics_function<type>("gl" #name)
+  CUPID_TEST_GL(PFNGLCREATESHADERPROC, CreateShader);
+  CUPID_TEST_GL(PFNGLSHADERSOURCEPROC, ShaderSource);
+  CUPID_TEST_GL(PFNGLCOMPILESHADERPROC, CompileShader);
+  CUPID_TEST_GL(PFNGLGETSHADERIVPROC, GetShaderiv);
+  CUPID_TEST_GL(PFNGLGETSHADERINFOLOGPROC, GetShaderInfoLog);
+  CUPID_TEST_GL(PFNGLCREATEPROGRAMPROC, CreateProgram);
+  CUPID_TEST_GL(PFNGLATTACHSHADERPROC, AttachShader);
+  CUPID_TEST_GL(PFNGLLINKPROGRAMPROC, LinkProgram);
+  CUPID_TEST_GL(PFNGLGETPROGRAMIVPROC, GetProgramiv);
+  CUPID_TEST_GL(PFNGLUSEPROGRAMPROC, UseProgram);
+  CUPID_TEST_GL(PFNGLGENBUFFERSPROC, GenBuffers);
+  CUPID_TEST_GL(PFNGLBINDBUFFERPROC, BindBuffer);
+  CUPID_TEST_GL(PFNGLBINDBUFFERBASEPROC, BindBufferBase);
+  CUPID_TEST_GL(PFNGLBUFFERDATAPROC, BufferData);
+  CUPID_TEST_GL(PFNGLBUFFERSUBDATAPROC, BufferSubData);
+  CUPID_TEST_GL(PFNGLGETBUFFERSUBDATAPROC, GetBufferSubData);
+  CUPID_TEST_GL(PFNGLDISPATCHCOMPUTEPROC, DispatchCompute);
+  CUPID_TEST_GL(PFNGLMEMORYBARRIERPROC, MemoryBarrier);
+  CUPID_TEST_GL(PFNGLDELETEBUFFERSPROC, DeleteBuffers);
+  CUPID_TEST_GL(PFNGLDELETESHADERPROC, DeleteShader);
+  CUPID_TEST_GL(PFNGLDELETEPROGRAMPROC, DeleteProgram);
+#undef CUPID_TEST_GL
+  constexpr std::string_view raster_source =
+#include "../src/gfx/hardware_shader.inc"
+      ;
+  constexpr auto first = raster_source.find("float divide_estimate("),
+                 last = raster_source.find("bool compare_value(");
+  static_assert(first != std::string_view::npos && last > first);
+  // The renderer checks that both raster shaders contain identical helpers.
+  const std::string source = "#version 430 core\nlayout(local_size_x=256) in;\n"
+                             "layout(std430,binding=0) buffer Data {uint data[];};\n" +
+                             std::string(raster_source.substr(first, last - first)) + R"glsl(
+void check(uint numerator,uint denominator,uint expected) {
+  uint actual=floatBitsToUint(rounded_divide(uintBitsToFloat(numerator),uintBitsToFloat(denominator)));
+  if (actual!=expected && atomicOr(data[2],1u)==0u) {
+    data[3]=numerator;data[4]=denominator;data[5]=expected;data[6]=actual;
+  }
+}
+void main() {
+  uint magnitude=data[0]+gl_GlobalInvocationID.x;
+  // Independent host-written seeds keep the expected values opaque to the
+  // compiler, so it cannot remove checks by proving the identity itself.
+  uint expected_magnitude=data[1]+gl_GlobalInvocationID.x;
+  for (uint signs=0u;signs<4u;++signs) {
+    uint numerator=magnitude|((signs&1u)<<31u),denominator_sign=(signs&2u)<<30u;
+    uint sign=((signs&1u)<<31u)^denominator_sign;
+    check(numerator,1065353216u|denominator_sign,
+          expected_magnitude>2139095040u ? 2143289344u : expected_magnitude|sign);
+    check(numerator,magnitude|denominator_sign,
+          expected_magnitude==0u || expected_magnitude>=2139095040u ? 2143289344u : data[7]|sign);
+  }
+}
+)glsl";
+  const char *text = source.c_str();
+  const auto shader = CreateShader(GL_COMPUTE_SHADER);
+  ShaderSource(shader, 1, &text, nullptr);
+  CompileShader(shader);
+  GLint compiled = 0;
+  GetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+  if (!compiled) {
+    std::array<char, 8192> log{};
+    GetShaderInfoLog(shader, GLsizei(log.size()), nullptr, log.data());
+    throw std::runtime_error(std::string("Division identity test shader: ") + log.data());
+  }
+  const auto program = CreateProgram();
+  AttachShader(program, shader);
+  LinkProgram(program);
+  GLint linked = 0;
+  GetProgramiv(program, GL_LINK_STATUS, &linked);
+  CHECK(linked);
+  DeleteShader(shader);
+  UseProgram(program);
+  GLuint buffer = 0;
+  GenBuffers(1, &buffer);
+  BindBuffer(GL_SHADER_STORAGE_BUFFER, buffer);
+  BindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, buffer);
+  std::array<u32, 8> result{};
+  result[7] = 0x3f800000;
+  BufferData(GL_SHADER_STORAGE_BUFFER, sizeof(result), result.data(), GL_DYNAMIC_DRAW);
+  const auto dispatch = [&](u32 base, u32 expected, u32 count) {
+    const std::array<u32, 2> seeds{base, expected};
+    BufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(seeds), seeds.data());
+    DispatchCompute(count / 256, 1, 1);
+    MemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+  };
+  const auto read = [&] {
+    GetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(result), result.data());
+  };
+  // A deliberately wrong oracle must fail before any positive result counts.
+  dispatch(0x3f800000, 0x3f800001, 256);
+  read();
+  CHECK(result[2] == 1 && result[5] != result[6]);
+  result = {};
+  BufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(result), result.data());
+  // Corrupt only the equal-magnitude oracle while leaving the unit-divisor
+  // oracle correct, so both checks independently prove they can detect errors.
+  dispatch(0x3f800000, 0x3f800000, 256);
+  read();
+  CHECK(result[2] == 1 && result[5] != result[6]);
+  result = {};
+  result[7] = 0x3f800000;
+  BufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(result), result.data());
+  u64 cases = 0;
+  const auto verify = [&](u32 base, u32 count) {
+    dispatch(base, base, count);
+    cases += u64(count) * 8;
+  };
+  if (exhaustive) {
+    constexpr u32 batch = 1u << 22;
+    for (u64 base = 0; base < 0x80000000ull; base += batch)
+      verify(u32(base), batch);
+  } else {
+    // Sweep both ends and the midpoint of every exponent's mantissa range.
+    for (u32 exponent = 0; exponent < 256; ++exponent)
+      for (u32 mantissa : {0u, 0x3ff800u, 0x7ff000u})
+        verify((exponent << 23) | mantissa, 4096);
+  }
+  read();
+  if (result[2])
+    throw std::runtime_error("Division identity mismatch numerator=" + std::to_string(result[3]) +
+                             " denominator=" + std::to_string(result[4]) + " expected=" +
+                             std::to_string(result[5]) + " actual=" + std::to_string(result[6]));
+  DeleteBuffers(1, &buffer);
+  DeleteProgram(program);
+  std::cout << "Verified " << cases
+            << " signed division identity cases, including subnormals, zero, infinity and NaN\n";
+}
 
 void word(std::vector<u8> &bytes, u32 value) {
   for (unsigned i = 0; i < 4; ++i)
@@ -2092,7 +2239,8 @@ int main(int argc, char **argv) {
   Fixture software, hardware;
   bool required = false, measure = false, fog_only = false, texture_cache_only = false,
        xfb_only = false, projection_only = false, state_only = false, fixed_lod_only = false,
-       counter_only = false, counter_benchmark_only = false, empty_coverage_only = false;
+       counter_only = false, counter_benchmark_only = false, empty_coverage_only = false,
+       division_identities_exhaustive = false;
   for (int i = 1; i < argc; ++i) {
     required |= std::strcmp(argv[i], "--require-device") == 0;
     measure |= std::strcmp(argv[i], "--benchmark") == 0;
@@ -2105,6 +2253,7 @@ int main(int argc, char **argv) {
     counter_only |= std::strcmp(argv[i], "--counter-only") == 0;
     counter_benchmark_only |= std::strcmp(argv[i], "--counter-benchmark-only") == 0;
     empty_coverage_only |= std::strcmp(argv[i], "--empty-coverage-only") == 0;
+    division_identities_exhaustive |= std::strcmp(argv[i], "--division-identities-exhaustive") == 0;
   }
   try {
     hardware.graphics.set_hardware_rendering(true);
@@ -2116,6 +2265,10 @@ int main(int argc, char **argv) {
     return 1;
   }
   return run_tests([&] {
+    if (division_identities_exhaustive) {
+      division_identity_checks(true);
+      return;
+    }
     if (empty_coverage_only) {
       logical_sequence_cap_checks();
       empty_coverage_checks();
@@ -2142,6 +2295,7 @@ int main(int argc, char **argv) {
       return;
     }
     if (projection_only) {
+      division_identity_checks(false);
       projection_precision_checks();
       projective_mip_checks();
       if (measure)
@@ -2160,6 +2314,7 @@ int main(int argc, char **argv) {
       return;
     }
     if (!fog_only) {
+      division_identity_checks(false);
       empty_coverage_checks();
       counter_checks();
       logical_sequence_cap_checks();

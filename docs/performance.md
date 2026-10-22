@@ -456,3 +456,34 @@ counts. With three enabled 64-texel units, changing one unit uploads 608 bytes
 instead of rebuilding all 1,120 bytes. Exact CPU/GPU pixels and queued draw order
 are checked. This reduces upload traffic in that fixture by 45.7 percent; it is
 not a frame-rate measurement.
+
+## Floating-point RAM groups and exact GPU identities
+
+A resident FP-transfer loop compares the frozen preceding core with the grouped
+load/store path. Seven alternating samples per backend execute eight million
+instructions each. Complete CPU and RAM hashes and ordered bus observations
+match in every sample; native executed/fallback accounting also matches the
+retirement count.
+
+| Host | Backend | Earlier median seconds | Grouped median seconds |
+| --- | --- | ---: | ---: |
+| Windows | Interpreter | 0.357349 | 0.146711 |
+| Windows | Native integer | 0.416085 | 0.171376 |
+| Linux | Interpreter | 0.331128 | 0.170209 |
+| Linux | Native integer | 0.322524 | 0.185680 |
+
+GPU division by a signed unit value, or by an equal nonzero finite magnitude,
+now returns the exact result bits after the existing special-value guards.
+Fifteen counterbalanced native GPU timestamp samples use 262,144 points per
+case. Varying W with unit Q changes from 1.1822 to 0.5911 milliseconds; the
+general-division control changes from 1.1896 to 1.1862 milliseconds. Complete
+raw outputs match. The flat unit case also improves, with substantial clock
+variation retained in its receipt.
+
+These are component measurements on a shared host, with no gameplay frame-rate
+claim. CPU samples and source receipts remain in the local
+`floating-ram-benchmark-{windows,linux}.json` files; GPU commands and samples
+remain in `projection-identity-benchmark.txt`, all under
+`.cache/continuation-20261022/`. An inline instruction-cache probe was rejected:
+its alternating component samples were slower than the existing out-of-line
+path. That experiment remains private and is absent from the product changes.

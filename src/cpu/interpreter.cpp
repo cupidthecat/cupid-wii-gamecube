@@ -631,10 +631,18 @@ void Interpreter::tick(u32 cycles) {
 
 std::span<u8> Interpreter::scalar_ram(u32 opcode, u32 &effective, const BatMap *map) {
   const unsigned primary = opcode >> 26, address = (opcode >> 16) & 31;
-  const unsigned width = primary < 34 || primary == 36 || primary == 37 ? 4 : primary < 40 ? 1 : 2;
+  const bool floating = primary >= 48;
+  if (floating && !(state_.msr & msr::fp))
+    return {};
+  const unsigned width = floating                                         ? ((primary & 2) ? 8 : 4)
+                         : primary < 34 || primary == 36 || primary == 37 ? 4
+                         : primary < 40                                   ? 1
+                                                                          : 2;
   const u32 base = (primary & 1) || address ? state_.gpr[address] : 0;
   effective = base + signed_immediate(opcode);
-  if ((effective & 4095) + width > 4096)
+  // Both single and double FP transfers require four-byte alignment. Faulting
+  // and split-page transfers remain stepped so exceptions retain their order.
+  if ((floating && (effective & 3)) || (effective & 4095) + width > 4096)
     return {};
   u32 physical = effective;
   if (state_.msr & msr::dr) {
@@ -652,6 +660,38 @@ std::span<u8> Interpreter::scalar_ram(u32 opcode, u32 &effective, const BatMap *
 void Interpreter::execute_scalar_ram(u32 opcode, u32 effective, std::span<u8> bytes) {
   const unsigned primary = opcode >> 26, destination = (opcode >> 21) & 31;
   const unsigned address = (opcode >> 16) & 31;
+  if (primary >= 48) {
+    const bool write = primary >= 52;
+    u64 value = write ? state_.fpr[destination].bits[0] : 0;
+    if (bytes.size() == 8) {
+      if (!write)
+        std::memcpy(&value, bytes.data(), 8);
+      if constexpr (std::endian::native == std::endian::little)
+        value =
+            (u64{swap32(static_cast<u32>(value))} << 32) | swap32(static_cast<u32>(value >> 32));
+      if (write)
+        std::memcpy(bytes.data(), &value, 8);
+      else
+        state_.fpr[destination].bits[0] = value;
+    } else {
+      // These are register-format transfers: integer bit conversions preserve
+      // signaling NaNs, payloads, FPSCR and the caller's host floating state.
+      u32 single = write ? binary64_to_binary32_store(value) : 0;
+      if (!write)
+        std::memcpy(&single, bytes.data(), 4);
+      if constexpr (std::endian::native == std::endian::little)
+        single = swap32(single);
+      if (write)
+        std::memcpy(bytes.data(), &single, 4);
+      else {
+        value = binary32_to_binary64(single);
+        state_.fpr[destination].bits = {value, value};
+      }
+    }
+    if (primary & 1)
+      state_.gpr[address] = effective;
+    return;
+  }
   const bool write = (primary >= 36 && primary <= 39) || primary >= 44;
   u32 value = write ? state_.gpr[destination] : 0;
   if (bytes.size() == 4) {
@@ -912,8 +952,7 @@ IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cy
         unsigned retired = 0;
         bool branched = false;
         for (u32 opcode : words) {
-          const unsigned primary = opcode >> 26;
-          if (primary >= 32 && primary <= 45) {
+          if (memory_mask & (1u << retired)) {
             if (retired != 0)
               bytes = scalar_ram(opcode, effective, map);
             if (bytes.empty())

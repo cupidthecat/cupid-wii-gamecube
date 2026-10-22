@@ -286,6 +286,25 @@ integer prefix. The transfer rules map to `Interpreter_LoadStore.cpp`,
 `Interpreter.cpp` and `Interpreter_FPUtils.h` under the behavioral checkout's
 `Source/Core/Core/PowerPC/Interpreter/` directory.
 
+## Reusing resident scalar groups
+
+Scalar-group assembly reads cached eligibility masks to find a contiguous
+instruction prefix. It retains the first nonconditional branch as the final
+word. Single-line groups borrow the fixed instruction-cache word array;
+admitted operations and cache-hit bookkeeping leave those words stable until
+the group ends. Two-line groups copy both consumed ranges into bounded scratch
+storage. A missing continuation keeps the first line's resident span, and no
+uninitialized scratch tail is exposed. The first memory operation comes from
+the retained memory mask.
+
+This changes host assembly work while preserving admission checks, branch
+decisions and executed-line cache-hit order. Focused comparisons cover integer
+and double stores that overwrite following instruction backing, continued
+execution of cached old words, and visibility of the new words after ICBI.
+They exercise both consoles/backends, line offsets, instruction/cycle quotas,
+native accounting and a missing second line. The broader complete-state and
+ordered-bus suites retain their existing coverage.
+
 ## Unfinished behavior
 
 Little-endian execution, direct-store segments, NaN-to-integer quantization, locked-cache DMA queue timing, additional performance event selectors, and data cache visibility remain unfinished. Those recognized unfinished execution paths report explicit diagnostics. The timebase uses a twelve-cycle divider and the decrementer uses its own write phase. Full device scheduling and edge timing still need differential validation.

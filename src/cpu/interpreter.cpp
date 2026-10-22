@@ -903,34 +903,48 @@ IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cy
   }
   if (instruction_cache_.scalar_run_hint(state_.pc)) {
     const auto first_line = instruction_cache_.inspect(key, physical);
-    std::array<u32, 8> scalar_words{};
+    std::array<u32, 8> scalar_words;
     unsigned scalar_count = 0, memory_mask = 0, branch_mask = 0;
     u32 second_key = 0;
     const unsigned first_size = static_cast<unsigned>(first_line.words.size());
-    const auto append = [&](const InstructionCache::Resident &line) {
-      for (unsigned n = 0; n < line.words.size() && scalar_count < limit; ++n) {
-        const unsigned bit = 1u << n;
-        if (!((line.integer_mask | line.scalar_mask | line.branch_mask) & bit))
+    const auto packet_count = [](const InstructionCache::Resident &line, unsigned available) {
+      unsigned count = std::min({available, static_cast<unsigned>(line.words.size()),
+                                 static_cast<unsigned>(std::countr_one(
+                                     line.integer_mask | line.scalar_mask | line.branch_mask))});
+      unsigned branches = line.branch_mask & ((1u << count) - 1);
+      while (branches) {
+        const unsigned position = std::countr_zero(branches);
+        if ((line.words[position] >> 26) != 16) {
+          count = position + 1;
           break;
-        if (line.scalar_mask & bit)
-          memory_mask |= 1u << scalar_count;
-        if (line.branch_mask & bit)
-          branch_mask |= 1u << scalar_count;
-        scalar_words[scalar_count++] = line.words[n];
-        if ((line.branch_mask & bit) && (line.words[n] >> 26) != 16)
-          break;
+        }
+        branches &= branches - 1;
       }
+      return count;
     };
-    append(first_line);
+    scalar_count = packet_count(first_line, limit);
+    memory_mask = first_line.scalar_mask & ((1u << scalar_count) - 1);
+    branch_mask = first_line.branch_mask & ((1u << scalar_count) - 1);
+    // Hits only update replacement metadata, and admitted operations cannot
+    // invalidate or fill the cache, so a single-line group can borrow its words.
+    std::span<const u32> words = first_line.words.first(scalar_count);
     if (scalar_count == first_size && scalar_count && scalar_count < limit && !branch_mask &&
         (physical & 0x1ffff) + scalar_count * 4 < 0x20000 &&
-        bus_.stable_instruction_cache_key(physical + scalar_count * 4, second_key))
-      append(instruction_cache_.inspect(second_key, physical + scalar_count * 4));
+        bus_.stable_instruction_cache_key(physical + scalar_count * 4, second_key)) {
+      const auto following = instruction_cache_.inspect(second_key, physical + scalar_count * 4);
+      const unsigned next = packet_count(following, limit - scalar_count);
+      if (next) {
+        std::copy_n(words.data(), scalar_count, scalar_words.data());
+        std::copy_n(following.words.data(), next, scalar_words.data() + scalar_count);
+        memory_mask |= (following.scalar_mask & ((1u << next) - 1)) << scalar_count;
+        scalar_count += next;
+        // Both copied ranges initialize this entire span; the unused tail is
+        // never exposed, and a missing continuation retains the resident span.
+        words = std::span<const u32>(scalar_words).first(scalar_count);
+      }
+    }
     if (scalar_count >= 2 && memory_mask) {
-      const auto words = std::span<const u32>(scalar_words).first(scalar_count);
-      unsigned first_memory = 0;
-      while (first_memory < words.size() && (words[first_memory] >> 26) < 32)
-        ++first_memory;
+      const unsigned first_memory = std::countr_zero(memory_mask);
       const BatMap *map = nullptr;
       if (state_.msr & msr::dr) {
         const unsigned banks =

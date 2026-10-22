@@ -757,3 +757,22 @@ persisted file matches within each pair, at the same 320-field Sunshine and
 timings, callback/rounding checks and source hashes remain beside the
 `xfb-staging-*` logs. The broad matrix above and these narrower checks retain
 their separate source scopes.
+
+The scalar-group assembly packet's final source passes the CPU-group suite and
+both CLI execution selftests on Windows, Linux and Clang 18 ASan/UBSan with leak
+checking. Each full CPU-group run verifies 1,824,604 complete states and ordered
+bus observations, retiring 59,419,142 grouped instructions. The new single-line
+store/ICBI and missing-continuation controls add 512 comparisons. LLVM 18
+formatting and the repository's configured static checks pass for the changed
+translation unit.
+
+The earlier applied form also passes runtime-group/event-budget checks on both
+platforms, the Windows compiled CPU memory/step/dispatch comparisons, and the
+sanitized runtime/event scopes. Eight stock software captures of that form
+match every reported value, raw frame byte and persisted file against the
+preceding core, at the same 320-field Sunshine and 76-field Galaxy bounds. These
+checks precede deletion of an unread unsigned mask update; final CPU-group and
+CLI checks follow that cleanup. Receipts and exact source hashes remain under
+`scalar-packet-applied/`, `scalar-packet-applied-final/` and
+`{windows,linux}-scalar-packet-stock-pairs/` in the continuation cache. They
+establish the recorded source slices without a gameplay speed claim.

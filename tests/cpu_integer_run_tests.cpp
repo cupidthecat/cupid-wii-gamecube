@@ -1205,6 +1205,67 @@ void floating_ram_quota_tests() {
   });
 }
 
+void scalar_packet_cached_word_visibility_tests() {
+  each_backend([](Pair &pair) {
+    for (unsigned primary : {36u, 54u})
+      for (unsigned offset : {0u, 1u, 4u})
+        for (unsigned quota : {2u, 3u, 4u}) {
+          pair.reset();
+          const u32 start = 0x1000 + offset * 4;
+          const u32 replacement9 = immediate(14, 9, 9, 99);
+          const u32 replacement10 = immediate(14, 10, 10, 77);
+          pair.first.state().gpr[4] = 0x80000000 + start + 4;
+          pair.first.state().gpr[5] = replacement9;
+          pair.first.state().fpr[3].bits[0] = (u64{replacement9} << 32) | replacement10;
+          pair.run.state() = pair.first.state();
+          const std::array<u32, 4> words{immediate(primary, primary == 36 ? 5 : 3, 4, 0),
+                                         immediate(14, 9, 9, 1), immediate(14, 10, 10, 1),
+                                         0x4bfffff4};
+          program(pair, offset, words);
+          CHECK(pair.run_memory.read32(start + 4) == replacement9);
+          if (primary == 54)
+            CHECK(pair.run_memory.read32(start + 8) == replacement10);
+          const auto records = pair.run_memory.records.size();
+          const auto statistics = pair.run.native_statistics();
+          pair.attempt(quota, quota, quota);
+          CHECK(pair.run_memory.records.size() == records);
+          CHECK(pair.run.state().gpr[9] == 1);
+          CHECK(pair.run.state().gpr[10] == (quota >= 3 ? 1u : 0u));
+          if (pair.run.execution_backend() == ExecutionBackend::NativeInteger) {
+            const auto after = pair.run.native_statistics();
+            CHECK(after.executed - statistics.executed + after.fallback - statistics.fallback ==
+                  quota);
+          }
+          pair.install(0x1100, extended(982, 0, 0, 4, false));
+          pair.pc(0x80001100);
+          pair.step();
+          pair.pc(0x80000000 + start + 4);
+          pair.step();
+          CHECK(pair.run.state().gpr[9] == 100);
+          pair.step();
+          CHECK(pair.run.state().gpr[10] == (quota >= 3 ? 1u : 0u) + (primary == 54 ? 77u : 1u));
+        }
+
+    // A resident first line with no resident continuation keeps its direct
+    // packet even when the quota would allow a second cache line.
+    pair.reset();
+    pair.first_memory.plain = pair.run_memory.plain = true;
+    pair.line();
+    pair.first.state().gpr[4] = 0x8000101c;
+    pair.first.state().gpr[5] = immediate(14, 9, 9, 99);
+    pair.run.state() = pair.first.state();
+    pair.install(0x1018, immediate(36, 5, 4, 0));
+    pair.install(0x101c, immediate(14, 9, 9, 1));
+    pair.pc(0x80001018);
+    pair.step();
+    pair.pc(0x80001018);
+    const auto records = pair.run_memory.records.size();
+    pair.attempt(8, 8, 2);
+    CHECK(pair.run.state().gpr[9] == 1);
+    CHECK(pair.run_memory.records.size() == records);
+  });
+}
+
 bool taken(unsigned bo, unsigned bi, u32 ctr, u32 cr) {
   if (!(bo & 4))
     --ctr;
@@ -2303,6 +2364,7 @@ int main() {
     floating_ram_host_tests();
     floating_ram_guard_tests();
     floating_ram_quota_tests();
+    scalar_packet_cached_word_visibility_tests();
     byte_copy_tests();
     later_memory_tests();
     executed_poll_prefix_tests();

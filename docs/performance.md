@@ -512,3 +512,34 @@ commands, frozen libraries, driver source and all samples remain under
 The final samples use a symbol-renamed, otherwise identical shipping copy
 function, including its nonzero compact-row invariant check. A normalized source
 hash and the earlier prototype samples remain beside the final measurements.
+
+## Scalar-group assembly
+
+Mask-based prefix selection and direct single-line cache spans reduce repeated
+scalar-group assembly. A strict MSVC 19.43 x64 `/O2 /Ob2 /fp:strict /MT` build
+with `/GL` and `/LTCG` compares the frozen preceding CPU with the final applied
+source. Nine alternating samples per backend execute 80 million instructions
+each. Every pair matches complete CPU/RAM hashes, ordered bus observations and
+native statistics.
+
+| Loop | Backend | Earlier median seconds | Applied median seconds |
+| --- | --- | ---: | ---: |
+| FP RAM transfers | Interpreter | 1.332720 | 1.253740 |
+| FP RAM transfers | Native integer | 1.372090 | 1.298680 |
+| Integer RAM transfers | Interpreter | 1.171560 | 1.100330 |
+| Integer RAM transfers | Native integer | 1.186890 | 1.162180 |
+
+The earlier eight-million-instruction MSVC samples were noisy: their FP
+ratio-of-medians was 1.4 to 3.0 percent slower, while individual paired ratios
+ranged from 0.89 to 1.27. Integer transfers improved 4.8 to 5.9 percent; the
+unchanged register-loop control was 0.5 to 1.9 percent slower. Those samples
+remain recorded beside the longer batch. Earlier prototype Clang/Windows and
+GCC/Linux runs also retain their own source/flag scopes; GCC scalar-memory
+reductions range from 20 to 24 percent, with a 1.1 percent slower interpreter
+branch control.
+
+All measurements share the host with other work. The longer component samples
+measure a 2.1 to 6.1 percent reduction, without establishing commercial gameplay
+speed. Exact final-source, project settings, compiler logs, binaries and every
+sample remain under `.cache/continuation-20261022/scalar-packet-msvc/`; earlier
+prototype evidence remains in `scalar-packet-23b/`.

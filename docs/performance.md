@@ -543,3 +543,54 @@ measure a 2.1 to 6.1 percent reduction, without establishing commercial gameplay
 speed. Exact final-source, project settings, compiler logs, binaries and every
 sample remain under `.cache/continuation-20261022/scalar-packet-msvc/`; earlier
 prototype evidence remains in `scalar-packet-23b/`.
+
+## Recorded Galaxy menu prefix
+
+Two frozen Windows observer binaries compare the earlier core `747d092` with
+`14fab0f` through field 2,040. Both use Intel Iris Xe OpenGL, disabled host audio,
+the same immutable storage seed and the same accepted ordinary controller
+events. The newer observer first passes a separate stock-CLI parity check.
+Every reported value and raw frame at all 34 shared checkpoints matches after
+excluding only revision, outcome and replay-version bookkeeping. CPU/RAM/PCM
+hashes, graphics counters and final frame bytes match within that reported
+scope. The old observer's embedded revision predates its product sources;
+its frozen source/library receipt identifies the actual `747d092` core.
+
+| Bound | Earlier elapsed seconds | Newer elapsed seconds |
+| --- | ---: | ---: |
+| Field 2,040 checkpoint | 575.943 | 738.098 |
+
+The newer run terminates normally at its field limit in 738.563 seconds,
+including final persistence. The newer combination is slower in this one
+shared-host pair. Other observers, builds, tests and GPU probes run concurrently;
+the timing does not isolate a source change or establish representative speed.
+This observation does not erase the component measurements or qualify an
+integrated gain. The earlier field-2,040 storage snapshot is unavailable, so
+no storage equality is claimed at that checkpoint.
+
+The immutable 83-file comparison manifest, per-checkpoint timing records,
+source/binary hashes and the two raw frame sets remain under
+`.cache/continuation-20261022/frame-observer-xfb/galaxy-prefix-2040-20261022T230821380789Z/`.
+
+## Windows adapter request checks
+
+The Windows graphics backend exports the standard high-performance GPU
+requests. On the current hybrid laptop, the unchanged binary selects Iris Xe;
+the rebuilt binary selects NVIDIA RTX 2000 Ada. Both retain `59edc60` build
+metadata, with executable hashes and parsed export values in
+`.cache/continuation-20261022/gpu-hint-final/`.
+
+Four stock OpenGL runs verify equal reported state, raw frames and persisted
+files within each game pair, with host audio disabled:
+
+| Game and bound | Intel elapsed seconds | NVIDIA elapsed seconds |
+| --- | ---: | ---: |
+| Sunshine, three billion attempts / 320 fields | 14.401 | 47.918 |
+| Galaxy, one billion attempts / 76 fields | 33.168 | 27.474 |
+
+These are single sequential pairs on a shared host. Shader compilation,
+driver caches and concurrent workloads are uncontrolled. Sunshine is slower
+with the request in this pair; Galaxy is faster. The observations verify the
+recorded outputs across adapters and do not establish representative gameplay
+speed. Commands, device strings, timings and hashes remain in
+`.cache/continuation-20261022/windows-gpu-hint-stock-pairs/`.

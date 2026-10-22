@@ -14,6 +14,15 @@
 #include <SDL_opengl_glext.h>
 #endif
 
+#if defined(_WIN32) && CUPID_HAVE_SDL
+// Hybrid graphics drivers inspect these executable exports before creating a
+// context. Request the high-performance adapter for guest graphics work.
+extern "C" {
+__declspec(dllexport) cupid::u32 NvOptimusEnablement = 1;
+__declspec(dllexport) cupid::s32 AmdPowerXpressRequestHighPerformance = 1;
+}
+#endif
+
 namespace cupid::gfx {
 #if CUPID_HAVE_SDL
 namespace {

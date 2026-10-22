@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <latch>
 #include <optional>
 #include <poll.h>
 #include <sys/wait.h>
@@ -122,6 +123,32 @@ template <typename Action> [[noreturn]] void child(Action action) {
   }
 }
 
+bool single_threaded_within(std::chrono::milliseconds bound) {
+  const auto deadline = std::chrono::steady_clock::now() + bound;
+  while (std::distance(std::filesystem::directory_iterator("/proc/self/task"),
+                       std::filesystem::directory_iterator{}) != 1) {
+    if (std::chrono::steady_clock::now() >= deadline)
+      return false;
+    std::this_thread::sleep_for(1ms);
+  }
+  return true;
+}
+
+void thread_cleanup_predicate() {
+  std::latch started(1);
+  std::jthread live([&](std::stop_token stop) {
+    started.count_down();
+    while (!stop.stop_requested())
+      std::this_thread::sleep_for(1ms);
+  });
+  started.wait();
+  const bool accepted_live_thread = single_threaded_within(10ms);
+  live.request_stop();
+  live.join();
+  CHECK(!accepted_live_thread);
+  CHECK(single_threaded_within(100ms));
+}
+
 void worker(const std::filesystem::path &socket, const Pipe &commands, const Pipe &events) {
   environment("SDL_AUDIODRIVER", "pulseaudio");
   environment("PULSE_SERVER", "unix:" + socket.string());
@@ -147,8 +174,18 @@ void worker(const std::filesystem::path &socket, const Pipe &commands, const Pip
     CHECK(commands.receive(5000) == 'C');
   }
   CHECK(SDL_WasInit(SDL_INIT_AUDIO) == 0);
-  CHECK(std::distance(std::filesystem::directory_iterator("/proc/self/task"),
-                      std::filesystem::directory_iterator{}) == 1);
+  // A successful pthread join can precede Linux removing the exited task from /proc.
+  // Keep the thread-leak check bounded inside the parent's stopped-server close deadline.
+  const bool threads_gone = single_threaded_within(100ms);
+  if (!threads_gone)
+    for (const auto &entry : std::filesystem::directory_iterator("/proc/self/task")) {
+      std::ifstream status(entry.path() / "status");
+      std::cerr << "Remaining task " << entry.path().filename() << '\n';
+      std::string line;
+      while (std::getline(status, line))
+        std::cerr << line << '\n';
+    }
+  CHECK(threads_gone);
   events.send('D');
 }
 
@@ -228,5 +265,8 @@ int main(int argc, char **argv) {
     std::cerr << "A private Pulse server executable is required\n";
     return 1;
   }
-  return run_tests([&] { stalled_server_close(argv[1]); });
+  return run_tests([&] {
+    thread_cleanup_predicate();
+    stalled_server_close(argv[1]);
+  });
 }

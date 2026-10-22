@@ -7,6 +7,11 @@ hidden SDL OpenGL context, so it also works with `--headless` when the host has 
 video driver that can create that context. A `CUPID_HEADLESS_ONLY` build excludes
 SDL and reports hardware rendering as unavailable.
 
+On Windows, SDL-enabled executables export the standard NVIDIA and AMD
+high-performance adapter requests. Hybrid graphics drivers can use these hints
+when choosing the OpenGL device. The active renderer's device string records
+the selected adapter.
+
 CPU code decodes vertices, transforms and lights them, assembles primitives,
 clips them, applies culling, and prepares interpolation planes. Compute shaders
 then evaluate fixed-point triangle coverage and fragment inputs, run TEV and
@@ -687,6 +692,27 @@ Windows and Linux. These checks establish exact arithmetic for the tested
 identities; [performance measurements](performance.md) record the separate
 component timings.
 
+The same frozen `59edc60` core also passes the full hardware renderer,
+GameCube/Wii hardware guest-video suite and exhaustive signed division sweep
+on `NVIDIA RTX 2000 Ada Generation Laptop GPU/PCIe/SSE2`. Separate executables
+add only the two adapter exports; their PE tables contain both 32-bit values
+set to one. A paired context probe selects Intel Iris Xe without the requests
+and NVIDIA with them. Compiler, core, test-object, executable and log hashes
+remain in `.cache/continuation-20261022/tev-count-study/vendor-gates/`.
+These checks cover the recorded synthetic workloads. Commercial gameplay
+speed and AMD hardware remain unverified.
+
+The rebuilt shipping core supplies both exports without a separate export
+object. Its naturally linked probe selects NVIDIA, and the rebuilt full
+hardware and hardware guest-video suites pass in 65.53 and 30.91 seconds.
+The rebuilt exhaustive sweep also passes. Four stock CLI runs compare the
+default Intel binary with this NVIDIA-requesting binary across both supplied
+games. Every reported state value, raw frame byte and persisted file matches
+at the existing 320-field Sunshine and 76-field Galaxy bounds. Both binaries
+retain `59edc60` metadata; source and PE receipts identify the added requests.
+See `gpu-hint-final/` and `windows-gpu-hint-stock-pairs/` under the same private
+artifact root. Adapter choice does not by itself establish a speed gain.
+
 ## Behavior mappings
 
 The behavioral checkout is pinned at
@@ -696,6 +722,7 @@ validated graphics modules and an independently written compute shader.
 
 | Product implementation | Behavioral files and functions | Behavior read and translated |
 | --- | --- | --- |
+| Windows graphics adapter requests | `VideoCommon/VideoBackendBase.cpp`, executable data exports | Driver-recognized 32-bit requests for the high-performance graphics adapter. |
 | `HardwareRenderer`, context and dispatch ordering | `VideoBackends/OGL/OGLGfx.cpp`, `DispatchComputeShader`; `VideoCommon/VertexManagerBase.cpp`, `DrawCurrentBatch`, `UploadUniforms` | Shader dispatch, framebuffer ordering and state upload. |
 | `RasterWork` and compute coverage/interpolation | `VideoBackends/Software/Rasterizer.cpp`, `Clipper.cpp`; `VideoCommon/VertexShaderGen.cpp`, `GenerateVertexShaderCode` | Fixed-point edge tests, interpolation planes, depth range and sample placement. |
 | GPU TEV combiner, alpha and depth textures | `VideoBackends/Software/Tev.cpp`, `Draw`, `DrawColorRegular`, `DrawColorCompare`, `DrawAlphaRegular`, `DrawAlphaCompare` | Stage sequencing, integer arithmetic, retained texture samples, comparisons and depth-texture ordering. |

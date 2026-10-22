@@ -221,11 +221,54 @@ configured revision and every raw frame byte. Later replay replacements have
 separate version records. Host playback is disabled on both platforms, and
 the final Linux gameplay continuation has its own bounded execution receipt.
 
+A separate frozen `747d092` native Sunshine continuation recognizes its existing
+startup file after restart. It runs to its requested 3,600-second host limit,
+exiting normally after 3,600.615 seconds at field 9,051. Ordinary replay controls
+dismiss dialogue, move Mario, rotate the camera, interact with a Toad and produce
+swimming. All sixteen replay versions are accepted, with zero rejections or
+instruction-backing errors. The 150 complete checkpoint pairs, final image,
+control history and source/binary receipts remain in
+`.cache/continuation-20261022/frame-observer/sunshine-restart-20261022T222307516193Z/`.
+
+Its final four persisted user files are byte-identical to the immutable restart
+seed and earlier startup-file capture. Both card headers, directory copies and
+allocation-table copies pass validation; card A retains its valid seven-block
+Sunshine file, and card B stays empty. This verifies initial file recognition
+and preserved persistence. FLUDD, saved level progress and gameplay save/load
+remain unverified. Host audio is disabled, and this run does not establish full
+speed. The card audit is `memory-card-restart-audit.json` beside that run.
+
+A separate `14fab0f` Galaxy OpenGL prefix matches all 34 checkpoint frames and
+reported values through field 2,040 against the earlier frozen core, apart from
+revision, outcome and replay bookkeeping. It reaches the six-slot file menu;
+the earlier core also responds to ordinary pointer input. The newer prefix is
+slower in the shared-host timing pair, retained in [performance](performance.md).
+Its old checkpoint lacks persisted-storage output, so storage equality is not
+claimed for that comparison. These observations remain distinct from current
+head gameplay qualification.
+
+The earlier frozen-core Galaxy continuation subsequently exits normally at
+its requested host limit: 3,600.892 seconds, field 5,197 and 62,278,102,686
+instructions. Ordinary pointer and button input creates and selects a file,
+starts it and advances the opening story. The final queued field-5,220 press
+falls beyond termination and is not applied. Fourteen replay replacements
+are accepted with no rejections. Final storage adds `GameData.bin`,
+`banner.bin` and a system-configuration backup, changes SRAM and filesystem
+metadata, and removes no files. The immutable seed, source user directory and
+observer executable remain unchanged. Controllable Mario movement and level
+progress are not reached. The terminal audit and 259-file manifest remain in
+`.cache/continuation-20261022/frame-observer/galaxy-controller-20261022T224649363173Z/`.
+
 ## Firmware and performance
 
 The three local IPL candidates have the expected 2 MiB size but fail recognized full-ROM checksums. Their boot-ROM bytes are not accepted as firmware. The USA container's decompressed font slots pass independent structure checks and supply bounded EXI font reads. It does not provide Wii system data. See [font validation](fonts.md) and [boot requirements](boot.md).
 
-The tested host has an Intel Core i9-10900F and NVIDIA RTX 3060. [Hardware-rendering tests](hardware-rendering.md) execute real compute work and pass exact pixel comparisons on the RTX 3060 and Mesa. The [performance page](performance.md) records startup and component workloads separately. None establishes full-speed commercial gameplay.
+The earlier captures used an Intel Core i9-10900F and NVIDIA RTX 3060. The newer
+native checks use an i7-13700H with Intel Iris Xe; Linux graphics use llvmpipe.
+[Hardware-rendering tests](hardware-rendering.md) execute real compute work and
+pass exact pixel comparisons on their recorded devices. The
+[performance page](performance.md) separates startup and component workloads.
+None establishes full-speed commercial gameplay.
 
 ## Recording a result
 

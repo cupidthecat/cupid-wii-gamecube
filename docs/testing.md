@@ -63,6 +63,14 @@ callback lifetime before resuming the server for cleanup. The optional fixture
 skips when the server executable is absent. See [host audio](host-audio.md#pulse-shutdown)
 for the unchanged-SDK failure and staged-SDK pass.
 
+After SDL shutdown, the fixture allows up to 100 milliseconds for Linux to
+remove joined threads from `/proc/self/task`, while still requiring exactly
+one remaining task. A joined Pulse mainloop thread can briefly retain its
+entry; direct pinned-SDL loops reproduce this race. The parent still requires
+the worker to close within one second while the server is stopped. A separate
+live-thread negative control must fail the task-count predicate, and joined
+cleanup must pass. Failures print remaining task status for diagnosis.
+
 The disc-stream suite checks ADPCM decoding, drive command state, callback
 timing and actual guest DI/AI writes on both consoles. An optional compiled
 comparison covers every decoder header pair and retained predictor history,

@@ -60,6 +60,21 @@ std::vector<u8> container(std::span<const u8> jis, std::span<const u8> western) 
   std::copy(western.begin(), western.end(), result.begin() + 0x1fcf00);
   return result;
 }
+
+std::vector<u8> byte_packed_font(unsigned type, unsigned dimension, bool back_reference,
+                                 unsigned padding) {
+  auto encoded = font(type, dimension, back_reference);
+  const unsigned decisions = back_reference ? 51 : 49 + dimension * dimension / 4;
+  const unsigned old_mask_bytes = ((decisions + 31) / 32) * 4;
+  const unsigned mask_bytes = (decisions + 7) / 8;
+  const unsigned old_chunks = 16 + old_mask_bytes + (back_reference ? 2 : 0);
+  std::vector<u8> packed(encoded.begin(), encoded.begin() + 16 + mask_bytes);
+  packed.resize(16 + mask_bytes + padding);
+  packed.insert(packed.end(), encoded.begin() + 16 + old_mask_bytes, encoded.end());
+  put(packed, 8, 16 + mask_bytes + padding);
+  put(packed, 12, old_chunks - old_mask_bytes + mask_bytes + padding);
+  return packed;
+}
 } // namespace
 
 int main() {
@@ -84,6 +99,32 @@ int main() {
     CHECK(extended_decoded.western.decoded_crc32 == large_literal.western.decoded_crc32);
     CHECK(extended_decoded.western.decoded_size == 113);
     CHECK(extended_decoded.western.encoded_size == extended_font.size());
+
+    // Exercise each table alignment, including an odd address for 16-bit links.
+    // The final mask byte contains fewer than eight decisions in each fixture.
+    for (unsigned padding = 0; padding < 4; ++padding) {
+      for (bool reference : {false, true}) {
+        for (unsigned dimension : {8u, 16u}) {
+          const auto packed_jis = byte_packed_font(2, dimension, reference, padding);
+          const auto packed_western = byte_packed_font(0, dimension, reference, padding);
+          const auto packed = runtime::validate_ipl_fonts(container(packed_jis, packed_western));
+          const auto aligned = runtime::validate_ipl_fonts(
+              container(font(2, dimension, reference), font(0, dimension, reference)));
+          CHECK(packed.shift_jis.decoded_crc32 == aligned.shift_jis.decoded_crc32);
+          CHECK(packed.western.decoded_crc32 == aligned.western.decoded_crc32);
+          CHECK(packed.shift_jis.encoded_size == packed_jis.size());
+          CHECK(packed.western.encoded_size == packed_western.size());
+          CHECK(std::equal(packed_western.begin(), packed_western.end(),
+                           packed.western.bytes.begin()));
+        }
+      }
+    }
+    auto missing_mask = byte_packed_font(0, 8, true, 0);
+    // Six mask bytes cannot describe fifty literal bytes and a back-reference.
+    missing_mask.erase(missing_mask.begin() + 22);
+    put(missing_mask, 8, 22);
+    put(missing_mask, 12, 24);
+    CHECK_THROWS(runtime::validate_ipl_fonts(container(jis, missing_mask)));
 
     CHECK_THROWS(runtime::validate_ipl_fonts(std::array<u8, 128>{}));
     auto bad = container(jis, western);

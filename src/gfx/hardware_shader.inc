@@ -10,7 +10,9 @@ layout(std430, binding=4) readonly buffer Textures { uint textures[]; };
 layout(std430, binding=5) buffer TextureState { uint texture_state[]; };
 layout(std430, binding=6) readonly buffer FogThresholds { uint fog_thresholds[]; };
 
-float rounded_divide(float numerator, float denominator) {
+// Driver division estimates can miss a binary32 rounding boundary even when
+// computed in binary64. Correct them before texture or fog quantization.
+float divide_estimate(float numerator, float denominator) {
   return float(double(numerator)/double(denominator));
 }
 
@@ -33,7 +35,7 @@ bool above_float_midpoint(double numerator,double denominator,uint lower) {
   precise double product=midpoint*denominator;
   return numerator>product || (numerator==product && (lower&1u)!=0u);
 }
-float fog_divide(float numerator,float denominator) {
+float rounded_divide(float numerator,float denominator) {
   uint nbits=floatBitsToUint(numerator),dbits=floatBitsToUint(denominator);
   uint sign=(nbits^dbits)&2147483648u;
   nbits&=2147483647u; dbits&=2147483647u;
@@ -44,7 +46,7 @@ float fog_divide(float numerator,float denominator) {
   if (dbits==2139095040u) return uintBitsToFloat(sign);
   if (nbits==0u) return uintBitsToFloat(sign);
   precise double n=positive_float_value(nbits),d=positive_float_value(dbits);
-  uint candidate=floatBitsToUint(rounded_divide(numerator,denominator))&2147483647u;
+  uint candidate=floatBitsToUint(divide_estimate(numerator,denominator))&2147483647u;
   if (candidate>2139095040u) candidate=2139095040u;
   for (uint attempt=0u;attempt<8u;++attempt) {
     if (candidate!=0u && !above_float_midpoint(n,d,candidate-1u)) --candidate;
@@ -400,10 +402,10 @@ R"glsl(bool shade(ivec2 pixel, inout uint depth, out ivec4 result) {
       a=0.0;
       c=uintBitsToFloat((state[238]&524288u)==0u && (state[241]&524288u)==0u ? 4286578688u : 2139095040u);
     }
-    if ((state[241]&1048576u)!=0u) distance=a*fog_divide(float(depth),16777215.0);
-    else distance=fog_divide(a*16777215.0,float(int(state[239]-(depth>>state[240]))));
+    if ((state[241]&1048576u)!=0u) distance=a*rounded_divide(float(depth),16777215.0);
+    else distance=rounded_divide(a*16777215.0,float(int(state[239]-(depth>>state[240]))));
     if ((state[232]&1024u)!=0u) {
-      precise float offset=fog_divide(float(pixel.x)-float(int(state[232]&1023u)-342),uintBitsToFloat(work[253]));
+      precise float offset=rounded_divide(float(pixel.x)-float(int(state[232]&1023u)-342),uintBitsToFloat(work[253]));
       precise float index=clamp(9.0-abs(offset)*9.0,0.0,9.0);
       uint lower=uint(index),upper=min(9u,lower+1u);
       precise float first=float((state[233u+lower/2u]>>((lower&1u)!=0u ? 0u : 12u))&4095u)/64.0;
@@ -411,7 +413,7 @@ R"glsl(bool shade(ivec2 pixel, inout uint depth, out ivec4 result) {
       precise float fraction=index-float(lower);
       precise float k=first*(1.0-fraction)+second*fraction;
       precise float squared=offset*offset+k*k;
-      precise float adjustment=fog_divide(float(sqrt(double(squared))),k);
+      precise float adjustment=rounded_divide(float(sqrt(double(squared))),k);
       distance=distance*adjustment;
     }
     precise float fog=clamp(distance-c,0.0,1.0);

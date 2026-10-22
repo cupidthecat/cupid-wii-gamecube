@@ -37,14 +37,14 @@ IplFontBlock font(std::span<const u8> source, unsigned type) {
   const std::size_t links_start = read(source, 8, 4), chunks_start = read(source, 12, 4);
   if (size < 48 || size > 1024 * 1024)
     invalid("decoded size is outside the supported font range");
-  if (links_start < 16 || (links_start & 3) || chunks_start < links_start ||
-      ((chunks_start - links_start) & 1) || chunks_start > source.size())
+  if (links_start < 16 || chunks_start < links_start || ((chunks_start - links_start) & 1) ||
+      chunks_start > source.size())
     invalid("invalid mask, link, or literal offsets");
 
   std::vector<u8> decoded;
   decoded.reserve(size);
   std::size_t mask_position = 16, link_position = links_start, chunk_position = chunks_start;
-  u32 mask = 0;
+  u8 mask = 0;
   unsigned bits = 0;
   auto literal = [&] {
     if (chunk_position >= source.size())
@@ -53,13 +53,13 @@ IplFontBlock font(std::span<const u8> source, unsigned type) {
   };
   while (decoded.size() < size) {
     if (!bits) {
-      if (mask_position > links_start || links_start - mask_position < 4)
+      // Masks are byte packed; the link table need not start on a word boundary.
+      if (mask_position >= links_start)
         invalid("mask stream overlaps links");
-      mask = read(source, mask_position, 4);
-      mask_position += 4;
-      bits = 32;
+      mask = source[mask_position++];
+      bits = 8;
     }
-    if (mask & 0x80000000) {
+    if (mask & 0x80) {
       decoded.push_back(literal());
     } else {
       if (link_position > chunks_start || chunks_start - link_position < 2)
@@ -73,7 +73,7 @@ IplFontBlock font(std::span<const u8> source, unsigned type) {
       for (unsigned i = 0; i < count; ++i)
         decoded.push_back(decoded[decoded.size() - distance]);
     }
-    mask <<= 1;
+    mask = static_cast<u8>(mask << 1);
     --bits;
   }
 

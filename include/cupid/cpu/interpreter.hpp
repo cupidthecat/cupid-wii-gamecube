@@ -173,6 +173,7 @@ private:
   [[noreturn]] void unsupported(const char *reason);
   void privileged();
   void execute(u32 opcode);
+  bool execute_conditional_branch(u32 opcode, u32 pc);
   bool execute_register_run_instruction(u32 opcode, u32 pc);
   void execute_extended(u32 opcode);
   void execute_float(u32 opcode);

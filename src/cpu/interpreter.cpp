@@ -682,12 +682,38 @@ void Interpreter::execute_scalar_ram(u32 opcode, u32 effective, std::span<u8> by
     state_.gpr[address] = effective;
 }
 
+inline bool Interpreter::execute_conditional_branch(u32 opcode, u32 pc) {
+  const unsigned bo = (opcode >> 21) & 31, bi = (opcode >> 16) & 31;
+  if (!(bo & 4))
+    --state_.spr[spr::ctr];
+  const bool counter = (bo & 4) || ((state_.spr[spr::ctr] != 0) != ((bo & 2) != 0));
+  const bool condition = (bo & 16) || (((state_.cr >> (31 - bi)) & 1) == ((bo >> 3) & 1));
+  const bool taken = counter && condition;
+  if (taken) {
+    const u32 offset = static_cast<u32>(static_cast<s32>(static_cast<s16>(opcode & 0xfffc)));
+    next_pc_ = ((opcode & 2) ? 0 : pc) + offset;
+    if (opcode & 1)
+      state_.spr[spr::lr] = pc + 4;
+  }
+  return taken;
+}
+
 bool Interpreter::execute_register_run_instruction(u32 opcode, u32 pc) {
   const unsigned primary = opcode >> 26;
   const bool branch = primary == 16 || primary == 18 || primary == 19;
   if (branch) {
     state_.pc = pc;
     next_pc_ = pc + 4;
+  }
+  if (primary == 16) {
+    // A taken branch to the following word still terminates the run.
+    // Keep the branch decision from execution, including taken fallthroughs.
+    // Branches have no native integer entry, so avoid their cache lookup too.
+    const bool taken = execute_conditional_branch(opcode, pc);
+    if (backend_ == ExecutionBackend::NativeInteger)
+      native_integer_->record_fallback(1);
+    state_.pc = next_pc_;
+    return taken;
   }
   const bool cached = backend_ == ExecutionBackend::NativeInteger &&
                       native_integer_->execute_cached(state_, opcode);
@@ -699,12 +725,7 @@ bool Interpreter::execute_register_run_instruction(u32 opcode, u32 pc) {
   if (!branch)
     return false;
   state_.pc = next_pc_;
-  if (primary != 16 || next_pc_ != pc + 4)
-    return true;
-  // A taken branch to the following word still terminates the run.
-  const unsigned bo = (opcode >> 21) & 31, bi = (opcode >> 16) & 31;
-  return ((bo & 4) || ((state_.spr[spr::ctr] != 0) != ((bo & 2) != 0))) &&
-         ((bo & 16) || (((state_.cr >> (31 - bi)) & 1) == ((bo >> 3) & 1)));
+  return true;
 }
 
 IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cycles) {
@@ -1085,19 +1106,9 @@ void Interpreter::execute(u32 opcode) {
   case 15:
     state_.gpr[d] = base + (immediate << 16);
     return;
-  case 16: {
-    if (!(d & 4))
-      --state_.spr[spr::ctr];
-    const bool counter = (d & 4) || ((state_.spr[spr::ctr] != 0) != ((d & 2) != 0));
-    const bool condition = (d & 16) || (((state_.cr >> (31 - a)) & 1) == ((d >> 3) & 1));
-    if (counter && condition) {
-      const u32 offset = static_cast<u32>(static_cast<s32>(static_cast<s16>(opcode & 0xfffc)));
-      next_pc_ = ((opcode & 2) ? 0 : state_.pc) + offset;
-      if (rc)
-        state_.spr[spr::lr] = state_.pc + 4;
-    }
+  case 16:
+    (void)execute_conditional_branch(opcode, state_.pc);
     return;
-  }
   case 17:
     exception(0xc00, next_pc_);
     return;

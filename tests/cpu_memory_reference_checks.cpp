@@ -115,6 +115,17 @@ struct WindowsMemoryRegion {
 #endif
 MemArena::MemArena() = default;
 MemArena::~MemArena() = default;
+// Compiled cores remain unused, so their lazy region may only have empty state.
+LazyMemoryRegion::LazyMemoryRegion() = default;
+
+LazyMemoryRegion::~LazyMemoryRegion() {
+  if (m_memory || m_size)
+    std::terminate();
+#ifdef _WIN32
+  if (m_zero_block || !m_writable_block_handles.empty())
+    std::terminate();
+#endif
+}
 #ifdef _WIN32
 DynamicLibrary::DynamicLibrary() = default;
 
@@ -322,7 +333,7 @@ Interpreter::Interpreter(Core::System &system, PowerPC::PowerPCState &state, Pow
 
 Interpreter::~Interpreter() = default;
 
-void Interpreter::Init() {
+bool Interpreter::Init() {
   unused();
 }
 
@@ -416,35 +427,52 @@ void TakeControl() {
 
 class UnusedEfb final : public EFBInterfaceBase {
 public:
-  void ReinterpretPixelData(EFBReinterpretType) override {
+  void ReinterpretPixelData(FramebufferManager *, EFBReinterpretType) override {
     unused();
   }
 
-  void PokeColor(u16, u16, u32) override {
+  void PokeColor(FramebufferManager *, u16, u16, u32) override {
     unused();
   }
 
-  void PokeDepth(u16, u16, u32) override {
+  void PokeDepth(FramebufferManager *, u16, u16, u32) override {
     unused();
   }
 
-  u32 PeekColorInternal(u16, u16) override {
+  u32 PeekColorInternal(FramebufferManager *, u16, u16) override {
     unused();
   }
 
-  u32 PeekDepthInternal(u16, u16) override {
+  u32 PeekDepthInternal(FramebufferManager *, u16, u16) override {
     unused();
   }
 };
 
+// No framebuffer service is constructed by these memory fixtures.
+// Any unexpected ownership remains a hard failure, including during cleanup.
+constexpr bool framebuffer_delete_is_noexcept =
+    noexcept(std::default_delete<FramebufferManager>{}(nullptr));
+
+template <>
+#if defined(__cpp_lib_constexpr_memory) && __cpp_lib_constexpr_memory >= 202202L
+constexpr
+#endif
+    void
+    std::default_delete<FramebufferManager>::operator()(FramebufferManager *manager) const
+    noexcept(framebuffer_delete_is_noexcept) {
+  if (manager)
+    std::terminate();
+}
+
+std::unique_ptr<FramebufferManager> g_framebuffer_manager;
 EFBInterfaceBase::~EFBInterfaceBase() = default;
 std::unique_ptr<EFBInterfaceBase> g_efb_interface = std::make_unique<UnusedEfb>();
 
-u32 EFBInterfaceBase::PeekColor(u16, u16) {
+u32 EFBInterfaceBase::PeekColor(FramebufferManager *, u16, u16) {
   unused();
 }
 
-u32 EFBInterfaceBase::PeekDepth(u16, u16) {
+u32 EFBInterfaceBase::PeekDepth(FramebufferManager *, u16, u16) {
   unused();
 }
 

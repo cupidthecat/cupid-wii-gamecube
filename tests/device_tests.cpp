@@ -358,6 +358,167 @@ void controller_poll_field_boundary() {
   }
 }
 
+void controller_calibration() {
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    const u32 base = console == Console::Wii ? 0x0d006400 : si;
+    for (unsigned port = 0; port < 4; ++port) {
+      Devices devices(console);
+      PadState pad;
+      pad.connected = true;
+      pad.stick_x = 0x12;
+      pad.stick_y = 0x34;
+      pad.cstick_x = 0x56;
+      pad.cstick_y = 0x78;
+      pad.left_trigger = 0x9a;
+      pad.right_trigger = 0xbc;
+      pad.analog_a = 0xde;
+      pad.analog_b = 0xf0;
+      devices.set_pad(port, pad);
+      const auto transfer = [&](u8 command) {
+        devices.write(base + 0x80, u32(command) << 24, 4);
+        devices.write(base + 0x34, 0xc0010a01 | (port << 1), 4);
+      };
+      // Merely moving the axes does not recalibrate either origin command.
+      for (u8 command : {u8(0x41), u8(0x42)}) {
+        transfer(command);
+        CHECK(devices.read(base + 0x80, 4) == 0x00008080);
+        CHECK(devices.read(base + 0x84, 4) == 0x80800000);
+        CHECK(devices.read(base + 0x88, 2) == 0);
+      }
+      // An origin request is consumed for every buffer command, including the
+      // origin query itself, independently for each controller port.
+      pad.buttons = 0x2000;
+      devices.set_pad(port, pad);
+      transfer(0x41);
+      CHECK(devices.read(base + 0x80, 4) == 0x00001234);
+      CHECK(devices.read(base + 0x84, 4) == 0x56789abc);
+      CHECK(devices.read(base + 0x88, 2) == 0);
+      pad.buttons = 0;
+      pad.stick_x = 0x44;
+      pad.left_trigger = 0;
+      devices.set_pad(port, pad);
+      transfer(0x42);
+      CHECK(devices.read(base + 0x80, 4) == 0x00001234);
+      CHECK(devices.read(base + 0x84, 4) == 0x56789abc);
+      transfer(0x40);
+      CHECK(devices.read(base + 0x80, 4) == 0x00804434);
+      CHECK(devices.read(base + 0x84, 4) == 0x567800bc);
+
+      pad.buttons = 0x2000;
+      devices.set_pad(port, pad);
+      devices.poll_controllers();
+      CHECK(devices.read(base + 4 + 12 * port, 4) == 0x20804434);
+      pad.buttons = 0;
+      devices.set_pad(port, pad);
+      transfer(0x41);
+      CHECK(devices.read(base + 0x80, 4) == 0x00004434);
+      CHECK(devices.read(base + 0x84, 4) == 0x567800bc);
+      // A replacement controller starts with factory calibration.
+      pad.connected = false;
+      devices.set_pad(port, pad);
+      pad.connected = true;
+      devices.set_pad(port, pad);
+      transfer(0x41);
+      CHECK(devices.read(base + 0x80, 4) == 0x00008080);
+      CHECK(devices.read(base + 0x84, 4) == 0x80800000);
+    }
+
+    Devices devices(console);
+    // A zero-length field keeps automatic SI polls out of this direct-command
+    // boundary test; the transfer itself is the controller's sample point.
+    devices.write(vi, 0, 2);
+    devices.write(vi + 0x0c, 0, 4);
+    devices.write(vi + 0x10, 0, 4);
+    PadState pad;
+    pad.connected = true;
+    pad.buttons = 0x1c01; // X + Y + Start, with an unrelated D-pad direction.
+    pad.stick_x = 0x91;
+    pad.left_trigger = 0x32;
+    devices.set_pad(0, pad);
+    const auto direct = [&] {
+      devices.write(base + 0x80, 0x40000000, 4);
+      devices.write(base + 0x34, 0xc0010801, 4);
+      return devices.read(base + 0x80, 4);
+    };
+    const auto origin = [&] {
+      devices.write(base + 0x80, 0x41000000, 4);
+      devices.write(base + 0x34, 0xc0010a01, 4);
+      return devices.read(base + 0x80, 4);
+    };
+    CHECK(direct() == 0x1c819180);
+    devices.advance(3 * devices.ticks_per_second());
+    CHECK(direct() == 0x1c819180);
+    CHECK(origin() == 0x00008080);
+    devices.advance(1);
+    CHECK(direct() == 0x3c819180);
+    CHECK(origin() == 0x00009180);
+    CHECK(devices.read(base + 0x84, 4) == 0x80803200);
+    // The request flag is transient; keeping the chord held rearms its timer.
+    pad.stick_x = 0x71;
+    devices.set_pad(0, pad);
+    CHECK(direct() == 0x1c817180);
+    devices.advance(devices.ticks_per_second());
+    pad.buttons = 0x1800;
+    devices.set_pad(0, pad);
+    CHECK(direct() == 0x18807180);
+    pad.buttons = 0x1c00;
+    devices.set_pad(0, pad);
+    CHECK(direct() == 0x1c807180);
+    devices.advance(2 * devices.ticks_per_second() + 1);
+    CHECK(direct() == 0x1c807180);
+    CHECK(origin() == 0x00009180);
+    devices.advance(devices.ticks_per_second());
+    devices.poll_controllers();
+    CHECK(devices.read(base + 4, 4) == 0x3c807180);
+    CHECK(origin() == 0x00007180);
+  }
+}
+
+void controller_analog_modes() {
+  constexpr std::array<u32, 8> expected{0x56789bdf, 0x579abcdf, 0x579bdef0, 0x56789abc,
+                                        0x5678def0, 0x56789bdf, 0x56789bdf, 0x56789bdf};
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    Devices devices(console);
+    const u32 base = console == Console::Wii ? 0x0d006400 : si;
+    PadState pad;
+    pad.connected = true;
+    pad.buttons = 0x101;
+    pad.stick_x = 0x12;
+    pad.stick_y = 0x34;
+    pad.cstick_x = 0x56;
+    pad.cstick_y = 0x78;
+    pad.left_trigger = 0x9a;
+    pad.right_trigger = 0xbc;
+    pad.analog_a = 0xde;
+    pad.analog_b = 0xf0;
+    for (unsigned port = 0; port < 4; ++port)
+      devices.set_pad(port, pad);
+    for (u32 mode = 0; mode < expected.size(); ++mode) {
+      for (unsigned port = 0; port < 4; ++port)
+        devices.write(base + port * 12, 0x400000 | (mode << 8), 4);
+      devices.write(base + 0x38, 0x80000000, 4);
+      devices.poll_controllers();
+      for (unsigned port = 0; port < 4; ++port) {
+        CHECK(devices.read(base + 4 + port * 12, 4) == 0x01811234);
+        CHECK(devices.read(base + 8 + port * 12, 4) == expected[mode]);
+        devices.write(base + 0x80, 0x40000000, 4);
+        devices.write(base + 0x34, 0xc0030801 | (port << 1), 4);
+        CHECK(devices.read(base + 0x80, 4) == 0x01811234);
+        CHECK(devices.read(base + 0x84, 4) == expected[mode]);
+      }
+    }
+    // When channel polling is enabled, a direct write keeps the previous
+    // analog mode even though its motor command is still delivered.
+    devices.write(base + 0x30, 0xf0, 4);
+    for (unsigned port = 0; port < 4; ++port)
+      devices.write(base + port * 12, 0x400300, 4);
+    devices.write(base + 0x38, 0x80000000, 4);
+    devices.poll_controllers();
+    for (unsigned port = 0; port < 4; ++port)
+      CHECK(devices.read(base + 8 + port * 12, 4) == expected[7]);
+  }
+}
+
 void video_timing_register_updates() {
   for (Console console : {Console::GameCube, Console::Wii}) {
     const u64 fast_sample = console == Console::Wii ? 27 : 18;
@@ -1526,6 +1687,8 @@ int main() {
     disc_interface();
     disc_dma_aliases();
     serial_interface();
+    controller_calibration();
+    controller_analog_modes();
     controller_poll_field_boundary();
     audio_and_aram();
     disconnected_aram_live_descriptor();

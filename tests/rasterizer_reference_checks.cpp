@@ -11,7 +11,6 @@
 #include "VideoCommon/EFBInterface.h"
 #include "VideoCommon/FramebufferManager.h"
 #include "VideoCommon/GraphicsModSystem/Config/GraphicsMod.h"
-#include "VideoCommon/GraphicsModSystem/Runtime/CustomShaderCache.h"
 #include "VideoCommon/Statistics.h"
 #include "VideoCommon/VertexManagerBase.h"
 #include "VideoCommon/VertexShaderManager.h"
@@ -59,10 +58,6 @@ CPUCull::~CPUCull() {
 
 template <typename T> void CPUCull::BufferDeleter<T>::operator()(T *) {
   throw std::runtime_error("Unexpected reference backend culling buffer release");
-}
-
-CustomShaderCache::~CustomShaderCache() {
-  unexpected_reference_destructor();
 }
 
 VideoCommon::AsyncShaderCompiler::~AsyncShaderCompiler() {

@@ -2,6 +2,16 @@
 
 The device module uses physical addresses and big endian register values. It runs on the same CPU cycle counter as the interpreter. GameCube uses 486 MHz; Wii uses 729 MHz. Unsupported MMIO accesses raise a bus fault with the address and access direction.
 
+Controller calibration retains six analog origins per port. An explicit origin
+request captures the supplied stick and trigger values. Holding X, Y and Start
+for more than three guest seconds captures them and marks that status response
+with an origin request. Origin and recalibration commands return the retained
+packet; disconnecting or replacing the controller restores neutral calibration.
+The device suite checks both consoles, all ports, the exact hold threshold,
+cancelled holds, direct and polled reads, and all eight analog modes. This
+behavior was checked against `SI_DeviceGCController.cpp` at
+`2c805fee8f232d090c454381bb1b8422242345e1`.
+
 Device advances update the public cycle counter and timed level interrupts on every call. Calls strictly before the next timer deadline accumulate event-free elapsed time; MMIO access materializes it, and a write invalidates the deadline. Audio DMA, AI sample clocks, VI half-lines, disc completion, ARAM completion and both memory-card timers all participate. At a boundary, earlier elapsed time is applied before the current call so a throwing callback retains the original partial-update order. Reentrant register callbacks and zero-cycle interrupt reassertion are covered.
 
 A private comparison with the preceding device implementation checked 263,146 instruction advances and 1,112 complete state snapshots on both consoles, including DMA data, callback order and cycles, rate changes, card completion, reentrant access and thrown callbacks. Six alternating unprofiled GCC Release runs of the same 100-million-instruction headless startup produced identical complete state dumps. Their median times were 9.19 and 6.42 seconds under concurrent work; this is a bounded startup measurement, not a general game-speed estimate. Both complete runtime versions passed the device, IOS, runtime, graphics, SDP transport and EFB access suites.

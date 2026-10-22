@@ -40,8 +40,8 @@ constexpr std::string_view fog_math_source(std::string_view shader) {
   return shader.substr(first, last - first);
 }
 
-constexpr std::size_t fog_division_count(std::string_view shader) {
-  constexpr std::string_view division = "fog_divide(";
+constexpr std::size_t rounded_division_count(std::string_view shader) {
+  constexpr std::string_view division = "rounded_divide(";
   std::size_t count = 0, position = 0;
   while ((position = shader.find(division, position)) != std::string_view::npos) {
     ++count;
@@ -53,8 +53,9 @@ constexpr std::size_t fog_division_count(std::string_view shader) {
 static_assert(!fog_math_source(compute_source).empty() && !fog_math_source(batch_source).empty() &&
                   fog_math_source(compute_source) == fog_math_source(batch_source),
               "Raster shaders must use identical fog math.");
-static_assert(fog_division_count(compute_source) == 5 && fog_division_count(batch_source) == 5,
-              "Each raster shader must retain one fog division definition and four uses.");
+static_assert(rounded_division_count(compute_source) == 7 &&
+                  rounded_division_count(batch_source) == 7,
+              "Each raster shader must retain one rounded division definition and six uses.");
 
 template <typename T> T load_gl(const char *name) {
   auto function = reinterpret_cast<T>(SDL_GL_GetProcAddress(name));
@@ -127,11 +128,13 @@ struct HardwareRenderer::Impl {
 
   std::array<CachedTexture, 8> textures;
   std::array<u64, 8> uploaded_revisions{};
+  std::array<std::size_t, 8> uploaded_texture_sizes{};
   SDL_Window *window = nullptr;
   SDL_GLContext context = nullptr;
   bool initialized = false, dirty = false;
   u64 dispatches = 0, fallbacks = 0;
   u64 texture_decodes = 0, texture_uploads = 0, texture_snapshot_bytes = 0;
+  u64 texture_upload_bytes = 0;
   u64 xfb_copies = 0, xfb_readback_bytes = 0, efb_readbacks = 0, efb_readback_bytes = 0;
   std::vector<u32> xfb_staging;
   std::size_t xfb_capacity = 0;
@@ -335,18 +338,47 @@ struct HardwareRenderer::Impl {
     changed |= hashes != uploaded_revisions;
     if (changed) {
       flush_batch();
-      std::vector<u32> data(88);
+      std::array<std::size_t, 8> sizes{};
+      std::array<u32, 88> offsets{};
+      std::size_t words = offsets.size();
       for (unsigned unit = 0; unit < 8; ++unit) {
         if (!used[unit])
           continue;
         const auto &cached = textures[unit];
         for (unsigned level = 0; level < 11; ++level)
-          data[unit * 11 + level] = static_cast<u32>(data.size()) + cached.offsets[level];
-        data.insert(data.end(), cached.texels.begin(), cached.texels.end());
+          offsets[unit * 11 + level] = static_cast<u32>(words) + cached.offsets[level];
+        sizes[unit] = cached.texels.size();
+        words += sizes[unit];
       }
       BindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[4]);
-      BufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(data.size() * sizeof(u32)), data.data(),
-                 GL_DYNAMIC_DRAW);
+      if (sizes == uploaded_texture_sizes) {
+        // Stable unit ranges keep unrelated textures resident. Refresh the mip
+        // table too: a new decode can change its offsets without changing size.
+        BufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(offsets), offsets.data());
+        texture_upload_bytes += sizeof(offsets);
+        std::size_t start = offsets.size();
+        for (unsigned unit = 0; unit < 8; ++unit) {
+          if (sizes[unit] && hashes[unit] != uploaded_revisions[unit]) {
+            const auto bytes = sizes[unit] * sizeof(u32);
+            BufferSubData(GL_SHADER_STORAGE_BUFFER, GLintptr(start * sizeof(u32)),
+                          GLsizeiptr(bytes), textures[unit].texels.data());
+            texture_upload_bytes += bytes;
+          }
+          start += sizes[unit];
+        }
+      } else {
+        // A changed layout moves subsequent units, so rebuild the packed image.
+        std::vector<u32> data;
+        data.reserve(words);
+        data.insert(data.end(), offsets.begin(), offsets.end());
+        for (unsigned unit = 0; unit < 8; ++unit)
+          if (used[unit])
+            data.insert(data.end(), textures[unit].texels.begin(), textures[unit].texels.end());
+        BufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(data.size() * sizeof(u32)), data.data(),
+                   GL_DYNAMIC_DRAW);
+        texture_upload_bytes += data.size() * sizeof(u32);
+        uploaded_texture_sizes = sizes;
+      }
       uploaded_revisions = hashes;
       ++texture_uploads;
     }
@@ -811,6 +843,7 @@ HardwareStats HardwareRenderer::synchronize(std::span<u32> colors, std::span<u32
   result.texture_decodes = impl_->texture_decodes;
   result.texture_uploads = impl_->texture_uploads;
   result.texture_snapshot_bytes = impl_->texture_snapshot_bytes;
+  result.texture_upload_bytes = impl_->texture_upload_bytes;
   result.xfb_copies = impl_->xfb_copies;
   result.xfb_readback_bytes = impl_->xfb_readback_bytes;
   result.efb_readbacks = impl_->efb_readbacks;

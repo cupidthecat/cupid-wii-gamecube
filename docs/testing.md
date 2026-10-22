@@ -633,8 +633,8 @@ manifest is
 The full log, JUnit results, scope audit and source manifest remain under
 `.cache/goal-emulation-20261004/linux-fallthrough-fog-runtime-bounds-clang-sanitizers/`.
 This complete pass belongs to that later source, and does not replace the
-earlier 223-file matrix's recorded failures. The current 227-file public
-Debug matrix is still running.
+earlier 223-file matrix's recorded failures. The 227-file public Debug matrix
+had not finished when that receipt was written.
 
 The sealed current GCC core also passes stock-versus-recorder comparisons at
 one billion attempts on both supplied games through the physical Linux
@@ -672,3 +672,46 @@ later replay replacement; they do not compare full RAM or establish gameplay
 audio, save/load or speed. Exact binaries, invocations and checkpoint hashes
 remain in
 `.cache/continuation-runtime-20261005/live-sunshine-cross-platform-prefix.json`.
+
+## 2026-10-22 runtime checkpoint
+
+This checkpoint shares conditional-branch execution between resident groups and
+the interpreter, retains unchanged GPU texture ranges, corrects projected
+division on Intel Iris Xe, implements controller origin calibration, and accepts
+byte-packed Yay0 font masks. Public fixtures cover each behavior. The optional
+compiled comparisons retain their assertions and fail-fast unused services while
+matching the checked APIs at `2c805fee8f232d090c454381bb1b8422242345e1`.
+
+| Build or check | Observed result |
+| --- | --- |
+| Windows MSVC strict Release/LTO | All 63 runnable public and differential scopes pass in 251.25 seconds. The disabled private boot scope is recorded as a skip in that matrix. |
+| Windows opt-in private boot | The same executable passes the separate 10,000-attempt Sunshine boot scope in 0.07 seconds after enabling its local asset configuration. This is an early boot check. |
+| Linux GCC strict Release, pinned dependencies | All 47 public scopes pass, zero skips, in 170.66 seconds. Includes required graphics and the owned Pulse shutdown regression. |
+| Compiled behavioral comparisons | All seventeen pass on both platforms. Linux uses installed compression and SDL libraries for these separate comparisons. |
+| Clang 18 Debug with explicit `-O1`, ASan/UBSan | CPU groups, devices, fonts and all 756 runtime boundary cases pass, zero skips, in 172.54 seconds. Leak and undefined-behavior checks remain enabled. This is separate from the hosted default Debug configuration. |
+| Sanitized OpenGL | Required texture, projected-division and hardware guest-video scopes pass with leak checking on llvmpipe. |
+| Source checks | LLVM 18 formatting, static analysis of all 43 product translation units, and generated audio coefficients pass. |
+
+The original Windows matrix's Intel projection failure remains recorded. A
+runtime-fed compute probe reproduces the one-ULP error and confirms the corrected
+fixed-point coordinate. The repaired full Intel hardware suite passes with no
+projection fallback. The first Linux owned-server regression also remains a
+failure against the unmodified system SDL library. Rebuilding the default pinned,
+patched backend closes that shutdown test; installing a Pulse server alone does
+not fix the system library.
+
+Eight stock startup captures run each supplied game on Windows and Linux with
+software and OpenGL rendering, one billion attempts per capture. Every reported
+non-backend guest-state field, raw frame byte and persisted file matches within
+each game. They reach 72 Sunshine fields and 76 Galaxy fields. These captures
+precede the Intel projection correction and establish startup equivalence for
+that source scope, with host audio disabled. A fresh stock/forwarding-observer
+Sunshine pair on the corrected renderer also matches every final JSON value,
+frame byte and persisted file, including replay-follow counters.
+
+The current Windows host uses an i7-13700H and Intel Iris Xe OpenGL. Linux OpenGL
+uses llvmpipe, not physical GPU acceleration. Commands, source and binary hashes,
+original failures, JUnit files and raw captures remain under the ignored
+`.cache/continuation-20261022/` directory and matching `/root/wii-20261022-*` logs.
+Commercial gameplay, saved level progress, host gameplay audio and full speed
+still require their own evidence.

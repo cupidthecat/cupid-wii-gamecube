@@ -158,7 +158,8 @@ private:
   u32 disc_status_error() const;
   u32 disc_audio_divisor() const;
   void controller_transfer();
-  std::array<u32, 2> pad_data(unsigned port) const;
+  void capture_pad_origin(unsigned port);
+  std::array<u32, 2> pad_data(unsigned port);
   void exi_transfer(unsigned channel);
   u8 ipl_byte(u8 input);
   void start_aram_dma();
@@ -186,6 +187,9 @@ private:
   std::vector<u8> di_data_;
   audio::DiscStream disc_stream_;
   std::array<PadState, 4> pads_{};
+  std::array<PadState, 4> pad_origins_{};
+  std::array<u64, 4> pad_origin_started_{};
+  std::array<bool, 4> pad_origin_held_{};
   std::array<u8, 4> pad_modes_{3, 3, 3, 3};
   std::array<std::array<u32, 3>, 4> si_channels_{};
   std::array<u8, 128> si_buffer_{};

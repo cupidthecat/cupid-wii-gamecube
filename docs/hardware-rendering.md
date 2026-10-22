@@ -38,6 +38,14 @@ source-byte equality. Filter, wrap and LOD-bias changes update GPU sampling
 state without decoding or uploading unchanged texels. A changed reachable mip
 count still invalidates the decode. Cache revisions control GPU uploads.
 
+When enabled units retain their decoded sizes, a changed texture updates only
+its packed buffer range and the mip-offset table. Changing a unit's size or
+enabling or disabling a unit rebuilds the packed buffer. Pending rectangles
+finish before either upload so they retain their original texture contents.
+`texture_upload_bytes` counts host-to-device texture bytes, including the table.
+The required texture suite checks per-unit changes, queued draws, layout changes
+and equal-size decodes with different mip offsets against exact CPU pixels.
+
 Draw-state uploads compare all 256 BP words and all 32 TEV/konst words with
 the last uploaded array. Equal arrays reuse the existing GPU register buffer.
 An identical admitted state also reuses its eligibility result and packed
@@ -47,11 +55,18 @@ commands use a separate parameter buffer and restore the fragment program.
 
 Projected texture coordinates keep the CPU path's float rounding at each step:
 the reciprocal of interpolated W, the Q product, the projected quotient, and
-the S/T products before conversion to signed 17.7 coordinates. The two
-divisions use double intermediates rounded back to float. The shader's
-`precise` qualifier preserves operation order but does not require a driver to
-round float division exactly. An approximate quotient can cross a fixed-point
-sampling boundary and change a filtered texel.
+the S/T products before conversion to signed 17.7 coordinates. Both divisions
+check the estimated quotient against exact double midpoint products and select
+the nearest binary32 value with ties to even. The same helper handles fog
+divisions in both raster shaders. The shader's `precise` qualifier preserves
+operation order but does not require a driver to round division exactly.
+
+The Intel Iris Xe driver reproduced a one-ULP projected-quotient error even
+with double intermediates. It changed the fixed-point coordinate from 49,492
+to 49,491 and selected a different filtered texel. The midpoint correction
+retains GPU execution and restores the exact CPU value. The projection fixture
+checks that boundary in individual and batched dispatches, plus 512 profiles
+with zero and nonzero Q.
 
 Within each fragment, stages reuse the most recently selected coordinate's
 projected S/T values. The first sample also prepares and retains its 2 by 2

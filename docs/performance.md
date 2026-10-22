@@ -427,3 +427,32 @@ Demand-sampling controls range from 0.758 to 1.192 on the shared host.
 The scalar sampler remains in its original translation unit. This component
 result does not explain or erase the combined runtime timings above; see
 [hardware rendering](hardware-rendering.md) for the isolated source and scope.
+
+## Conditional branch dispatch
+
+A shared conditional-branch handler retains its taken decision, avoiding a
+second BO/BI test and the generic instruction decoder in resident groups. The
+native path also avoids looking up a branch in its integer operation cache.
+Taken fallthroughs still end a group, and CTR, LR, cache visibility and event
+budgets retain their existing behavior.
+
+A pinned WSL GCC `-O3` ABBA comparison executes 100 million guest instructions
+per backend per sample, with 50 million two-instruction groups. All samples end
+with the same register value and retirement count.
+
+| Backend | Earlier seconds | Shared-handler seconds |
+| --- | --- | --- |
+| Interpreter | 2.41731, 2.42263 | 2.35108, 2.14140 |
+| Native | 2.39583, 2.48087 | 2.14371, 2.09924 |
+
+These are branch-loop measurements under concurrent host work. They do not
+establish a whole-game speed improvement. The strict CPU suite separately
+passes 1,762,052 complete state and ordered-bus comparisons, with 59,377,974
+grouped retirements. Commands, harness and all samples remain in the local lab
+receipt `cpu-branch-20261022/result.txt`.
+
+The partial texture-upload fixture separately measures host-to-device byte
+counts. With three enabled 64-texel units, changing one unit uploads 608 bytes
+instead of rebuilding all 1,120 bytes. Exact CPU/GPU pixels and queued draw order
+are checked. This reduces upload traffic in that fixture by 45.7 percent; it is
+not a frame-rate measurement.

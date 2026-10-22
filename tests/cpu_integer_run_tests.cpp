@@ -1743,7 +1743,36 @@ void register_branch_condition_tests() {
                 CHECK(pair.run.state().pc == (take ? start + 20 : start + 32));
                 CHECK(pair.run.state().spr[spr::ctr] == final_counter);
                 CHECK(pair.run.state().spr[spr::lr] == (take && link ? start + 8 : 0x12345678));
-                CHECK(pair.run.state().gpr[3] == 1 && pair.run.state().gpr[4] == !take);
+                CHECK(pair.run.state().gpr[3] == 1 && pair.run.state().gpr[4] == u32(!take));
+              }
+  });
+}
+
+void register_branch_target_tests() {
+  each_backend([](Pair &pair) {
+    for (s32 offset : {-32768, -4, 0, 4, 32764})
+      for (unsigned bo : {0u, 4u, 12u, 16u, 20u})
+        for (u32 counter : {0u, 1u, 2u, 0xffffffffu})
+          for (bool condition : {false, true})
+            for (bool absolute : {false, true})
+              for (bool link : {false, true}) {
+                pair.reset();
+                pair.first.state().spr[spr::ctr] = counter;
+                pair.first.state().spr[spr::lr] = 0x12345678;
+                pair.first.state().cr = condition ? 2u << 28 : 0;
+                const u32 branch = (16u << 26) | (bo << 21) | (2u << 16) |
+                                   (static_cast<u32>(offset) & 0xfffc) | (absolute ? 2u : 0u) |
+                                   u32(link);
+                const std::array<u32, 3> words{immediate(14, 3, 3, 1), branch, 0};
+                register_branch_program(pair, 0, words);
+                const u32 final_counter = bo & 4 ? counter : counter - 1;
+                const bool taken = ((bo & 4) || ((final_counter != 0) != ((bo & 2) != 0))) &&
+                                   ((bo & 16) || (condition == ((bo & 8) != 0)));
+                pair.attempt(8, 8, 2);
+                const u32 target = (absolute ? 0 : 0x80001004u) + static_cast<u32>(offset);
+                CHECK(pair.run.state().pc == (taken ? target : 0x80001008u));
+                CHECK(pair.run.state().spr[spr::ctr] == final_counter);
+                CHECK(pair.run.state().spr[spr::lr] == (taken && link ? 0x80001008u : 0x12345678u));
               }
   });
 }
@@ -1995,6 +2024,7 @@ void register_branch_address_tests() {
 
 void register_branch_run_tests() {
   register_branch_condition_tests();
+  register_branch_target_tests();
   register_branch_boundary_tests();
   register_branch_visibility_tests();
   register_branch_guard_tests();

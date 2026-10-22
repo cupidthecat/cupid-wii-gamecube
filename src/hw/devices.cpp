@@ -1000,12 +1000,45 @@ void Devices::finish_disc_command() {
 void Devices::set_pad(unsigned port, const PadState &pad) {
   if (port >= pads_.size())
     throw std::out_of_range("Controller port must be 0 through 3");
+  if (pad.connected != pads_[port].connected) {
+    pad_origins_[port] = PadState{};
+    pad_origin_held_[port] = false;
+    pad_modes_[port] = 3;
+  }
   pads_[port] = pad;
 }
 
-std::array<u32, 2> Devices::pad_data(unsigned port) const {
+void Devices::capture_pad_origin(unsigned port) {
   const auto &pad = pads_[port];
-  const u32 high = (u32(pad.buttons | 0x80) << 16) | (u32(pad.stick_x) << 8) | pad.stick_y;
+  auto &origin = pad_origins_[port];
+  origin.stick_x = pad.stick_x;
+  origin.stick_y = pad.stick_y;
+  origin.cstick_x = pad.cstick_x;
+  origin.cstick_y = pad.cstick_y;
+  origin.left_trigger = pad.left_trigger;
+  origin.right_trigger = pad.right_trigger;
+}
+
+std::array<u32, 2> Devices::pad_data(unsigned port) {
+  const auto &pad = pads_[port];
+  u16 buttons = pad.buttons;
+  if (buttons & 0x2000)
+    capture_pad_origin(port);
+  // Holding X, Y and Start for more than three seconds captures the six analog
+  // origins. The request flag lasts for the response that captures them; the
+  // game then reads the calibration packet before resuming normal pad decoding.
+  const bool held = (buttons & 0xff00) == 0x1c00;
+  if (held != pad_origin_held_[port]) {
+    pad_origin_held_[port] = held;
+    if (held)
+      pad_origin_started_[port] = cycles_;
+  }
+  if (held && u32(cycles_ - pad_origin_started_[port]) > clock_ * 3) {
+    capture_pad_origin(port);
+    buttons |= 0x2000;
+    pad_origin_held_[port] = false;
+  }
+  const u32 high = (u32(buttons | 0x80) << 16) | (u32(pad.stick_x) << 8) | pad.stick_y;
   u32 low;
   switch (pad_modes_[port]) {
   case 1:
@@ -1057,6 +1090,8 @@ void Devices::controller_transfer() {
     si_status_ |= 0x08000000u >> (port * 8);
   } else {
     si_csr_ &= ~0x20000000u;
+    if (pads_[port].buttons & 0x2000)
+      capture_pad_origin(port);
     switch (si_buffer_[0]) {
     case 0:
     case 0xff:
@@ -1071,10 +1106,17 @@ void Devices::controller_transfer() {
       break;
     }
     case 0x41:
-    case 0x42:
+    case 0x42: {
+      const auto &origin = pad_origins_[port];
       std::fill_n(si_buffer_.begin(), 10, u8(0));
-      std::fill_n(si_buffer_.begin() + 2, 4, u8(128));
+      si_buffer_[2] = origin.stick_x;
+      si_buffer_[3] = origin.stick_y;
+      si_buffer_[4] = origin.cstick_x;
+      si_buffer_[5] = origin.cstick_y;
+      si_buffer_[6] = origin.left_trigger;
+      si_buffer_[7] = origin.right_trigger;
       break;
+    }
     default:
       unavailable(si_base + 0x34, true, "Unsupported controller buffer command");
     }

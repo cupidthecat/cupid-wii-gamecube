@@ -148,18 +148,36 @@ void projection_precision_checks() {
   CHECK(statistics.dispatches == 1);
   CHECK(statistics.fragments == 1);
   CHECK(statistics.fallback_rectangles == 0);
-  CHECK(efb[0] == 0x272727);
+  if (efb[0] != 0x272727)
+    throw std::runtime_error(
+        "Projected division boundary software color=" + std::to_string(0x272727) +
+        " hardware color=" + std::to_string(efb[0]) + " device=" + hardware.device());
   CHECK(std::all_of(efb.begin() + 1, efb.end(), [](u32 value) { return value == 0; }));
+  // Exercise the individual dispatch as well as the queued batch shader.
+  work.right = work.bottom = 17;
+  CHECK(hardware.draw(work));
+  const auto individual_statistics = hardware.synchronize(efb, depths);
+  CHECK(individual_statistics.fragments == 17 * 17);
+  CHECK(individual_statistics.fallback_rectangles == 0);
+  for (unsigned y = 0; y < 17; ++y)
+    for (unsigned x = 0; x < 17; ++x)
+      CHECK(efb[y * 640 + x] == 0x272727);
+  work.right = work.bottom = 1;
   std::mt19937 generator(0x338e1cb);
-  work.textures[0][2].value = 0;
-  for (unsigned profile = 0; profile < 256; ++profile) {
+  for (unsigned profile = 0; profile < 512; ++profile) {
     const u32 exponent = u32(100 + generator() % 20);
     const u32 mantissa = u32(generator() & 0x7fffff);
     work.reciprocal_w.value = std::bit_cast<float>((exponent << 23) | mantissa);
     const float expected_u = float(64 + generator() % 1024) / 128.0f;
     const float inverse = 1.0f / work.reciprocal_w.value;
-    work.textures[0][0].value = expected_u / inverse;
-    inputs.uv[0][0] = work.textures[0][0].value * inverse;
+    work.textures[0][2].value = profile < 256
+                                    ? 0
+                                    : std::bit_cast<float>(u32(((110 + generator() % 20) << 23) |
+                                                               (generator() & 0x7fffff)));
+    const float projected_q = work.textures[0][2].value * inverse;
+    const float scale = projected_q != 0 ? inverse / projected_q : inverse;
+    work.textures[0][0].value = expected_u / scale;
+    inputs.uv[0][0] = work.textures[0][0].value * scale;
     const auto sampled = software.shade(inputs);
     CHECK(sampled.has_value());
     CHECK(hardware.draw(work));
@@ -1271,6 +1289,110 @@ void texture_cache_checks(bool measure) {
   }
 }
 
+void texture_partial_upload_checks() {
+  Memory memory{Console::GameCube};
+  std::vector<u8> tmem(1024 * 1024);
+  std::array<u32, 256> bp{};
+  gfx::TevRegisters colors{}, konst{};
+  gfx::HardwareRenderer renderer(memory, tmem);
+  gfx::FragmentShader software(memory, bp, colors, konst, tmem);
+  std::vector<u32> pixels(640 * 528), depths(pixels.size()), expected(pixels.size());
+  renderer.upload(pixels, depths);
+  bp[0] = 1 | (2 << 10);
+  bp[0x28] = 64 | (65 << 12);
+  bp[0x29] = 66;
+  bp[0x41] = 24;
+  bp[0xf6] = 4;
+  bp[0xf7] = 14;
+  bp[0xf3] = (7 << 16) | (7 << 19);
+  for (unsigned unit = 0; unit < 3; ++unit) {
+    const unsigned address = 0x80 + unit;
+    bp[address + 8] = 7 | (7 << 10) | (1 << 20);
+    bp[address + 20] = (0x80000 + unit * 0x1000) >> 5;
+    std::vector<u8> source(1024, u8(20 + unit * 10));
+    memory.copy_in(0x80000 + unit * 0x1000, source);
+    // Later stages add half their texture to the preceding result, making
+    // every resident unit contribute to the checked output.
+    bp[0xc0 + unit * 2] = (unit ? 0xf8d0 : 0xfff8) | (1 << 19);
+    bp[0xc1 + unit * 2] = (7 << 13) | (7 << 10) | (7 << 7) | (4 << 4) | (1 << 19);
+  }
+  gfx::RasterWork work{};
+  work.edges.fill({0, 0, 1});
+  work.textures[0][0].value = work.textures[0][1].value = 0;
+  unsigned index = 0;
+  const auto submit = [&](bool synchronize = true) {
+    work.left = int(index);
+    work.right = work.left + 1;
+    work.bottom = 1;
+    CHECK(renderer.begin(bp, colors, konst));
+    CHECK(renderer.draw(work));
+    gfx::FragmentInputs input;
+    input.uv[0] = {work.textures[0][0].value, work.textures[0][1].value};
+    u32 depth = 0;
+    const auto result = software.shade(input, &depth);
+    CHECK(result.has_value());
+    expected[index++] = (u32((*result)[0]) << 16) | (u32((*result)[1]) << 8) | (*result)[2];
+    if (!synchronize)
+      return gfx::HardwareStats{};
+    const auto stats = renderer.synchronize(pixels, depths);
+    CHECK(stats.fallback_rectangles == 0);
+    CHECK(pixels == expected);
+    return stats;
+  };
+  constexpr u64 table_bytes = 88 * sizeof(u32), unit_bytes = 64 * sizeof(u32);
+  auto stats = submit();
+  CHECK(stats.texture_upload_bytes == table_bytes + 3 * unit_bytes);
+  CHECK(submit().texture_upload_bytes == stats.texture_upload_bytes);
+  for (unsigned unit = 0; unit < 3; ++unit) {
+    memory.write8(0x80000 + unit * 0x1000, u8(61 + unit));
+    const auto next = submit();
+    CHECK(next.texture_decodes == stats.texture_decodes + 1);
+    CHECK(next.texture_uploads == stats.texture_uploads + 1);
+    CHECK(next.texture_upload_bytes - stats.texture_upload_bytes == table_bytes + unit_bytes);
+    stats = next;
+  }
+  // A queued rectangle must see the old source before an in-place upload
+  // changes the unit. Check both pixels only after the second submission.
+  memory.write8(0x80000, 17);
+  submit(false);
+  memory.write8(0x80000, 18);
+  auto next = submit();
+  CHECK(next.texture_upload_bytes - stats.texture_upload_bytes == 2 * (table_bytes + unit_bytes));
+  stats = next;
+  // Changing a middle unit's dimensions shifts the following packed range.
+  bp[0x89] = 15 | (7 << 10) | (1 << 20);
+  next = submit();
+  CHECK(next.texture_upload_bytes - stats.texture_upload_bytes == table_bytes + 4 * unit_bytes);
+  stats = next;
+  // Removing and restoring a middle unit must rebuild even if others reuse
+  // their cached decodes and the final texture still occupies the last stage.
+  bp[0x28] = 64 | (64 << 12);
+  next = submit();
+  CHECK(next.texture_decodes == stats.texture_decodes);
+  CHECK(next.texture_upload_bytes - stats.texture_upload_bytes == table_bytes + 2 * unit_bytes);
+  stats = next;
+  bp[0x28] = 64 | (65 << 12);
+  next = submit();
+  CHECK(next.texture_decodes == stats.texture_decodes);
+  CHECK(next.texture_upload_bytes - stats.texture_upload_bytes == table_bytes + 4 * unit_bytes);
+  // Equal decoded sizes can hide a changed mip layout. The mip table must
+  // update even when the unit and all following units retain their ranges.
+  std::vector<u8> mip_source(1024);
+  for (unsigned i = 0; i < mip_source.size(); ++i)
+    mip_source[i] = u8((i * 7) % 73);
+  memory.copy_in(0x80000, mip_source);
+  bp[0x88] = (15 << 10) | (1 << 20);
+  bp[0x80] = 1 << 5;
+  bp[0x84] = 32 | (32 << 8);
+  stats = submit();
+  bp[0x88] = 1 | (10 << 10) | (1 << 20);
+  bp[0x84] = 16 | (16 << 8);
+  next = submit();
+  CHECK(next.texture_decodes == stats.texture_decodes + 1);
+  CHECK(next.texture_upload_bytes - stats.texture_upload_bytes == table_bytes + 28 * sizeof(u32));
+  std::cout << "Verified partial texture uploads and packed-layout rebuilds\n";
+}
+
 void texture_cache_bank_checks() {
   Memory memory{Console::GameCube};
   std::vector<u8> tmem(1024 * 1024);
@@ -2034,6 +2156,7 @@ int main(int argc, char **argv) {
     if (texture_cache_only) {
       texture_cache_checks(measure);
       texture_cache_bank_checks();
+      texture_partial_upload_checks();
       return;
     }
     if (!fog_only) {
@@ -2048,6 +2171,7 @@ int main(int argc, char **argv) {
       indirect_state_checks();
       texture_cache_checks(false);
       texture_cache_bank_checks();
+      texture_partial_upload_checks();
       xfb_checks(false);
       xfb_clear_checks();
     }

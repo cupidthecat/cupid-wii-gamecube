@@ -58,6 +58,23 @@ registers. Each draw still checks all reachable texture bytes. A
 rejected state leaves the last GPU register array intact. XFB copy and clear
 commands use a separate parameter buffer and restore the fragment program.
 
+The BP indirect-stage count controls indirect texture prefetches. A zero count
+does not disable the TEV stages' coordinate wrapping or add-previous operations.
+The renderer keeps two fragment-program families: generic and zero-prefetch.
+The latter replaces only the prefetch count with a compile-time zero; both
+retain the same stage math, texture latches and draw-admission checks. Each
+family creates its scalar and batched programs on first use, with at most four
+fragment programs per context. Pending draws finish before a state or family
+switch, and each queued batch retains its original family.
+
+Program pairs become available only after both compile and link successfully.
+A failed pair deletes its partial programs and propagates the backend error.
+Compilation and each program's first real dispatch use the default host
+floating-point environment and restore the caller's controls and exception
+flags. This covers drivers that defer compilation until dispatch. Cached
+draws avoid saving the environment. XFB copies restore only an already-used
+scalar program, or program zero until the next draw binds its program.
+
 Projected texture coordinates keep the CPU path's float rounding at each step:
 the reciprocal of interpolated W, the Q product, the projected quotient, and
 the S/T products before conversion to signed 17.7 coordinates. Both divisions
@@ -218,6 +235,27 @@ pixel against the authored gradient result after readback.
 changed BP/TEV/konst words, and a rejected state followed by the preceding
 valid state. It compares the final pixels exactly with the CPU shader.
 Adding `--benchmark` measures 200,000 unchanged begins after those checks.
+
+`--program-cache-only` checks lazy creation and reuse of all four fragment
+programs, zero allocation IDs, partial-pair cleanup after a real compilation
+failure, and successful retry. It compares 200 mixed zero-to-one-through-four
+indirect-stage draws with the CPU renderer, including wrapping, accumulation,
+partial workgroups, rejection, retained maps and rejected-state continuation.
+Another fixture checks 128 first-use and cached draws plus 64 compilation
+failures across all four host rounding modes, mixed x87/SSE controls and
+FTZ/DAZ settings. It checks caller flags at the protected dispatch boundary;
+existing readback-side flag changes are outside that scope. Batch-first use,
+XFB copy and subsequent scalar use exercise the program-restore ordering.
+These checks are also part of the full renderer suite.
+
+The shipping MSVC and GCC builds pass the full renderer, guest-video and FIFO
+environment suites. Clang 18 ASan/UBSan passes those same scopes; a separate
+cache-only run also passes with leak detection enabled. Eight stock OpenGL
+runs across both games and Windows/Linux preserve every reported state field,
+raw frame byte and stored file at the recorded 320/76-field startup bounds.
+The separate frozen cache-only 2,040-field comparison preserves those outputs
+against its plain stock runtime. These checks do not establish full-speed
+gameplay.
 
 A separate 256-profile fixture queues 512 draws across workgroup-edge widths
 and heights, sparse triangle coverage, all depth comparisons, early and late

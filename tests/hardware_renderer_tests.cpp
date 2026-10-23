@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "../src/gfx/hardware_program.hpp"
 #include "cupid/gfx/command_processor.hpp"
 #include "cupid/gfx/xfb_copy.hpp"
 #include "test_support.hpp"
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cfenv>
 #include <chrono>
+#if defined(_M_X64) || defined(__x86_64__)
+#include <immintrin.h>
+#endif
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -1823,6 +1828,584 @@ void xfb_clear_checks() {
   std::cout << "Verified eight queued GPU copy/clear commands with one later EFB readback\n";
 }
 
+struct ProgramTestApi {
+#define CUPID_PROGRAM_TEST_GL(type, name) type name = graphics_function<type>("gl" #name)
+  CUPID_PROGRAM_TEST_GL(PFNGLCREATESHADERPROC, CreateShader);
+  CUPID_PROGRAM_TEST_GL(PFNGLSHADERSOURCEPROC, ShaderSource);
+  CUPID_PROGRAM_TEST_GL(PFNGLCOMPILESHADERPROC, CompileShader);
+  CUPID_PROGRAM_TEST_GL(PFNGLGETSHADERIVPROC, GetShaderiv);
+  CUPID_PROGRAM_TEST_GL(PFNGLGETSHADERINFOLOGPROC, GetShaderInfoLog);
+  CUPID_PROGRAM_TEST_GL(PFNGLDELETESHADERPROC, DeleteShader);
+  CUPID_PROGRAM_TEST_GL(PFNGLCREATEPROGRAMPROC, CreateProgram);
+  CUPID_PROGRAM_TEST_GL(PFNGLATTACHSHADERPROC, AttachShader);
+  CUPID_PROGRAM_TEST_GL(PFNGLLINKPROGRAMPROC, LinkProgram);
+  CUPID_PROGRAM_TEST_GL(PFNGLGETPROGRAMIVPROC, GetProgramiv);
+  CUPID_PROGRAM_TEST_GL(PFNGLGETPROGRAMINFOLOGPROC, GetProgramInfoLog);
+  CUPID_PROGRAM_TEST_GL(PFNGLDELETEPROGRAMPROC, DeleteProgram);
+#undef CUPID_PROGRAM_TEST_GL
+};
+
+struct AllocationTestApi {
+  GLuint shader = 0, program = 0;
+  unsigned shader_creations = 0, program_creations = 0, shader_deletions = 0;
+
+  GLuint CreateShader(GLenum) {
+    ++shader_creations;
+    return shader;
+  }
+
+  void ShaderSource(GLuint, GLsizei, const GLchar *const *, const GLint *) {
+  }
+
+  void CompileShader(GLuint) {
+  }
+
+  void GetShaderiv(GLuint, GLenum, GLint *value) {
+    *value = 1;
+  }
+
+  void GetShaderInfoLog(GLuint, GLsizei, GLsizei *, GLchar *) {
+  }
+
+  void DeleteShader(GLuint value) {
+    CHECK(value == shader && value != 0);
+    ++shader_deletions;
+  }
+
+  GLuint CreateProgram() {
+    ++program_creations;
+    return program;
+  }
+
+  void AttachShader(GLuint, GLuint) {
+  }
+
+  void LinkProgram(GLuint) {
+  }
+
+  void GetProgramiv(GLuint, GLenum, GLint *value) {
+    *value = 1;
+  }
+
+  void GetProgramInfoLog(GLuint, GLsizei, GLsizei *, GLchar *) {
+  }
+
+  void DeleteProgram(GLuint) {
+    CHECK(false);
+  }
+};
+
+void zero_program_creation_checks() {
+  AllocationTestApi allocation;
+  for (const GLuint shader : {0u, 17u}) {
+    allocation = {};
+    allocation.shader = shader;
+    bool failed = false;
+    try {
+      gfx::detail::compile_compute_program(allocation, "unused", "test");
+    } catch (const std::runtime_error &error) {
+      failed = std::string_view(error.what())
+                   .find(shader ? "program creation failed" : "shader creation failed") !=
+               std::string_view::npos;
+    }
+    CHECK(failed && allocation.shader_creations == 1);
+    CHECK(allocation.program_creations == (shader ? 1u : 0u));
+    CHECK(allocation.shader_deletions == (shader ? 1u : 0u));
+  }
+  std::vector<GLuint> deleted;
+  bool failed = false;
+  try {
+    gfx::detail::create_fragment_programs([](bool batch) { return batch ? 0u : 23u; },
+                                          [&](GLuint id) { deleted.push_back(id); });
+  } catch (const std::runtime_error &) {
+    failed = true;
+  }
+  CHECK(failed && deleted == std::vector<GLuint>{23});
+
+  Memory memory{Console::GameCube};
+  std::vector<u8> tmem(1024 * 1024);
+  gfx::HardwareRenderer renderer(memory, tmem);
+  ProgramTestApi api;
+  const auto is_program = graphics_function<PFNGLISPROGRAMPROC>("glIsProgram");
+  GLuint first = 0;
+  failed = false;
+  try {
+    gfx::detail::create_fragment_programs(
+        [&](bool batch) {
+          const char *source = batch ? "#version 430 core\n#error expected test failure\n"
+                                     : "#version 430 core\nlayout(local_size_x=1) in;void main(){}";
+          const GLuint id = gfx::detail::compile_compute_program(api, source, "test");
+          if (!batch)
+            first = id;
+          return id;
+        },
+        [&](GLuint id) { api.DeleteProgram(id); });
+  } catch (const std::runtime_error &error) {
+    failed = std::string_view(error.what()).find("compilation failed") != std::string_view::npos;
+  }
+  CHECK(failed && first != 0 && !is_program(first));
+  const auto retry = gfx::detail::create_fragment_programs(
+      [&](bool) {
+        return gfx::detail::compile_compute_program(
+            api, "#version 430 core\nlayout(local_size_x=1) in;void main(){}", "test");
+      },
+      [&](GLuint id) { api.DeleteProgram(id); });
+  CHECK(retry.scalar != retry.batch && is_program(retry.scalar) && is_program(retry.batch));
+  api.DeleteProgram(retry.scalar);
+  api.DeleteProgram(retry.batch);
+  CHECK(!is_program(retry.scalar) && !is_program(retry.batch));
+  std::cout << "Verified zero shader/program allocation IDs, partial-pair cleanup after real "
+               "compilation failure, and successful retry\n";
+}
+
+struct TestFloatEnvironment {
+  std::fenv_t saved{};
+#if defined(_M_X64) || defined(__x86_64__)
+  unsigned simd = _mm_getcsr();
+#endif
+  TestFloatEnvironment() {
+    CHECK(std::fegetenv(&saved) == 0);
+  }
+
+  ~TestFloatEnvironment() {
+    std::fesetenv(&saved);
+#if defined(_M_X64) || defined(__x86_64__)
+    _mm_setcsr(simd);
+#endif
+  }
+};
+
+struct FloatEnvironmentBits {
+  int round = std::fegetround(), flags = std::fetestexcept(FE_ALL_EXCEPT);
+#if defined(_M_X64) || defined(__x86_64__)
+  unsigned simd = _mm_getcsr();
+  unsigned short control = 0, x87_flags = 0;
+
+  FloatEnvironmentBits() {
+    alignas(16) std::array<unsigned char, 512> state{};
+    _fxsave64(state.data());
+    std::memcpy(&control, state.data(), 2);
+    std::memcpy(&x87_flags, state.data() + 2, 2);
+    x87_flags &= 0x3f;
+  }
+#endif
+  bool operator==(const FloatEnvironmentBits &) const = default;
+};
+
+void zero_first_use_environment_checks() {
+  const TestFloatEnvironment restore;
+  constexpr std::array<int, 4> modes{FE_TONEAREST, FE_TOWARDZERO, FE_UPWARD, FE_DOWNWARD};
+  unsigned draws = 0, failures = 0;
+  for (unsigned mode = 0; mode < modes.size(); ++mode)
+    for (unsigned denormal = 0; denormal < 4; ++denormal) {
+      CHECK(std::fesetenv(FE_DFL_ENV) == 0);
+      Memory memory{Console::GameCube}, cpu_memory{Console::GameCube};
+      std::vector<u8> tmem(1024 * 1024);
+      gfx::HardwareRenderer renderer(memory, tmem);
+      const auto get_integer =
+          graphics_function<void(APIENTRY *)(GLenum, GLint *)>("glGetIntegerv");
+      std::vector<u32> pixels(640 * 528), depths(pixels.size());
+      renderer.upload(pixels, depths);
+      std::array<u32, 256> copy{};
+      copy[0x40] = 16;
+      copy[0x41] = 24;
+      copy[0x4a] = 15 | (15 << 10);
+      copy[0x4b] = 0x20000 >> 5;
+      copy[0x4d] = 1;
+      copy[0x4e] = 256;
+      copy[0x53] = (1 << 12) | (63 << 18);
+      copy[0x52] = (1 << 14) | 3;
+      // Initialize the unchanged XFB program before seeding the host environment.
+      CHECK(renderer.copy_xfb(copy));
+      std::array<u32, 256> bp{};
+      gfx::TevRegisters colors{}, konst{};
+      bp[0xf6] = 4;
+      bp[0xf7] = 14;
+      bp[0x41] = 24;
+      bp[0xf3] = (7 << 16) | (7 << 19);
+      bp[0xc0] = 0xfffa | (1 << 19);
+      bp[0xc1] = (7 << 13) | (7 << 10) | (7 << 7) | (5 << 4) | (1 << 19);
+      gfx::RasterWork work{};
+      work.left = 13;
+      work.top = 11;
+      work.right = 30;
+      work.bottom = 28;
+      work.edges.fill({0, 0, 1});
+      work.reciprocal_w.value = 1;
+      work.depth.value = 12345;
+      for (unsigned c = 0; c < 4; ++c)
+        work.colors[0][c].value = gfx::Color{211, 105, 65, 177}[c];
+      unsigned expected_dispatches = 0;
+      std::array<bool, 2> scalar_used{};
+      for (unsigned maps : {0u, 1u, 0u, 1u})
+        for (const bool batch : {true, false}) {
+          const unsigned extent = batch ? 7 : 17;
+          work.right = work.left + extent;
+          work.bottom = work.top + extent;
+          if (batch) {
+            // The existing GPU XFB table was initialized before the host modes
+            // were seeded. Compute its byte oracle in that same environment.
+            const TestFloatEnvironment oracle_environment;
+            CHECK(std::fesetenv(FE_DFL_ENV) == 0);
+            gfx::copy_efb_xfb(cpu_memory, copy, [&](unsigned x, unsigned y) {
+              const u32 color =
+                  x >= 13 && x < 20 && y >= 11 && y < 18 ? 0xd36941 : pixels[y * 640 + x];
+              return (color << 8) | 255;
+            });
+          }
+          CHECK(std::fesetround(modes[mode]) == 0);
+          CHECK(std::feclearexcept(FE_ALL_EXCEPT) == 0);
+          CHECK(std::feraiseexcept(FE_INVALID | FE_DIVBYZERO) == 0);
+#if defined(_M_X64) || defined(__x86_64__)
+          constexpr unsigned simd_modes[] = {0u, 0x6000u, 0x4000u, 0x2000u};
+          _mm_setcsr((_mm_getcsr() & ~0xe040u) | simd_modes[(mode + 1) % 4] |
+                     ((denormal & 1) ? 0x8000u : 0u) | ((denormal & 2) ? 0x40u : 0u));
+#endif
+          const FloatEnvironmentBits before;
+          bp[0] = 1 | (1 << 4) | (maps << 16);
+          CHECK(renderer.begin(bp, colors, konst));
+          CHECK(renderer.draw(work));
+          if (batch) {
+            // Flush through an ordinary state transition so the initialized
+            // program can be observed before any independent readback calls.
+            auto changed_konst = konst;
+            changed_konst[0][0] ^= 1;
+            CHECK(renderer.begin(bp, colors, changed_konst));
+            CHECK(renderer.begin(bp, colors, konst));
+          } else
+            scalar_used[maps == 0 ? 1 : 0] = true;
+          if (!(FloatEnvironmentBits{} == before)) {
+            const FloatEnvironmentBits after;
+            std::cerr << "environment changed mode=" << mode << " denormal=" << denormal
+                      << " maps=" << maps << " before=" << before.round << ',' << before.flags;
+#if defined(_M_X64) || defined(__x86_64__)
+            std::cerr << ',' << before.simd << ',' << before.control << ',' << before.x87_flags
+                      << " after=" << after.round << ',' << after.flags << ',' << after.simd << ','
+                      << after.control << ',' << after.x87_flags;
+#endif
+            std::cerr << '\n';
+          }
+          CHECK(FloatEnvironmentBits{} == before);
+          const auto stats = renderer.synchronize(pixels, depths);
+          // Existing readback APIs can set host exception flags independently
+          // of program initialization. They must retain the caller's controls.
+          const FloatEnvironmentBits after_readback;
+          CHECK(after_readback.round == before.round);
+#if defined(_M_X64) || defined(__x86_64__)
+          CHECK(after_readback.control == before.control);
+          CHECK((after_readback.simd & ~0x3fu) == (before.simd & ~0x3fu));
+#endif
+          ++expected_dispatches;
+          if (stats.dispatches != expected_dispatches || stats.fragments != extent * extent ||
+              stats.fallback_rectangles != 0)
+            std::cerr << "first-use mode=" << mode << " denormal=" << denormal << " maps=" << maps
+                      << " dispatches=" << stats.dispatches << " fragments=" << stats.fragments
+                      << " fallbacks=" << stats.fallback_rectangles << '\n';
+          CHECK(stats.dispatches == expected_dispatches && stats.fragments == extent * extent &&
+                stats.fallback_rectangles == 0);
+          for (unsigned y = 11; y < 11 + extent; ++y)
+            for (unsigned x = 13; x < 13 + extent; ++x)
+              CHECK(pixels[y * 640 + x] == 0xd36941);
+          if (batch) {
+            CHECK(renderer.copy_xfb(copy));
+            GLint program = -1;
+            get_integer(GL_CURRENT_PROGRAM, &program);
+            if (!scalar_used[maps == 0 ? 1 : 0])
+              CHECK(program == 0);
+            for (unsigned offset = 0; offset < 512; ++offset)
+              if (memory.read8(0x20000 + offset) != cpu_memory.read8(0x20000 + offset)) {
+                std::cerr << "batch-first XFB mismatch mode=" << mode << " denormal=" << denormal
+                          << " maps=" << maps << " offset=" << offset
+                          << " gpu=" << unsigned(memory.read8(0x20000 + offset))
+                          << " cpu=" << unsigned(cpu_memory.read8(0x20000 + offset)) << '\n';
+                break;
+              }
+            CHECK(std::equal(memory.range(0x20000, 512).begin(), memory.range(0x20000, 512).end(),
+                             cpu_memory.range(0x20000, 512).begin()));
+            const FloatEnvironmentBits after_copy;
+            CHECK(after_copy.round == before.round);
+#if defined(_M_X64) || defined(__x86_64__)
+            CHECK(after_copy.control == before.control);
+            CHECK((after_copy.simd & ~0x3fu) == (before.simd & ~0x3fu));
+#endif
+          }
+          ++draws;
+        }
+      ProgramTestApi api;
+      for (unsigned index = 0; index < modes.size(); ++index) {
+        CHECK(std::fesetround(modes[index]) == 0);
+        CHECK(std::feclearexcept(FE_ALL_EXCEPT) == 0);
+        CHECK(std::feraiseexcept(FE_INVALID | FE_DIVBYZERO) == 0);
+#if defined(_M_X64) || defined(__x86_64__)
+        constexpr unsigned simd_modes[] = {0u, 0x6000u, 0x4000u, 0x2000u};
+        _mm_setcsr((_mm_getcsr() & ~0xe040u) | simd_modes[(index + 1) % 4] |
+                   ((denormal & 1) ? 0x8000u : 0u) | ((denormal & 2) ? 0x40u : 0u));
+#endif
+        const FloatEnvironmentBits before;
+        bool failed = false;
+        try {
+          gfx::detail::compile_compute_program(
+              api, "#version 430 core\n#error expected environment test failure\n", "test");
+        } catch (const std::runtime_error &error) {
+          failed =
+              std::string_view(error.what()).find("compilation failed") != std::string_view::npos;
+        }
+        CHECK(failed && FloatEnvironmentBits{} == before);
+        gfx::detail::FragmentPrograms programs{17, 23};
+        for (const bool batch : {false, true}) {
+          for (unsigned failure_stage = 0; failure_stage < 2; ++failure_stage) {
+            volatile unsigned selected_stage = failure_stage;
+            failed = false;
+            const auto fail = [&] {
+              CHECK(std::fegetround() == FE_TONEAREST);
+              std::feraiseexcept(FE_INEXACT);
+              throw std::runtime_error("Expected initialization failure");
+            };
+            try {
+              gfx::detail::dispatch_fragment_program(
+                  programs, batch,
+                  [&](GLuint id) {
+                    CHECK(id == (batch ? 23u : 17u));
+                    if (selected_stage == 0)
+                      fail();
+                  },
+                  [&] {
+                    if (selected_stage == 1)
+                      fail();
+                  });
+            } catch (const std::runtime_error &error) {
+              failed = std::string_view(error.what()) == "Expected initialization failure";
+            }
+            CHECK(failed && !programs.scalar_initialized && !programs.batch_initialized);
+            CHECK(FloatEnvironmentBits{} == before);
+          }
+        }
+        ++failures;
+      }
+    }
+  std::cout << "Verified " << draws << " first-use/cached draws and " << failures
+            << " real compiler failures across host rounding, mixed x87/SSE and FTZ/DAZ; "
+               "pixels, counters and caller environment preserved\n";
+}
+
+void zero_family_lifetime_checks() {
+  Memory memory{Console::GameCube}, cpu_memory{Console::GameCube};
+  std::vector<u8> tmem(1024 * 1024);
+  gfx::HardwareRenderer renderer(memory, tmem);
+  const auto get_integer = graphics_function<void(APIENTRY *)(GLenum, GLint *)>("glGetIntegerv");
+  const auto current_program = [get_integer] {
+    GLint value = -1;
+    get_integer(GL_CURRENT_PROGRAM, &value);
+    return static_cast<GLuint>(value);
+  };
+  CHECK(current_program() == 0);
+  std::vector<u32> pixels(640 * 528, 0x315a87), depths(pixels.size(), 12345);
+  renderer.upload(pixels, depths);
+  std::array<u32, 256> copy{};
+  copy[0x40] = 16;
+  copy[0x41] = 24;
+  copy[0x4a] = 15 | (15 << 10);
+  copy[0x4b] = 0x20000 >> 5;
+  copy[0x4d] = 1;
+  copy[0x4e] = 256;
+  copy[0x53] = (1 << 12) | (63 << 18);
+  copy[0x52] = (1 << 14) | (1 << 11) | 3;
+  gfx::copy_efb_xfb(cpu_memory, copy, [](unsigned, unsigned) { return 0x315a87ffu; });
+  CHECK(renderer.copy_xfb(copy));
+  CHECK(current_program() == 0);
+  CHECK(std::equal(memory.range(0x20000, 512).begin(), memory.range(0x20000, 512).end(),
+                   cpu_memory.range(0x20000, 512).begin()));
+  renderer.synchronize(pixels, depths);
+  std::array<u32, 256> bp{};
+  gfx::TevRegisters colors{}, konst{};
+  bp[0xf6] = 4;
+  bp[0xf7] = 14;
+  bp[0x41] = 24;
+  bp[0xf3] = (7 << 16) | (7 << 19);
+  bp[0xc0] = 0xfffa | (1 << 19);
+  bp[0xc1] = (7 << 13) | (7 << 10) | (7 << 7) | (5 << 4) | (1 << 19);
+  gfx::RasterWork work{};
+  work.left = 13;
+  work.top = 11;
+  work.edges.fill({0, 0, 1});
+  work.reciprocal_w.value = 1;
+  work.depth.value = 12345;
+  for (unsigned c = 0; c < 4; ++c)
+    work.colors[0][c].value = gfx::Color{211, 105, 65, 177}[c];
+  std::array<std::array<GLuint, 2>, 2> programs{};
+  for (unsigned maps : {0u, 4u, 0u, 1u, 0u, 2u, 0u, 3u, 0u, 4u}) {
+    bp[0] = 1 | (1 << 4) | (maps << 16);
+    CHECK(renderer.begin(bp, colors, konst));
+    if (!programs[0][0] && !programs[1][0])
+      CHECK(current_program() == 0);
+    const unsigned family = maps == 0 ? 1 : 0;
+    for (unsigned batch = 0; batch < 2; ++batch) {
+      work.right = work.left + (batch ? 7 : 17);
+      work.bottom = work.top + (batch ? 7 : 17);
+      CHECK(renderer.draw(work));
+      renderer.synchronize(pixels, depths);
+      const GLuint id = current_program();
+      CHECK(id != 0);
+      if (!programs[family][batch])
+        programs[family][batch] = id;
+      CHECK(programs[family][batch] == id);
+    }
+  }
+  const std::array<GLuint, 4> ids{programs[0][0], programs[0][1], programs[1][0], programs[1][1]};
+  for (unsigned i = 0; i < ids.size(); ++i)
+    for (unsigned j = i + 1; j < ids.size(); ++j)
+      CHECK(ids[i] != ids[j]);
+  std::cout << "Verified XFB/clear before raster use and reuse of four lazy scalar/batch "
+               "program IDs across zero/nonzero indirect families\n";
+}
+
+void zero_family_transitions() {
+  Memory memory{Console::GameCube};
+  std::array<u32, 256> bp{};
+  gfx::TevRegisters colors{}, konst{};
+  std::vector<u8> tmem(1024 * 1024);
+  gfx::FragmentShader software(memory, bp, colors, konst, tmem);
+  gfx::FragmentShader hardware(memory, bp, colors, konst, tmem);
+  gfx::HardwareRenderer renderer(memory, tmem);
+  std::vector<u32> cpu_colors(640 * 528), cpu_depths(cpu_colors.size());
+  auto gpu_colors = cpu_colors, gpu_depths = cpu_depths;
+  std::mt19937 generator(0x4120398);
+  for (unsigned i = 0; i < 256; ++i)
+    memory.write8(0x80000 + i, static_cast<u8>(i * 37 + 19));
+  bp[0x80] = 1 | (1 << 2);
+  bp[0x88] = 7 | (7 << 10) | (6 << 20);
+  bp[0x94] = 0x80000 >> 5;
+  bp[0x28] = 64;
+  bp[0x41] = 24;
+  bp[0xf6] = 4;
+  bp[0xf7] = 14;
+  bp[0xc0] = 0xfff8 | (1 << 19);
+  bp[0xc1] = (7 << 13) | (7 << 10) | (7 << 7) | (5 << 4) | (1 << 19);
+  constexpr std::array<int, 8> extents{1, 7, 8, 9, 15, 16, 17, 63};
+  std::fill(cpu_colors.begin(), cpu_colors.end(), 0x315a87);
+  std::fill(cpu_depths.begin(), cpu_depths.end(), 128);
+  gpu_colors = cpu_colors;
+  gpu_depths = cpu_depths;
+  renderer.upload(gpu_colors, gpu_depths);
+  gfx::HardwareStats expected;
+  u64 expected_raster_calls = 0;
+  for (unsigned profile = 0; profile < 100; ++profile) {
+    constexpr std::array<unsigned, 10> map_counts{4, 0, 1, 0, 2, 0, 3, 0, 4, 0};
+    const unsigned maps = map_counts[profile % 10];
+    bp[0] = 1 | (1 << 4) | (1 << 10) | (maps << 16);
+    bp[0x28] = 64 | (64 << 12);
+    bp[0xc2] = bp[0xc0];
+    bp[0xc3] = bp[0xc1];
+    bp[6] = (1 << 22);
+    bp[7] = 0;
+    bp[8] = (1 << 22);
+    bp[0x10] = (maps ? maps - 1 : 3) | ((profile % 7) << 13) | (((profile / 7) % 7) << 16);
+    if (maps)
+      bp[0x10] |= (1 << 9) | (1 << 11) | (1 << 7);
+    bp[0x11] = (1 << 20) | (((profile + 3) % 7) << 13);
+    bp[0x43] = profile & 1 ? 64 : 0;
+    bp[0x40] = profile < 2 ? 0 : 1 | (((profile >> 1) & 7) << 1) | 16;
+    bp[0xf3] = profile < 2 ? (7 << 16) | (7 << 19)
+                           : 137 | (205 << 8) | (((profile >> 3) & 7) << 16) |
+                                 (((profile >> 5) & 7) << 19) | (((profile >> 6) & 3) << 22);
+    gfx::RasterWork work{};
+    const int width = extents[profile % extents.size()];
+    const int height = extents[(profile / extents.size()) % extents.size()];
+    work.left = static_cast<int>(generator() % (641 - width));
+    work.top = static_cast<int>(generator() % (529 - height));
+    work.right = work.left + width;
+    work.bottom = work.top + height;
+    work.edges.fill({0, 0, 1});
+    if (profile % 4 == 2)
+      work.edges[0] = {1, 1, (work.left - work.top) * 16 + 1};
+    if (profile % 4 == 3)
+      work.edges[1] = {0, -1, -(work.left + width / 2) * 16 + 1};
+    work.depth.value = 97;
+    work.depth.dx = 7;
+    work.depth.dy = 11;
+    work.depth.x_origin = work.left;
+    work.depth.y_origin = work.top;
+    work.reciprocal_w.value = 1;
+    work.colors[0][3] = work.depth;
+    work.textures[0][0].value = -3;
+    work.textures[0][0].dx = 0.75f;
+    work.textures[0][0].dy = 0.25f;
+    work.textures[0][1].value = 5;
+    work.textures[0][1].dx = -0.5f;
+    work.textures[0][1].dy = 1.25f;
+    for (unsigned draw = 0; draw < 2; ++draw) {
+      CHECK(renderer.begin(bp, colors, konst));
+      CHECK(renderer.draw(work));
+      for (int by = work.top & ~1; by < work.bottom; by += 2)
+        for (int bx = work.left & ~1; bx < work.right; bx += 2)
+          for (int iy = 0; iy < 2; ++iy)
+            for (int ix = 0; ix < 2; ++ix) {
+              const int x = bx + ix, y = by + iy;
+              if (x < work.left || x >= work.right || y < work.top || y >= work.bottom)
+                continue;
+              bool covered = true;
+              for (const auto &edge : work.edges)
+                covered &= edge.constant + edge.dx * y * 16 - edge.dy * x * 16 > 0;
+              if (!covered)
+                continue;
+              const auto offset = static_cast<unsigned>(y * 640 + x);
+              u32 depth = static_cast<u32>(work.depth.at(x, y));
+              const auto depth_test = [&] {
+                if (!(bp[0x40] & 1))
+                  return true;
+                if (!gfx::compare((bp[0x40] >> 1) & 7, depth, cpu_depths[offset]))
+                  return false;
+                if (bp[0x40] & 16)
+                  cpu_depths[offset] = depth;
+                return true;
+              };
+              const bool early = (bp[0x43] & 64) != 0;
+              if (early && !depth_test())
+                continue;
+              gfx::FragmentInputs inputs;
+              inputs.colors[0][3] =
+                  static_cast<u8>(std::clamp(work.colors[0][3].at(x, y), 0.0f, 255.0f));
+              for (unsigned component = 0; component < 2; ++component) {
+                const auto &plane = work.textures[0][component];
+                inputs.uv[0][component] = plane.at(x, y);
+                inputs.dx[0][component] = plane.at(bx + 1, by) - plane.at(bx, by);
+                inputs.dy[0][component] = plane.at(bx, by + 1) - plane.at(bx, by);
+              }
+              const auto result = software.shade(inputs, &depth);
+              if (!result || (!early && !depth_test()))
+                continue;
+              cpu_colors[offset] =
+                  (u32((*result)[0]) << 16) | (u32((*result)[1]) << 8) | (*result)[2];
+              ++expected.fragments;
+              expected.left = std::min(expected.left, u32(x) & ~1u);
+              expected.right = std::max(expected.right, u32(x) | 1u);
+              expected.top = std::min(expected.top, u32(y) & ~1u);
+              expected.bottom = std::max(expected.bottom, u32(y) | 1u);
+            }
+      work.textures[0][0].value += 2.5f;
+    }
+    expected_raster_calls += (work.right - work.left) * (work.bottom - work.top) <= 256 ? 1 : 2;
+    if (profile == 49 || profile == 79) {
+      auto rejected = bp;
+      rejected[0] &= ~(7u << 16);
+      rejected[0x10] = 1u << 9;
+      CHECK(!renderer.begin(rejected, colors, konst));
+      CHECK(!renderer.fallback_reason().empty());
+    }
+  }
+  const auto actual = renderer.synchronize(gpu_colors, gpu_depths, &hardware);
+  CHECK(actual.dispatches == expected_raster_calls);
+  CHECK(actual.fallback_rectangles == 0);
+  CHECK(actual.fragments == expected.fragments);
+  CHECK(actual.left == expected.left && actual.right == expected.right);
+  CHECK(actual.top == expected.top && actual.bottom == expected.bottom);
+  CHECK(cpu_colors == gpu_colors && cpu_depths == gpu_depths);
+  CHECK(software.texture_state() == hardware.texture_state());
+  std::cout << "Verified 200 mixed0-to-1..4 indirect draws, wrapping/accumulation, partial groups, "
+               "rejection, retained maps and rejected-BP continuation; fragments="
+            << actual.fragments << '\n';
+}
+
 void counter_checks() {
   Memory memory{Console::GameCube};
   std::array<u32, 256> bp{};
@@ -2240,8 +2823,9 @@ int main(int argc, char **argv) {
   bool required = false, measure = false, fog_only = false, texture_cache_only = false,
        xfb_only = false, projection_only = false, state_only = false, fixed_lod_only = false,
        counter_only = false, counter_benchmark_only = false, empty_coverage_only = false,
-       division_identities_exhaustive = false;
+       division_identities_exhaustive = false, program_cache_only = false;
   for (int i = 1; i < argc; ++i) {
+    program_cache_only |= std::strcmp(argv[i], "--program-cache-only") == 0;
     required |= std::strcmp(argv[i], "--require-device") == 0;
     measure |= std::strcmp(argv[i], "--benchmark") == 0;
     fog_only |= std::strcmp(argv[i], "--fog-only") == 0;
@@ -2265,6 +2849,13 @@ int main(int argc, char **argv) {
     return 1;
   }
   return run_tests([&] {
+    if (program_cache_only) {
+      zero_program_creation_checks();
+      zero_first_use_environment_checks();
+      zero_family_lifetime_checks();
+      zero_family_transitions();
+      return;
+    }
     if (division_identities_exhaustive) {
       division_identity_checks(true);
       return;
@@ -2324,6 +2915,10 @@ int main(int argc, char **argv) {
       checks(software, hardware);
       indirect_checks(software, hardware);
       indirect_state_checks();
+      zero_program_creation_checks();
+      zero_first_use_environment_checks();
+      zero_family_lifetime_checks();
+      zero_family_transitions();
       texture_cache_checks(false);
       texture_cache_bank_checks();
       texture_partial_upload_checks();

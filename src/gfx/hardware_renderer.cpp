@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string_view>
 #if CUPID_HAVE_SDL
+#include "hardware_program.hpp"
 #include <SDL.h>
 #include <SDL_opengl.h>
 #include <SDL_opengl_glext.h>
@@ -119,6 +120,7 @@ struct HardwareRenderer::Impl {
   bool state_uploaded = false;
   unsigned texture_count = 0;
   unsigned pending_rectangles = 0;
+  unsigned active_family = 0, queued_family = 0;
   std::vector<std::array<u32, 254>> queued;
   detail::BatchExtent queued_extent;
 
@@ -148,7 +150,10 @@ struct HardwareRenderer::Impl {
   std::vector<u32> xfb_staging;
   std::size_t xfb_capacity = 0;
   std::string device, fallback;
-  GLuint batch_program = 0, program = 0, xfb_program = 0, clear_program = 0;
+
+  // Family zero is generic; family one has no indirect prefetch stages.
+  std::array<detail::FragmentPrograms, 2> fragment_programs{};
+  GLuint xfb_program = 0, clear_program = 0;
   std::array<GLuint, 8> buffers{};
 #define CUPID_GL_FUNCTION(type, name) type name = load_gl<type>("gl" #name)
   CUPID_GL_FUNCTION(PFNGLCREATESHADERPROC, CreateShader);
@@ -183,8 +188,6 @@ struct HardwareRenderer::Impl {
       : memory(guest_memory), texture_memory(guest_texture_memory), window(host_window),
         context(host_context), initialized(true) {
     device = reinterpret_cast<const char *>(GetString(GL_RENDERER));
-    program = compile_program(compute_source, "fragment");
-    batch_program = compile_program(batch_source, "batch fragment");
     xfb_program = compile_program(xfb_source, "XFB");
     clear_program = compile_program(clear_source, "clear");
     GenBuffers(GLsizei(buffers.size()), buffers.data());
@@ -203,30 +206,42 @@ struct HardwareRenderer::Impl {
   }
 
   GLuint compile_program(const char *source, const char *kind) {
-    const GLuint shader = CreateShader(GL_COMPUTE_SHADER);
-    ShaderSource(shader, 1, &source, nullptr);
-    CompileShader(shader);
-    GLint success = 0;
-    GetShaderiv(shader, GL_COMPILE_STATUS, &success);
-    if (!success) {
-      std::array<char, 8192> log{};
-      GetShaderInfoLog(shader, GLsizei(log.size()), nullptr, log.data());
-      DeleteShader(shader);
-      throw std::runtime_error(std::string("Hardware ") + kind +
-                               " compilation failed: " + log.data());
-    }
-    const GLuint linked = CreateProgram();
-    AttachShader(linked, shader);
-    LinkProgram(linked);
-    DeleteShader(shader);
-    GetProgramiv(linked, GL_LINK_STATUS, &success);
-    if (!success) {
-      std::array<char, 8192> log{};
-      GetProgramInfoLog(linked, GLsizei(log.size()), nullptr, log.data());
-      DeleteProgram(linked);
-      throw std::runtime_error(std::string("Hardware ") + kind + " link failed: " + log.data());
-    }
-    return linked;
+    return detail::compile_compute_program(*this, source, kind);
+  }
+
+  static std::string zero_source(std::string_view source) {
+    // Specialize only the prefetch count. Stage wrapping and add-previous
+    // coordinate operations remain in both shader families.
+    constexpr std::string_view marker = "uint indirect_count=(state[0]>>16u)&7u;";
+    const auto pos = source.find(marker);
+    if (pos == std::string_view::npos ||
+        source.find(marker, pos + marker.size()) != std::string_view::npos)
+      throw std::logic_error("Expected one indirect stage declaration");
+    std::string result(source);
+    result.replace(pos, marker.size(), "uint indirect_count=0u;");
+    return result;
+  }
+
+  void ensure_family(unsigned family) {
+    if (fragment_programs[family].scalar)
+      return;
+    const auto scalar = family ? zero_source(compute_source) : std::string{};
+    const auto batch = family ? zero_source(batch_source) : std::string{};
+    fragment_programs[family] = detail::create_fragment_programs(
+        [&](bool batched) {
+          const char *source = batched ? batch_source : compute_source;
+          if (family)
+            source = batched ? batch.c_str() : scalar.c_str();
+          return compile_program(source, batched ? "batch fragment" : "fragment");
+        },
+        [&](GLuint program) { DeleteProgram(program); });
+  }
+
+  template <typename Dispatch>
+  void dispatch_fragment(unsigned family, bool batch, Dispatch dispatch) {
+    ensure_family(family);
+    detail::dispatch_fragment_program(
+        fragment_programs[family], batch, [&](GLuint program) { UseProgram(program); }, dispatch);
   }
 
   bool prepare_textures() {
@@ -413,12 +428,13 @@ struct HardwareRenderer::Impl {
     data[4] = u32(bottom);
     for (std::size_t i = 0; i < queued.size(); ++i)
       std::copy(queued[i].begin(), queued[i].end(), data.begin() + 5 + i * 254);
-    UseProgram(batch_program);
-    BindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[3]);
-    BufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(data.size() * sizeof(u32)), data.data(),
-               GL_DYNAMIC_DRAW);
-    DispatchCompute((right - left + 7) / 8, (bottom - top + 7) / 8, 1);
-    MemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+    dispatch_fragment(queued_family, true, [&] {
+      BindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[3]);
+      BufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(data.size() * sizeof(u32)), data.data(),
+                 GL_DYNAMIC_DRAW);
+      DispatchCompute((right - left + 7) / 8, (bottom - top + 7) / 8, 1);
+      MemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+    });
     ++dispatches;
     queued.clear();
     queued_extent = {};
@@ -428,10 +444,12 @@ struct HardwareRenderer::Impl {
     SDL_GL_MakeCurrent(window, context);
     if (buffers[0])
       DeleteBuffers(GLsizei(buffers.size()), buffers.data());
-    if (program)
-      DeleteProgram(program);
-    if (batch_program)
-      DeleteProgram(batch_program);
+    for (const auto &family : fragment_programs) {
+      if (family.scalar)
+        DeleteProgram(family.scalar);
+      if (family.batch)
+        DeleteProgram(family.batch);
+    }
     if (xfb_program)
       DeleteProgram(xfb_program);
     if (clear_program)
@@ -551,6 +569,7 @@ bool HardwareRenderer::begin(std::span<const u32> bp, const TevRegisters &colors
   }
   if (!impl_->supported)
     return false;
+  impl_->active_family = ((bp[0] >> 16) & 7u) == 0 ? 1u : 0u;
   std::array<u32, 288> state{};
   std::copy_n(bp.begin(), 256, state.begin());
   for (unsigned i = 0; i < 4; ++i)
@@ -744,11 +763,12 @@ bool HardwareRenderer::draw(const RasterWork &work) {
   const u64 area = u64(work.right - work.left) * u64(work.bottom - work.top);
   if (area > 256) {
     impl_->flush_batch();
-    impl_->UseProgram(impl_->program);
-    impl_->BindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->buffers[3]);
-    impl_->BufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(data), data.data());
-    impl_->DispatchCompute((work.right - work.left + 7) / 8, (work.bottom - work.top + 7) / 8, 1);
-    impl_->MemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+    impl_->dispatch_fragment(impl_->active_family, false, [&] {
+      impl_->BindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->buffers[3]);
+      impl_->BufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(data), data.data());
+      impl_->DispatchCompute((work.right - work.left + 7) / 8, (work.bottom - work.top + 7) / 8, 1);
+      impl_->MemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+    });
     ++impl_->dispatches;
   } else {
     auto extent = impl_->queued_extent.including(work.left, work.top, work.right, work.bottom);
@@ -757,6 +777,8 @@ bool HardwareRenderer::draw(const RasterWork &work) {
       extent = impl_->queued_extent.including(work.left, work.top, work.right, work.bottom);
     }
     impl_->queued_extent = extent;
+    if (impl_->queued.empty())
+      impl_->queued_family = impl_->active_family;
     impl_->queued.push_back(data);
     if (impl_->queued.size() == 16)
       impl_->flush_batch();
@@ -840,7 +862,9 @@ bool HardwareRenderer::copy_xfb(std::span<const u32> bp) {
     impl_->MemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
     impl_->dirty = true;
   }
-  impl_->UseProgram(impl_->program);
+  const auto &family = impl_->fragment_programs[impl_->active_family];
+  // A batch-first family has not initialized its scalar program yet.
+  impl_->UseProgram(family.scalar_initialized ? family.scalar : 0);
   return true;
 }
 

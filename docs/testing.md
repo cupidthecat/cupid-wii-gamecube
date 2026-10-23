@@ -809,3 +809,37 @@ static analysis also pass. The 16,384 authored wire cases and sanitizer checks
 are described in [input validation](input.md); exact commands, source hashes
 and the intentionally failing earlier-packer control remain under
 `.cache/continuation-20261022/remote-accel-z-audit/`.
+
+The subsequent FIFO environment packet `b566e7d` passes shipping Windows/Linux
+graphics, vertex, rasterizer, runtime and runtime-group scopes, plus full
+hardware-renderer and guest-video checks. Clang 18 ASan/UBSan and targeted
+format/static checks pass. Eight software comparison pairs across both games,
+platforms and CPU backends retain every reported state value, frame byte and
+stored file. The authored counterexample and original failing source remain
+under `raster-cpu-rounding-audit/`; `fifo-environment-public/shipping-receipt.json`
+records the applied source and shipping checks.
+
+The lazy fragment-program cache packet `d8a88fc` passes full shipping renderer,
+guest-video and FIFO suites on both platforms and under Clang 18 ASan/UBSan.
+A separate cache-only sanitizer run enables leak detection and passes. Eight
+stock OpenGL runs across both games/platforms match full state, frames and
+storage at 320/76 fields. Exact-head packages pass executable verification and
+retain all eleven legal files byte for byte. The first integration attempt's
+direct-GL test linker errors remain preserved beside the corrected SDL-loaded
+test and passing logs in `indirect-zero-study/proposal/`. These local checks
+do not establish full-speed gameplay. The complete hosted matrix at `4418323`
+passes all seven jobs; the newer source scopes await their own full matrices.
+
+The separately frozen Sunshine FLUDD/save capture uses producer `df978ec`,
+USA font slots and NVIDIA 597.30. It ends normally at field 24,000 with 400 raw
+checkpoint pairs, 30 accepted replay histories, zero replay rejections, and
+142 unchanged driver samples. Controlled spray, M removal, coin collection
+and save completion are visible. Only card A changes: 54 container bytes,
+including 29 logical save-payload bytes; card structures remain valid.
+The immutable 1,060-file manifest SHA256 is
+`bad0669944c55d1985bd2094dd2a7a35f72c16aad8075382b420759935adbbcf`.
+Artifacts remain under `frame-observer-df978ec/` in the continuation cache;
+`sunshine-long-card-structure-audit.json` records the card checks. Shared-host
+overlaps, original mistaken controls and observer counter differences remain
+recorded. Current-core plain/passive replay, restart/load and full speed remain
+pending; [compatibility](compatibility.md) states the gameplay scope.

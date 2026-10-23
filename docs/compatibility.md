@@ -1,6 +1,31 @@
 # Compatibility
 
-Complete playability and full-speed execution remain unverified. Current retained captures show Sunshine airstrip movement and jumping on Windows, plus file selection, opening sequences and nonzero guest PCM for both supplied games on Windows and Linux. The table records those captures. Earlier endpoint-audio observations below retain their original source scope and have not been recertified by these runs.
+Complete playability and full-speed execution remain unverified. The frozen
+Windows Sunshine capture below shows controlled FLUDD use and save completion;
+current-core route replay and restart/load remain pending. Other captures and
+endpoint-audio observations retain their own source scopes.
+
+## Frozen Sunshine FLUDD and save capture
+
+The frozen `df978ec` Windows interpreter/OpenGL observer completes 24,000 fields
+normally in 4,306.704763 seconds on NVIDIA 597.30, using validated USA IPL font
+slots. Ordinary input acquires FLUDD, sprays water at field 20,580, clears the
+tank's M mark by 21,660, and collects its coin by 22,080. The game displays
+"Save complete" at 23,760 and remains on its continue prompt at the frame bound.
+
+Only `memory-card-a.raw` changes from the immutable startup seed. Its header,
+both directory copies and allocation checks remain valid. The existing seven-block
+`GMSE01` save retains its identity and chain; 29 bytes of its 57,344-byte logical
+payload change. This establishes an observed guest save and persisted changes,
+without decoding the game-specific save fields or proving restart/load.
+
+The capture shares CPU/GPU resources with recorded correctness work. Its
+checkpoint observer can repartition three GPU diagnostics, so a plain/passive
+current-core route replay remains necessary. First Shine, level completion,
+gameplay host audio and full speed remain unverified. The 1,060-file immutable
+manifest is recorded with the detailed evidence in [testing](testing.md).
+
+## Earlier platform captures
 
 | Game | Platform | Strongest observed behavior | Still unverified |
 | --- | --- | --- | --- |

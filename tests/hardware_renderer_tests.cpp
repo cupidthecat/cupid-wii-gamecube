@@ -21,6 +21,7 @@
 #ifndef SDL_MAIN_HANDLED
 #define SDL_MAIN_HANDLED
 #endif
+#include "quotient_gpu_checks.hpp"
 #include <SDL.h>
 #include <SDL_opengl.h>
 #include <SDL_opengl_glext.h>
@@ -33,6 +34,19 @@ template <typename Function> Function graphics_function(const char *name) {
   if (!result)
     throw std::runtime_error(std::string("Missing graphics test entry point: ") + name);
   return result;
+}
+
+void division_rounding_checks() {
+  Memory memory(Console::GameCube);
+  std::vector<u8> tmem(1024 * 1024);
+  gfx::HardwareRenderer renderer(memory, tmem);
+  constexpr std::string_view raster_source =
+#include "../src/gfx/hardware_shader.inc"
+      ;
+  constexpr auto first = raster_source.find("float divide_estimate("),
+                 last = raster_source.find("bool compare_value(");
+  static_assert(first != std::string_view::npos && last > first);
+  quotient_test::verify_gpu_division(raster_source.substr(first, last - first));
 }
 
 void division_identity_checks(bool exhaustive) {
@@ -2823,7 +2837,8 @@ int main(int argc, char **argv) {
   bool required = false, measure = false, fog_only = false, texture_cache_only = false,
        xfb_only = false, projection_only = false, state_only = false, fixed_lod_only = false,
        counter_only = false, counter_benchmark_only = false, empty_coverage_only = false,
-       division_identities_exhaustive = false, program_cache_only = false;
+       division_identities_exhaustive = false, division_rounding_only = false,
+       program_cache_only = false;
   for (int i = 1; i < argc; ++i) {
     program_cache_only |= std::strcmp(argv[i], "--program-cache-only") == 0;
     required |= std::strcmp(argv[i], "--require-device") == 0;
@@ -2838,6 +2853,7 @@ int main(int argc, char **argv) {
     counter_benchmark_only |= std::strcmp(argv[i], "--counter-benchmark-only") == 0;
     empty_coverage_only |= std::strcmp(argv[i], "--empty-coverage-only") == 0;
     division_identities_exhaustive |= std::strcmp(argv[i], "--division-identities-exhaustive") == 0;
+    division_rounding_only |= std::strcmp(argv[i], "--division-rounding-only") == 0;
   }
   try {
     hardware.graphics.set_hardware_rendering(true);
@@ -2849,6 +2865,10 @@ int main(int argc, char **argv) {
     return 1;
   }
   return run_tests([&] {
+    if (division_rounding_only) {
+      division_rounding_checks();
+      return;
+    }
     if (program_cache_only) {
       zero_program_creation_checks();
       zero_first_use_environment_checks();
@@ -2886,6 +2906,7 @@ int main(int argc, char **argv) {
       return;
     }
     if (projection_only) {
+      division_rounding_checks();
       division_identity_checks(false);
       projection_precision_checks();
       projective_mip_checks();
@@ -2905,6 +2926,7 @@ int main(int argc, char **argv) {
       return;
     }
     if (!fog_only) {
+      division_rounding_checks();
       division_identity_checks(false);
       empty_coverage_checks();
       counter_checks();

@@ -724,6 +724,23 @@ independent host-written buffer inputs. Two deliberately corrupted oracles must
 fail independently before the positive sweep counts. Both shaders' helper
 bodies remain compared at compile time.
 
+The `--division-rounding-only` mode exercises 71,796 cases, including unequal
+finite operands, subnormal and overflow boundaries, signed special values and
+2,048 deliberately poor estimates. An independent integer quotient/remainder
+oracle supplies the expected bits. The test generates its inputs in C++; the
+shaders receive operands and estimate seeds, while expected answers stay on the
+host. Ordinary and forced-estimate programs each run with two output poison
+fills and check the quotient, its complement and a row marker.
+
+This focused gate passes in the Windows MSVC, Linux GCC and Linux Clang
+ASan/UBSan builds, with leak detection enabled for the sanitizer run. Each run
+checks 861,552 GPU output words. The normal suite and `--projection-only` also
+include this gate. It exercises the estimate/correction path that the unit and
+equal-magnitude identity sweeps bypass; complete fragment validation remains a
+separate check.
+
+The complete hardware renderer suites also pass in these three builds.
+
 The exhaustive mode passes on Intel Iris Xe and Linux llvmpipe, including the
 ASan/UBSan build. Full hardware and hardware guest-video tests also pass on
 Windows and Linux. These checks establish exact arithmetic for the tested

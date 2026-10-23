@@ -23,6 +23,16 @@ An unrecognized checksum is rejected with a diagnostic. A correct file size or c
 
 Firmware images remain private local inputs. The project does not distribute firmware or fetch it from the network.
 
+The refreshed local check at `df978ec` reads the three `../bios/*/IPL.bin`
+files without modifying them. Each is 2 MiB; their CRC32 values are
+`dd8cab7c` (EUR), `8bdabbd4` (JAP) and `6d740ae7` (USA). None matches the
+recognized full-ROM table, including after applying the scrambled-region
+transform to check for an already decoded image. Both font streams pass
+structural validation in every container. These inputs can supply validated
+font slots through `--ipl-fonts`; complete firmware remains unidentified.
+Commands, executable and input hashes, diagnostics and the transform check
+remain in `.cache/continuation-20261022/bios-recheck-new-goal/`.
+
 Font reads have a separate path: `--ipl-fonts PATH` validates the two compressed font blocks and their glyph metadata, then exposes those font slots. It supports GameCube and Wii software without accepting the container as validated full firmware. See [font validation](fonts.md).
 
 ## Wii system data

@@ -259,12 +259,32 @@ observer executable remain unchanged. Controllable Mario movement and level
 progress are not reached. The terminal audit and 259-file manifest remain in
 `.cache/continuation-20261022/frame-observer/galaxy-controller-20261022T224649363173Z/`.
 
+A frozen `df978ec` Sunshine run reaches field 11,940 with ordinary movement,
+camera, dialogue and swimming controls, but does not acquire FLUDD. It exits
+abnormally with code `0x6e76003b` before its requested 12,000-field bound. No
+final state or frame is available. All eighteen replay versions are accepted;
+the last complete checkpoint records zero instruction-backing errors. The
+610-file artifact manifest and unchanged-input checks remain in
+`.cache/continuation-20261022/frame-observer-df978ec/sunshine-fludd-20261022T235220329254Z/`.
+
+The terminal polling receipt at `2026-10-23T00:30:37.137660Z` falls inside the
+system log's NVIDIA display-device restart interval, from `00:30:36.632Z` to
+`00:30:38.284Z`, during installation of driver 597.30. This strongly supports
+the driver transition as a cause, without an exact OS exit timestamp or a
+definitive crash diagnosis. A fresh context identifies 597.30; the shipping
+hardware renderer, hardware guest-video tests and all 17,179,869,184 signed
+division identity cases pass on that driver. Earlier 597.16 measurements keep
+their original scope. Logs and source/binary hashes remain in
+`.cache/continuation-20261022/driver-epoch-59730/receipt.json`. This interrupted
+run does not establish clean persistence or any additional gameplay milestone.
+
 ## Firmware and performance
 
 The three local IPL candidates have the expected 2 MiB size but fail recognized full-ROM checksums. Their boot-ROM bytes are not accepted as firmware. The USA container's decompressed font slots pass independent structure checks and supply bounded EXI font reads. It does not provide Wii system data. See [font validation](fonts.md) and [boot requirements](boot.md).
 
 The earlier captures used an Intel Core i9-10900F and NVIDIA RTX 3060. The newer
-native checks use an i7-13700H with Intel Iris Xe; Linux graphics use llvmpipe.
+native checks use an i7-13700H with Intel Iris Xe and NVIDIA RTX 2000 Ada;
+Linux graphics use llvmpipe.
 [Hardware-rendering tests](hardware-rendering.md) execute real compute work and
 pass exact pixel comparisons on their recorded devices. The
 [performance page](performance.md) separates startup and component workloads.

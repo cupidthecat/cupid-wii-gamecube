@@ -418,8 +418,8 @@ std::vector<u8> Remote::data_report() {
   if (acceleration) {
     const auto &a = state_.acceleration;
     packet[2] |= u8((a[0] & 3) << 5);
-    // The behavioral reference's two-bit assignment drops the Z low bit.
-    packet[3] |= u8(((a[1] >> 1) & 1) << 5);
+    // Y and Z have nine wire bits; their bit zero is not reported.
+    packet[3] |= u8((((a[1] >> 1) & 1) << 5) | (((a[2] >> 1) & 1) << 6));
     for (u16 value : a)
       packet.push_back(u8(value >> 2));
   }

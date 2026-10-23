@@ -52,7 +52,7 @@ void remote_reports() {
   receive(remote, 0x22);
   remote.update();
   packet = receive(remote, 0x31);
-  CHECK(packet == std::vector<u8>({0xa1, 0x31, 0x70, 0x28, 128, 128, 129}));
+  CHECK(packet == std::vector<u8>({0xa1, 0x31, 0x70, 0x68, 128, 128, 129}));
   send(remote, {0x12, 2, 0xff});
   CHECK(!remote.take_report());
   remote.update();
@@ -442,10 +442,71 @@ void retained_read_slave() {
   CHECK(camera[4] == 0xf7 && camera[7] == 0x42 && camera[8] == 0);
 }
 
+void ordinary_acceleration_precision() {
+  u64 cases = 0;
+  for (u8 mode : {u8(0x31), u8(0x33), u8(0x35), u8(0x37)}) {
+    Remote remote;
+    RemoteState state;
+    state.connected = state.nunchuk.attached = true;
+    state.nunchuk.stick_x = 10;
+    state.nunchuk.stick_y = 240;
+    state.nunchuk.acceleration = {513, 514, 715};
+    state.nunchuk.c = true;
+    remote.set_state(state);
+    remote.set_linked(true);
+    remote.update();
+    receive(remote, 0x20);
+    const auto eeprom = std::vector<u8>(remote.eeprom().begin(), remote.eeprom().end());
+    const auto calibration = read_bytes(remote, 0x52, 0x20, 16);
+    send(remote, {0x12, 2, mode});
+    receive(remote, 0x22);
+    for (unsigned z = 0; z < 1024; ++z) {
+      for (unsigned y_low = 0; y_low < 4; ++y_low) {
+        constexpr std::array<u16, 4> button_patterns{0, 0x9f1f, 0xffff, RemoteA | RemotePlus};
+        state.buttons = button_patterns[(z + y_low) & 3];
+        state.acceleration = {u16((z * 37 + y_low) & 1023), u16(((z * 53) & 1020) | y_low), u16(z)};
+        remote.set_state(state);
+        remote.update();
+        const auto packet = receive(remote, mode);
+        CHECK(packet.size() == (mode == 0x31 ? 7u : mode == 0x33 ? 19u : 23u));
+        const u16 core = u16(u16(packet[2]) | (u16(packet[3]) << 8));
+        CHECK((core & 0x9f1f) == (state.buttons & 0x9f1f));
+        CHECK((packet[2] & 0x80) == 0);
+        // Receive-side decoding: X is ten bits, Y/Z omit bit zero.
+        const unsigned x = unsigned(packet[4]) * 4 + ((packet[2] / 32) % 4);
+        const unsigned y = unsigned(packet[5]) * 4 + ((packet[3] / 16) & 2);
+        const unsigned decoded_z = unsigned(packet[6]) * 4 + ((packet[3] / 32) & 2);
+        CHECK(x == state.acceleration[0]);
+        CHECK(y == (state.acceleration[1] & 0x3feu));
+        CHECK(decoded_z == (state.acceleration[2] & 0x3feu));
+        if (mode == 0x33 || mode == 0x37) {
+          const unsigned count = mode == 0x33 ? 12 : 10;
+          CHECK(std::all_of(packet.begin() + 7, packet.begin() + 7 + count,
+                            [](u8 value) { return value == 0xff; }));
+        }
+        if (mode == 0x35 || mode == 0x37) {
+          const unsigned first = mode == 0x35 ? 7 : 17;
+          constexpr std::array<u8, 6> extension{10, 240, 128, 128, 178, 0xe5};
+          CHECK(std::equal(extension.begin(), extension.end(), packet.begin() + first));
+          CHECK(std::all_of(packet.begin() + first + extension.size(), packet.end(),
+                            [](u8 value) { return value == 0; }));
+        }
+        ++cases;
+      }
+    }
+    const auto after_calibration = read_bytes(remote, 0x52, 0x20, 16);
+    CHECK(std::equal(calibration.begin() + 7, calibration.end(), after_calibration.begin() + 7));
+    CHECK(std::equal(eeprom.begin(), eeprom.end(), remote.eeprom().begin()));
+  }
+  CHECK(cases == 16384);
+  std::cout << "Ordinary acceleration wire cases: " << cases << '\n';
+}
+
 } // namespace
 
 int main() {
   return run_tests([] {
+    ordinary_acceleration_precision();
     remote_reports();
     full_infrared();
     remote_memory();

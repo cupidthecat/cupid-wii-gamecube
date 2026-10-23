@@ -478,6 +478,13 @@ shared transport stopped. The private paired receipt is
 root, with SHA-256
 `f8f1a6c4e824e56573ce951e00a71351964728c8b56c0d2b5201f11fdf652033`.
 
+A fresh read-only probe at `df978ec` receives one successful shared-server
+reply identifying PulseAudio 16.1 and `RDPSink` at signed 16-bit stereo
+44.1 kHz. The next query fails with connection refusal. No audio stream is
+opened and no shared service is restarted. The first reply does not establish
+transport recovery or waveform delivery. Both observations are recorded in
+`.cache/continuation-20261022/linux-shared-audio-probe/receipt.json`.
+
 ## Behavior mapping
 
 | Behavior | Pinned files and functions | Product |

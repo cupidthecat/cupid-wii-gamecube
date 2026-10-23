@@ -784,3 +784,28 @@ CLI checks follow that cleanup. Receipts and exact source hashes remain under
 `scalar-packet-applied/`, `scalar-packet-applied-final/` and
 `{windows,linux}-scalar-packet-stock-pairs/` in the continuation cache. They
 establish the recorded source slices without a gameplay speed claim.
+
+The subsequent `df978ec` checkpoint passes all seven jobs in its
+[hosted matrix](https://github.com/cupidthecat/cupid-wii-gamecube/actions/runs/39874113702):
+Windows, three Linux Release configurations, GCC and Clang sanitizers, and
+source checks. Its local Windows and Linux packages also pass executable
+verification. After the host's NVIDIA driver changes from 597.16 to 597.30,
+the unchanged shipping renderer and hardware guest-video suites pass again,
+along with all 17,179,869,184 signed division identity cases. The device-change
+receipt is `.cache/continuation-20261022/driver-epoch-59730/receipt.json`.
+
+A fresh check of the shared WSLg display also selects Mesa 25.2.8 llvmpipe,
+with acceleration reported as unavailable. Single-process D3D12 and Intel
+adapter requests retain that software renderer and report no DRI3 support on
+the screen. An exposed GPU bridge device alone does not qualify acceleration.
+The probes change no shared configuration; their logs remain under
+`.cache/continuation-20261022/linux-graphics-probe/`.
+
+The ordinary Remote acceleration correction passes rebuilt `remote`,
+`remote_speaker`, `extension_cipher`, `ios`, `input_replay` and
+`input_replay_follow_guest` shipping targets on Windows MSVC and pinned Linux
+GCC. All six tests pass on each platform. Clang 18 formatting and targeted
+static analysis also pass. The 16,384 authored wire cases and sanitizer checks
+are described in [input validation](input.md); exact commands, source hashes
+and the intentionally failing earlier-packer control remain under
+`.cache/continuation-20261022/remote-accel-z-audit/`.

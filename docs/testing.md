@@ -1004,3 +1004,47 @@ remain under `tile-list-feasibility/` and `tile-capture-independent-review/`
 in the continuation cache. No offline GPU replay, tile shader or timer query
 has yet been run for this packet, so capture validity is not a GPU correctness
 or performance result.
+
+A later frozen-d8 Sunshine interpreter continuation ends abnormally at field
+44,158, after 350,648,336,438 retired instructions and 350,648,712,764 attempts.
+The actual child returns 4 with a renderer depth-origin range error at
+`0x802edf08`. The JSON outcome is `unsupported-instruction`, but the diagnostic
+originates in rasterization; it does not demonstrate missing CPU opcode support.
+All nineteen replay versions are accepted without rejection. The capture retains
+735 committed checkpoints and the final state/frame; all 533 images through
+31,980 match the earlier native route. The final card remains byte-identical to
+the earlier save, with no first Shine or new saved-level progress established.
+Independent review rehashes all 948 sealed files. Its manifest SHA256 is
+`61dcbccee4588eb3961f4f646caf3ea98e4882091bad584e58afeb41b48be9bb`.
+The terminal time is a polling observation. No restart or extension occurs.
+Evidence remains under
+`passive-frame-observer/sunshine-first-shine-plan-20261023T083849061078Z/`
+in the continuation cache. Actual failing vertex/projection values are absent,
+so source arithmetic studies remain separate from a reproduced game fix.
+
+A private retired-instruction census passes eighteen C++ gates and six CPU
+layout checks across strict MSVC, GCC and Clang 18 ASan/UBSan builds. Actual
+compiler/link commands and coherent source/header/library bindings are checked;
+external static dependencies remain uninstrumented. Collector lifetime,
+overflow, reset/thread misuse, retirement and exception controls pass alongside
+the existing integer-run, native-integer, runtime-group and event-budget suites.
+One valid and eight negative binary-schema fixtures and a separate export
+verification also pass. All 53 command children have actual terminal and owned
+process-cleanup receipts. Earlier compiler, fixture and insufficient-deadline
+failures remain preserved. The successful gate receipt SHA256 is
+`933aa369d0c0b5e42ece7757c8d34192d8222f87c967c5b419fe42eed0745cfd`.
+
+Sixteen subsequent serial startup children compare stock and census builds
+on Windows and GCC, using both CPU backends, software graphics and no host
+audio. All eight pairs match complete JSON with zero exclusions, raw frames
+and the full stored-file tree. Sunshine reaches 320 fields and Galaxy 76.
+Every table sum equals its retired-instruction delta, including apploader
+execution from the initial zero counter. Full path tables match across
+platforms; path-summed raw bins match across backends. Independent review
+rehashes all 387 sealed files and recomputes these comparisons and counts.
+The parity receipt SHA256 is
+`c5e08d073198ec2ce4f695e01646c3602ffe7d2e139e3a504e27c471dac144f4`.
+Evidence remains under `retired-instruction-census/runner-v5/` in the continuation
+cache. These are bootstrap/startup frequencies, not a host-time profile,
+full-route neutrality result or gameplay FPS measurement. No census-based CPU
+admission change is integrated.

@@ -50,6 +50,19 @@ mistaken digital-trigger value is rejected before application and retained
 in the input history. The final card bytes match the earlier 24,000-field save.
 Host audio remains disabled, and no speed or saved-level restoration is claimed.
 
+A later frozen-d8 interpreter continuation matches all 533 native checkpoint
+frames through field 31,980, then continues with ordinary movement and aiming.
+It stops at field 44,158 with a renderer X/Y depth-origin range error at
+`0x802edf08`, returning code 4. All nineteen replay versions are accepted;
+735 checkpoint frames and the final state/frame remain sealed. The final card
+bytes match the earlier save. No first Shine or clean completion is established.
+
+The error concerns a projected interpolation origin, rather than a demonstrated
+unsupported CPU operation. The original capture contains no failing vertex or
+numeric projection dump, so its exact cause remains under investigation.
+Source analysis and synthetic arithmetic proposals do not yet establish a fix
+for this game stop. Detailed failure evidence is recorded in [testing](testing.md).
+
 ## Frozen Sunshine FLUDD and save capture
 
 The frozen `df978ec` Windows interpreter/OpenGL observer completes 24,000 fields

@@ -154,6 +154,10 @@ stages keep earlier samples even when several draws remain pending. Alpha and
 late depth rejection still update those latches; early depth rejection leaves
 them intact. Synchronization restores the complete sampled state to the CPU
 shader before a continuation that needs retained values.
+When several of the six restoration slots select the same pixel, synchronization
+reads that pixel once and reuses its eight state words. Sequence prefixes may
+differ while selecting the same pixel. The local lookup ends with each call,
+so later dirty synchronization reads the updated GPU state.
 
 Color and depth pokes obey the CPU framebuffer address selectors and update
 their selected EFB pixels independently of GX blend/depth write masks.

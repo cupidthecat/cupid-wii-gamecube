@@ -1213,12 +1213,12 @@ not record elapsed time. The buffered CI timestamps cannot establish which
 stage consumed the cumulative deadline. The committed trees match; checkout
 and generated SDL revision metadata differ, and binary equality is unproven.
 
-Additional `[renderer-time]` lines now report integral milliseconds from main
-entry and around each existing stage, including fixture construction and
-backend setup. The original marker lines, cases, order and 600-second deadline
-remain unchanged. Timing calls stay outside check functions and their floating
-environment guards. `stage_ms` includes the begin timing log, the function and
-its local destructors, and the original returned marker; it excludes the final
+Test commit `5781117681a0` adds `[renderer-time]` lines for integral milliseconds
+from main entry and around each existing stage, including fixture construction
+and backend setup. That diagnostic change preserves the original marker lines,
+cases, order and 600-second deadline. Timing calls stay outside check functions
+and their floating environment guards. `stage_ms` includes the begin timing
+log, the function and its local destructors, and the original returned marker; it excludes the final
 timing log. These diagnostics can perturb scheduling and do not explain a
 previous timeout. An unfinished stage still lacks a completed duration.
 
@@ -1233,6 +1233,59 @@ terminate with complete pipe drains and cleanup. Root acceptance SHA256 is
 `0fcb22092b3b414ae1a1ba94ca5a6ab3b789398d45b428df62c5052b73c48fb6`.
 These runs share the host with the fixed Sunshine replay and qualify the test
 change's correctness, without isolating timing or explaining the hosted timeout.
+
+For test commit `5781117681a0`, the Windows renderer passes in 379.55 seconds in
+the [push job](https://github.com/cupidthecat/cupid-wii-gamecube/actions/runs/40027321832/job/120666650787).
+The [pull-request job](https://github.com/cupidthecat/cupid-wii-gamecube/actions/runs/40027328389/job/120666675046)
+reaches the cumulative 600.05-second timeout. Its XFB clear check returns at
+581,176 milliseconds after taking 5,041 milliseconds; the division-fragment
+check then starts. The first-use environment check completes in both jobs,
+taking 232,997 and 388,214 milliseconds respectively. All sixteen environment
+rows complete. These timings locate the cost in these attempts; they do not
+establish why the older job timed out or prove that a particular check hung.
+All seven push jobs pass. The pull-request matrix passes six jobs and retains
+this Windows timeout; both GCC and Clang sanitizer jobs pass in each matrix.
+
+CTest runs the four program-cache checks through the existing
+`--program-cache-only` route in `hardware_renderer_program_cache`. The
+`hardware_renderer` entry uses `--skip-program-cache-checks` for the remaining
+checks. Both entries require a device when configured to do so, retain a
+600-second limit and preserve every assertion. Their combined maximum budget
+is 1,200 seconds, with separate process and backend startup. The compiler checks
+retain all 128 draws, 64 compiler failures and sixteen environment rows. Running
+the executable without selectors still executes the complete combined suite.
+Use `ctest -R hardware_renderer` to select both entries; an exact
+`^hardware_renderer$` filter selects only the remaining checks. Fresh CMake
+registrations pass with required hardware, optional hardware and headless
+sanitizer configurations. Four local invocations pass: Windows runs the two
+partitions separately; GCC and Clang ASan/UBSan run the combined suite. Hosted
+validation of the changed registrations is pending.
+
+The renderer reuses a state-buffer pixel read within one synchronization when
+several latch slots select that pixel. Different sequence prefixes can select
+the same pixel, so the lookup uses the decoded pixel address. The local cache
+holds at most six entries and ends with the synchronization call. It preserves
+the existing buffer binding and transfer for the first read of each pixel.
+
+A regression checks coincident and distinct pixels, sequence prefixes, changed
+palettes, clean synchronization, null-recipient draining and later recovery.
+Both scalar and batch draws validate complete shader state, EFB color and
+depth, counters and untouched sentinels. In the fixed traced fixture, each of
+three compiler profiles reads 20 pixels instead of 60 with identical results.
+The four full-suite runs use untraced private binaries and empty stderr. Root
+acceptance SHA256 is
+`abd11179fbd9062d1803fff9be5bf57faed63c072ab78868643c695ba8c43df5`.
+Two Windows interpreter/OpenGL startup runs use the candidate renderer with
+the accepted main objects and remaining core. Each reaches one billion
+attempts and 72 VI fields. All 60 JSON fields and actual JSON/stdout bytes,
+raw final frames and four stored files match the accepted baseline and each
+other. The passive field-60 frame also matches. Root acceptance SHA256 is
+`a299dd2cc765eae52a2b373496b53fc82c72cde249e1ffc162cef0b7976da04d`.
+These links retain the accepted main objects' older commit metadata.
+
+The public source adds formatting changes to those tested private inputs;
+its exact compiled bytes still require hosted validation. These startup and
+fixture checks do not establish a gameplay speedup or qualify the long route.
 
 ## 2026-10-23 scalar RAM admission study
 

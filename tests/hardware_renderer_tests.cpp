@@ -1437,6 +1437,180 @@ void fog_bucket_checks() {
   std::cout << "Verified " << cases << " exponential fog bucket-boundary pixels without fallback\n";
 }
 
+void latch_state_readback_checks() {
+  // One context covers both dispatch paths; each row starts with an explicit upload.
+  Memory memory{Console::GameCube};
+  std::array<u32, 256> bp{};
+  gfx::TevRegisters colors{}, konst{};
+  std::vector<u8> tmem(1024 * 1024);
+  gfx::FragmentShader shader(memory, bp, colors, konst, tmem);
+  gfx::HardwareRenderer renderer(memory, tmem);
+  constexpr std::array<std::array<gfx::Color, 5>, 2> texels{{{{{17, 51, 85, 119},
+                                                               {23, 47, 71, 95},
+                                                               {29, 53, 79, 101},
+                                                               {31, 59, 83, 107},
+                                                               {37, 61, 89, 109}}},
+                                                             {{{129, 65, 33, 241},
+                                                               {43, 67, 91, 113},
+                                                               {47, 71, 97, 127},
+                                                               {53, 73, 101, 131},
+                                                               {59, 79, 103, 137}}}}};
+  const gfx::FragmentTextureState first{
+      {85, 51, 17, 119},
+      {17, 51, 85, 119},
+      {{{23, 47, 71, 95}, {29, 53, 79, 101}, {31, 59, 83, 107}, {37, 61, 89, 109}}},
+      {160, -288}};
+  const gfx::FragmentTextureState second{
+      {33, 65, 129, 241},
+      {129, 65, 33, 241},
+      {{{43, 67, 91, 113}, {47, 71, 97, 127}, {53, 73, 101, 131}, {59, 79, 103, 137}}},
+      {-192, 352}};
+  const gfx::FragmentTextureState sentinel{
+      {1, 2, 3, 4},
+      {5, 6, 7, 8},
+      {{{9, 10, 11, 12}, {13, 14, 15, 16}, {17, 18, 19, 20}, {21, 22, 23, 24}}},
+      {-777, 888}};
+  const auto seed_recipient = [&] {
+    shader.restore_texture_state(sentinel.texture, sentinel.raw);
+    shader.restore_indirect_coordinates(sentinel.coordinates);
+    for (unsigned stage = 0; stage < 4; ++stage)
+      shader.restore_indirect_texture(stage, sentinel.indirect[stage]);
+  };
+  const auto fill_textures = [&](unsigned generation) {
+    for (unsigned unit = 0; unit < 5; ++unit) {
+      std::array<u8, 64> tile{};
+      const auto &value = texels[generation][unit];
+      for (unsigned pixel = 0; pixel < 16; ++pixel) {
+        tile[pixel * 2] = value[3];
+        tile[pixel * 2 + 1] = value[0];
+        tile[32 + pixel * 2] = value[1];
+        tile[33 + pixel * 2] = value[2];
+      }
+      memory.copy_in(0x80000 + unit * 64, tile);
+      const unsigned address = 0x80 + (unit & 3) + ((unit & 4) << 3);
+      bp[address + 8] = 3 | (3 << 10) | (6 << 20);
+      bp[address + 20] = (0x80000 + unit * 64) >> 5;
+    }
+  };
+  bp[0x27] = 1 | (2 << 6) | (3 << 12) | (4 << 18);
+  bp[0x40] = 1 | 14 | 16;
+  bp[0x41] = 24;
+  bp[0xf3] = (7 << 16) | (7 << 19);
+  bp[0xf6] = 4;
+  bp[0xf7] = 14;
+  bp[0xf8] = 6;
+  bp[0xf9] = 12;
+  // Raster output stays constant; texture swap1 exchanges red and blue.
+  bp[0xc0] = 0xfffa | (1 << 19);
+  bp[0xc1] = (7 << 13) | (7 << 10) | (7 << 7) | (5 << 4) | (1 << 19) | 4;
+  u64 completed_draws = 0, completed_readbacks = 0;
+  for (bool scalar : {false, true}) {
+    std::vector<u32> expected_colors(640 * 528, 0x13579b);
+    std::vector<u32> expected_depths(expected_colors.size(), 0x2468ac);
+    auto gpu_colors = expected_colors, gpu_depths = expected_depths;
+    renderer.upload(gpu_colors, gpu_depths);
+    u64 draws = 0, pending = 0, readbacks = 0;
+    u32 left = 0xffffffff, right = 0, top = 0xffffffff, bottom = 0;
+    const auto submit = [&](int x, int y, bool direct, unsigned maps, float s, float t) {
+      bp[0] = 1 | (1 << 4) | (maps << 16);
+      bp[0x28] = direct ? 64 : 0;
+      gfx::RasterWork work{};
+      work.left = x;
+      work.top = y;
+      work.right = x + (scalar ? 17 : 1);
+      work.bottom = y + (scalar ? 17 : 1);
+      // Integer samples satisfying x>=X, y>=Y and x+y<=X+Y select only (X,Y).
+      work.edges = {{{0, -1, 1 - 16 * x}, {1, 0, 1 - 16 * y}, {-1, 1, 1 + 16 * (x + y)}}};
+      unsigned covered = 0;
+      for (int py = work.top; py < work.bottom; ++py)
+        for (int px = work.left; px < work.right; ++px)
+          covered += std::all_of(work.edges.begin(), work.edges.end(), [&](const auto &edge) {
+            return edge.constant + edge.dx * py * 16 - edge.dy * px * 16 > 0;
+          });
+      CHECK(covered == 1);
+      work.depth.value = 73;
+      work.reciprocal_w.value = 1;
+      for (unsigned channel = 0; channel < 4; ++channel)
+        work.colors[0][channel].value = gfx::Color{73, 151, 217, 255}[channel];
+      work.textures[0][0].value = s;
+      work.textures[0][1].value = t;
+      CHECK(renderer.begin(bp, colors, konst));
+      CHECK(renderer.draw(work));
+      expected_colors[y * 640 + x] = 0x4997d9;
+      expected_depths[y * 640 + x] = 73;
+      ++draws;
+      ++pending;
+      left = std::min(left, u32(x) & ~1u);
+      right = std::max(right, u32(x) | 1u);
+      top = std::min(top, u32(y) & ~1u);
+      bottom = std::max(bottom, u32(y) | 1u);
+    };
+    const auto synchronize = [&](const gfx::FragmentTextureState &expected, bool recipient = true) {
+      if (pending)
+        ++readbacks;
+      const auto stats =
+          renderer.synchronize(gpu_colors, gpu_depths, recipient ? &shader : nullptr);
+      CHECK(stats.dispatches == completed_draws + draws && stats.fragments == pending);
+      CHECK(stats.fallback_rectangles == 0);
+      CHECK(stats.left == left && stats.right == right && stats.top == top &&
+            stats.bottom == bottom);
+      CHECK(stats.efb_readbacks == completed_readbacks + readbacks);
+      CHECK(stats.efb_readback_bytes == (completed_readbacks + readbacks) *
+                                            (gpu_colors.size() + gpu_depths.size()) * sizeof(u32));
+      CHECK(gpu_colors == expected_colors && gpu_depths == expected_depths);
+      CHECK(shader.texture_state() == expected);
+      pending = 0;
+      left = top = 0xffffffff;
+      right = bottom = 0;
+    };
+    fill_textures(0);
+    seed_recipient();
+    submit(7, 7, true, 4, 1.25f, -2.25f);
+    synchronize(first); // All six restorations select one pixel.
+
+    submit(7, 7, true, 4, 1.25f, -2.25f);
+    submit(7, 7, false, 0, 3.25f, -2.5f);
+    auto expected = first;
+    expected.coordinates = {416, -320};
+    synchronize(expected); // New coordinate key, older texture/map keys, same pixel.
+    seed_recipient();
+    synchronize(sentinel); // A clean synchronization must not restore old keys.
+    fill_textures(1);
+    submit(7, 7, true, 4, -1.5f, 2.75f);
+    synchronize(second); // Same pixel, new dirty synchronization and new values.
+
+    fill_textures(0);
+    submit(7, 7, true, 0, 1.25f, -2.25f);
+    submit(8, 7, false, 4, 1, 1);
+    fill_textures(1);
+    submit(7, 8, false, 3, 2, 2);
+    fill_textures(0);
+    submit(8, 8, false, 2, 3, 3);
+    fill_textures(1);
+    submit(9, 8, false, 1, 4, 4);
+    submit(10, 8, false, 0, 4.5f, -3.75f);
+    expected = first;
+    expected.indirect = {
+        {{43, 67, 91, 113}, {29, 53, 79, 101}, {53, 73, 101, 131}, {37, 61, 89, 109}}};
+    expected.coordinates = {576, -480};
+    synchronize(expected); // Six distinct sources span both 2x2 parity bits and blocks.
+
+    fill_textures(1);
+    submit(7, 7, true, 4, -1.5f, 2.75f);
+    synchronize(expected, false); // A null recipient drains, but does not restore.
+    seed_recipient();
+    synchronize(sentinel);
+    submit(7, 7, true, 4, 2.5f, -1.5f);
+    expected = second;
+    expected.coordinates = {320, -192};
+    synchronize(expected);
+    completed_draws += draws;
+    completed_readbacks += readbacks;
+  }
+  std::cout << "Verified coincident, distinct and sequence-prefixed latch state across "
+               "scalar/batch synchronizations and null-recipient drains\n";
+}
+
 void indirect_state_checks() {
   Memory memory{Console::GameCube};
   std::array<u32, 256> bp{};
@@ -3132,9 +3306,10 @@ int main(int argc, char **argv) {
        xfb_only = false, projection_only = false, state_only = false, fixed_lod_only = false,
        counter_only = false, counter_benchmark_only = false, empty_coverage_only = false,
        division_identities_exhaustive = false, division_rounding_only = false,
-       program_cache_only = false;
+       program_cache_only = false, skip_program_cache_checks = false;
   for (int i = 1; i < argc; ++i) {
     program_cache_only |= std::strcmp(argv[i], "--program-cache-only") == 0;
+    skip_program_cache_checks |= std::strcmp(argv[i], "--skip-program-cache-checks") == 0;
     required |= std::strcmp(argv[i], "--require-device") == 0;
     measure |= std::strcmp(argv[i], "--benchmark") == 0;
     fog_only |= std::strcmp(argv[i], "--fog-only") == 0;
@@ -3194,6 +3369,7 @@ int main(int argc, char **argv) {
     }
     if (state_only) {
       renderer_stage("state_upload_checks", [&] { state_upload_checks(measure); });
+      renderer_stage("latch_state_readback_checks", [&] { latch_state_readback_checks(); });
       return;
     }
     if (fixed_lod_only) {
@@ -3235,11 +3411,14 @@ int main(int argc, char **argv) {
       renderer_stage("checks", [&] { checks(software, hardware); });
       renderer_stage("indirect_checks", [&] { indirect_checks(software, hardware); });
       renderer_stage("indirect_state_checks", [&] { indirect_state_checks(); });
-      renderer_stage("zero_program_creation_checks", [&] { zero_program_creation_checks(); });
-      renderer_stage("zero_first_use_environment_checks",
-                     [&] { zero_first_use_environment_checks(); });
-      renderer_stage("zero_family_lifetime_checks", [&] { zero_family_lifetime_checks(); });
-      renderer_stage("zero_family_transitions", [&] { zero_family_transitions(); });
+      renderer_stage("latch_state_readback_checks", [&] { latch_state_readback_checks(); });
+      if (!skip_program_cache_checks) {
+        renderer_stage("zero_program_creation_checks", [&] { zero_program_creation_checks(); });
+        renderer_stage("zero_first_use_environment_checks",
+                       [&] { zero_first_use_environment_checks(); });
+        renderer_stage("zero_family_lifetime_checks", [&] { zero_family_lifetime_checks(); });
+        renderer_stage("zero_family_transitions", [&] { zero_family_transitions(); });
+      }
       renderer_stage("wide_depth_origin_checks", [&] { wide_depth_origin_checks(); });
       renderer_stage("texture_cache_checks", [&] { texture_cache_checks(false); });
       renderer_stage("texture_cache_bank_checks", [&] { texture_cache_bank_checks(); });

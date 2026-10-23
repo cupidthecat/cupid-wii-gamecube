@@ -902,15 +902,30 @@ HardwareStats HardwareRenderer::synchronize(std::span<u32> colors, std::span<u32
   result.right = counters[2];
   result.top = counters[3];
   result.bottom = counters[4];
+
+  struct StateReadback {
+    u32 pixel;
+    std::array<u32, 8> values;
+  };
+
+  // The six restoration slots may select one pixel with different sequence prefixes.
+  // No latch writes occur between these reads; reuse only within this synchronization.
+  std::array<StateReadback, 6> state_readbacks{};
+  std::size_t state_readback_count = 0;
   const auto read_state = [&](u32 key) {
     const u32 pixel_order = key & 1048575;
     const u32 block = pixel_order / 4;
     const u32 x = (block % 320) * 2 + (pixel_order & 1);
     const u32 y = (block / 320) * 2 + ((pixel_order >> 1) & 1);
+    const u32 pixel = y * 640 + x;
+    for (std::size_t i = 0; i < state_readback_count; ++i)
+      if (state_readbacks[i].pixel == pixel)
+        return state_readbacks[i].values;
     std::array<u32, 8> values{};
     impl_->BindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->buffers[5]);
-    impl_->GetBufferSubData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr((y * 640 + x) * 8 * sizeof(u32)),
+    impl_->GetBufferSubData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(pixel * 8 * sizeof(u32)),
                             sizeof(values), values.data());
+    state_readbacks[state_readback_count++] = {pixel, values};
     return values;
   };
   const auto unpack = [](u32 value) {

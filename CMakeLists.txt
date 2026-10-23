@@ -158,13 +158,15 @@ if(CUPID_BUILD_TESTS)
     target_include_directories(cupid_hardware_renderer_tests PRIVATE tests)
     target_link_libraries(cupid_hardware_renderer_tests PRIVATE cupid_core)
     if(CUPID_REQUIRE_HARDWARE_TESTS)
-      add_test(NAME hardware_renderer COMMAND cupid_hardware_renderer_tests --require-device)
+      add_test(NAME hardware_renderer COMMAND cupid_hardware_renderer_tests --require-device --skip-program-cache-checks)
+      add_test(NAME hardware_renderer_program_cache COMMAND cupid_hardware_renderer_tests --require-device --program-cache-only)
     else()
-      add_test(NAME hardware_renderer COMMAND cupid_hardware_renderer_tests)
+      add_test(NAME hardware_renderer COMMAND cupid_hardware_renderer_tests --skip-program-cache-checks)
+      add_test(NAME hardware_renderer_program_cache COMMAND cupid_hardware_renderer_tests --program-cache-only)
     endif()
-    # The complete suite takes 185 seconds with the pinned Windows software GL
-    # driver. Keep every profile and allow bounded headroom on hosted CPUs.
-    set_tests_properties(hardware_renderer PROPERTIES TIMEOUT 600 LABELS "public;backend;graphics"
+    # Keep every check, with program-cache compilation in its own bounded process.
+    # Direct invocation without selectors still runs the complete suite.
+    set_tests_properties(hardware_renderer hardware_renderer_program_cache PROPERTIES TIMEOUT 600 LABELS "public;backend;graphics"
       SKIP_RETURN_CODE 77)
     if(CUPID_REQUIRE_HARDWARE_TESTS)
       add_test(NAME guest_video_hardware COMMAND cupid_guest_video_tests --hardware --require-device)
@@ -195,6 +197,10 @@ if(CUPID_BUILD_TESTS)
     add_test(NAME hardware_renderer COMMAND "${CMAKE_COMMAND}" -E echo
       "SKIP: hardware rendering is excluded from this headless build")
     set_tests_properties(hardware_renderer PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP:"
+      LABELS "public;backend;graphics")
+    add_test(NAME hardware_renderer_program_cache COMMAND "${CMAKE_COMMAND}" -E echo
+      "SKIP: hardware program-cache rendering is excluded from this headless build")
+    set_tests_properties(hardware_renderer_program_cache PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP:"
       LABELS "public;backend;graphics")
     add_test(NAME guest_video_hardware COMMAND "${CMAKE_COMMAND}" -E echo
       "SKIP: hardware guest video is excluded from this headless build")
@@ -637,7 +643,7 @@ if(CUPID_BUILD_TESTS)
   if(CUPID_ENABLE_SANITIZERS)
     # Complete RAM hashes and ordered device comparisons take over 230 seconds
     # under Debug instrumentation. Keep every case and allow shared-host headroom.
-    set_tests_properties(event_budget runtime_group hardware_renderer
+    set_tests_properties(event_budget runtime_group hardware_renderer hardware_renderer_program_cache
       cpu_memory_reference_checks physical_memory_reference_checks cpu_dispatch_reference_checks
       fragment_reference_checks efb_copy_reference_checks xfb_copy_reference_checks
       host_audio_reference_checks

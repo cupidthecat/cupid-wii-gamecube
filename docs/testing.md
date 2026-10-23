@@ -1118,3 +1118,73 @@ Evidence remains under `depth-origin-wide-study/captured-component-v3/` and
 `captured-component-v3-result/` in the continuation cache. These checks qualify
 the recorded triangle and synthetic rasterizer behavior; a new game replay
 must still pass the original failure point.
+
+## 2026-10-23 graphics regression qualification
+
+The full hardware-renderer suite now includes sixteen authored wide-origin
+draws and twenty-four analytic unequal-division projection/fog draws. They
+check complete color and depth buffers across scalar and batched versions of
+the generic and zero raster programs. The wide-origin checks retain a plane
+through an actual culled CPU draw and then submit visible z-freeze work.
+
+The complete default suite passes on Windows NVIDIA with strict MSVC Release
+and on WSLg llvmpipe with GCC 13 Release and Clang 18 ASan/UBSan, including
+leak detection. Each run completes all 52 stage lines, sixteen first-use rows
+and the existing division and compiler-failure checks. The tested public test
+source has SHA256
+`226a8bf801ec2d803a7891deb4300f8f42bb04db248e55da8246eb2b372b3d64`.
+Independent acceptance is recorded as
+`root-current-depth-three-profile-hardware-acceptance.json` in the continuation
+cache, with SHA256
+`6ab99faad2a176c7ce676d0a59b6e3f1edd9553a2d92bbe1723bf92669395fd0`.
+
+The first Linux launch, which forced the SDL offscreen backend and software
+rendering, crashed during backend initialization. That failed sequence remains
+preserved, including its completed Windows suite. The later Linux suites use
+the previously successful inherited WSLg environment. Their success qualifies
+that separate recipe; the earlier crash's cause remains unresolved. These
+tests do not establish game progress or physical Linux GPU support.
+
+## 2026-10-23 graphics performance studies
+
+Two private candidates remain outside the product. Each fixed study retains
+158 complete captured intervals per device, two fresh contexts, twelve paired
+comparison blocks and six same-stock control blocks. The devices are Intel
+Iris Xe, Mesa 25.2.8 llvmpipe and NVIDIA RTX 2000 Ada on driver 597.30. Every
+interval retains the original cap of sixteen primitives, all 41 dispatches and
+barriers, complete raw-output checks and the repeated CPU serializer lifecycle.
+Host intervals include replay validation and readbacks; they are not product
+CPU costs or game frame rates. Other owned heavy work is held during each
+window, but foreign cleanup and OS activity are not verified idle.
+
+The tiled candidate's median paired candidate/stock host ratios are 0.973863,
+1.065017 and 0.995369 in that device order. GPU totals are 0.987457, 1.062060
+and 1.002226. Mesa regresses, NVIDIA has no useful gain, and Intel's host change
+resembles its same-stock control. The candidate is not promoted. All raw trials,
+controls and costs remain under `stock16-tiled-performance-measurement-review-v2/`
+in the continuation cache. Independent acceptance has SHA256
+`938edd20ceb95e5a0afefe5f2efe958089b4d99a9ae15a1497ec79cba442557a`.
+
+The float-estimate candidate changes only the initial quotient estimate and
+retains exact correction and fallback. Helper and full-fragment correctness
+checks pass on all three devices before timing. Its paired host ratios are
+0.984330, 0.999737 and 0.997344; GPU totals are 0.994560, 0.986274 and 0.996663.
+On NVIDIA, scalar dispatches regress in every comparison block, with ratios
+1.214046 through 1.254932 and median 1.227085. Batch work improves to 0.880433,
+largely offsetting that regression in the total. This does not justify a general
+change or a device-specific batch policy. Independent review checks all 474
+real rows, 414 authored results, 9,348 query values, twelve metrics and their
+controls, ranges and tails. The earlier ready-schema rejection ran no child or
+context; its failed preflight remains preserved separately. Evidence remains
+under `float-estimate-performance-measurement-review-v2/`; acceptance SHA256 is
+`a58d40f07e6b7b0baee3b8e2cdf22f980760485673e911eeca503ae8b41ed2b4`.
+
+For depth-fix commit `9245effc3c3e`, all seven jobs pass in the
+[pull-request matrix](https://github.com/cupidthecat/cupid-wii-gamecube/actions/runs/39996463067).
+The [push matrix](https://github.com/cupidthecat/cupid-wii-gamecube/actions/runs/39996454100)
+retains a Windows renderer timeout at 600.05 seconds; its other six jobs pass.
+The passing Windows renderer takes 370.99 seconds. The pull-request merge and
+head have the same committed source tree, but binary identity and the timeout's
+cause are not established. Renderer progress markers and retention of the two
+public CTest logs now preserve evidence for subsequent runs without removing
+cases or increasing the deadline.

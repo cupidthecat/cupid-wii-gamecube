@@ -36,6 +36,16 @@ jobs:
         env:
           LIBGL_ALWAYS_SOFTWARE: 1
         run: xvfb-run -a ctest --test-dir build/ci --output-on-failure
+      - name: Preserve public CTest logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ctest-logs-${{ matrix.artifact }}-${{ github.run_attempt }}
+          path: |
+            build/ci/Testing/Temporary/LastTest.log
+            build/ci/Testing/Temporary/LastTestsFailed.log
+          if-no-files-found: warn
+          retention-days: 7
       - name: Verify packaged executable
         run: cmake -DBUILD_DIR=build/ci -P tools/package-verify.cmake
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -78,6 +88,16 @@ jobs:
           LIBGL_ALWAYS_SOFTWARE: 1
           LP_NUM_THREADS: 2
         run: ctest --test-dir build/ci -C Release --output-on-failure
+      - name: Preserve public CTest logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ctest-logs-windows-msvc-${{ github.run_attempt }}
+          path: |
+            build/ci/Testing/Temporary/LastTest.log
+            build/ci/Testing/Temporary/LastTestsFailed.log
+          if-no-files-found: warn
+          retention-days: 7
       - name: Verify packaged executable
         run: cmake -DBUILD_DIR=build/ci -P tools/package-verify.cmake
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -105,6 +125,16 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: ctest --test-dir build/sanitizers --output-on-failure
+      - name: Preserve public CTest logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ctest-logs-sanitizers-${{ matrix.compiler }}-${{ github.run_attempt }}
+          path: |
+            build/sanitizers/Testing/Temporary/LastTest.log
+            build/sanitizers/Testing/Temporary/LastTestsFailed.log
+          if-no-files-found: warn
+          retention-days: 7
 
   source-checks:
     runs-on: ubuntu-24.04

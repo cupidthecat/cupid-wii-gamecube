@@ -15,6 +15,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <random>
 #include <string_view>
 #include <vector>
@@ -28,6 +29,13 @@
 
 namespace {
 using namespace cupid;
+
+template <typename Function> void renderer_stage(std::string_view name, Function function) {
+  std::cout << "[renderer] begin " << name << '\n';
+  function();
+  // The check's local objects have been destroyed before this marker.
+  std::cout << "[renderer] returned " << name << '\n';
+}
 
 template <typename Function> Function graphics_function(const char *name) {
   const auto result = reinterpret_cast<Function>(SDL_GL_GetProcAddress(name));
@@ -270,6 +278,146 @@ void equal(Fixture &software, Fixture &hardware) {
     CHECK(software.graphics.read(address, 2) == hardware.graphics.read(address, 2));
 }
 
+void wide_depth_origin_checks() {
+  Memory memory(Console::GameCube);
+  std::vector<u8> tmem(1024 * 1024);
+  gfx::HardwareRenderer renderer(memory, tmem);
+  const auto get_integer = graphics_function<void(APIENTRY *)(GLenum, GLint *)>("glGetIntegerv");
+  std::array<std::array<GLuint, 2>, 2> programs{};
+  u64 dispatches = 0;
+  unsigned cases = 0;
+  for (unsigned axis = 0; axis < 2; ++axis)
+    for (float sign : {-1.0f, 1.0f})
+      for (unsigned family = 0; family < 2; ++family)
+        for (const bool batch : {false, true}) {
+          std::array<u32, 256> bp{};
+          std::array<u32, 0x1058> xf{};
+          const auto put = [&](unsigned address, float value) {
+            xf[address] = std::bit_cast<u32>(value);
+          };
+          const float distance = sign * 268435456.0f;
+          std::vector<u32> cpu_colors(640 * 528, 0x315a87), cpu_depths(cpu_colors.size(), 0x54321);
+          auto gpu_colors = cpu_colors, gpu_depths = cpu_depths;
+          gfx::Rasterizer rasterizer(bp, xf);
+          unsigned cpu_fragments = 0, hardware_work = 0;
+          bool gpu_phase = false;
+          rasterizer.fragment = [&](unsigned x, unsigned y, u32 depth,
+                                    const gfx::FragmentInputs &inputs) {
+            CHECK(!gpu_phase && x < 640 && y < 528);
+            CHECK((inputs.colors[0] == gfx::Color{20, 40, 60, 255}));
+            cpu_colors[std::size_t(y) * 640 + x] = 0x14283c;
+            cpu_depths[std::size_t(y) * 640 + x] = depth;
+            ++cpu_fragments;
+          };
+          // A culled, finite small-W triangle remembers an analytic depth
+          // plane. Its +/-2^28 origin requires a scaled integer wider than 32 bits.
+          bp[0] = (1u << 4) | (3u << 14);
+          bp[0x21] = (639u << 12) | 527u;
+          put(0x101a, 1);
+          put(0x101b, 1);
+          put(0x101c, 1000);
+          put(0x101f, 1000);
+          gfx::TransformedVertex a, b, c;
+          a.clip_position = {0, 0, -0x1p-29f, 0x1p-28f};
+          a.clip_position[axis] = sign;
+          b.clip_position = {0, 0, -0.75f, 1};
+          c.clip_position = {0, 0, -0.5f, 1};
+          c.clip_position[axis ^ 1u] = 1;
+          const std::array<std::optional<gfx::TransformedVertex>, 3> seed{a, b, c};
+          rasterizer.draw(0x90, seed);
+          CHECK(cpu_fragments == 0);
+          // A conventional visible triangle consumes that plane through
+          // zfreeze. Its extent selects either batch or scalar GPU dispatch.
+          bp[0] = 1 | (1u << 4) | (1u << 19) | ((family == 0 ? 1u : 0u) << 16);
+          bp[0x20] = (342u << 12) | 342u;
+          bp[0x21] = (405u << 12) | 405u;
+          bp[0x59] = 171u | (171u << 10);
+          bp[0x40] = 1 | (7 << 1) | 16;
+          bp[0x41] = 24;
+          bp[0x88] = 6 << 20;
+          bp[0x94] = 0x30000 >> 5;
+          bp[0xc0] = 0xfffa | (1 << 19);
+          bp[0xc1] = (7 << 13) | (7 << 10) | (7 << 7) | (5 << 4) | (1 << 19);
+          bp[0xf3] = (7 << 16) | (7 << 19);
+          bp[0xf6] = 4;
+          bp[0xf7] = 14;
+          put(0x101a, 32);
+          put(0x101b, 32);
+          put(0x101d, 374);
+          put(0x101e, 374);
+          xf[0x103f] = 1;
+          const int extent = batch ? 4 : 17;
+          const auto vertex = [](float x, float y) {
+            gfx::TransformedVertex result;
+            result.clip_position = {(x - 32) / 32, (y - 32) / 32, -0.9f, 1};
+            result.colors[0] = {20, 40, 60, 255};
+            return result;
+          };
+          const std::array<std::optional<gfx::TransformedVertex>, 3> visible{
+              vertex(0, 0), vertex(float(extent), 0), vertex(0, float(extent))};
+          auto expected_colors = gpu_colors, expected_depths = gpu_depths;
+          // Coverage is the integer right triangle x+y<=extent-2. The frozen
+          // depth is 373.75 + 250 * (the other axis), up to a tiny gradient.
+          for (int y = 0; y + 1 < extent; ++y)
+            for (int x = 0; x + y + 1 < extent; ++x) {
+              expected_colors[std::size_t(y) * 640 + x] = 0x14283c;
+              expected_depths[std::size_t(y) * 640 + x] = 373 + 250 * (axis ? x : y);
+            }
+          const unsigned fragments = unsigned(extent * (extent - 1) / 2);
+          rasterizer.draw(0x90, visible);
+          CHECK(cpu_fragments == fragments);
+          CHECK(cpu_colors == expected_colors && cpu_depths == expected_depths);
+          gpu_phase = true;
+          renderer.upload(gpu_colors, gpu_depths);
+          gfx::TevRegisters colors{}, konst{};
+          CHECK(renderer.begin(bp, colors, konst));
+          rasterizer.hardware = [&](const gfx::RasterWork &work) {
+            ++hardware_work;
+            CHECK(work.left == 0 && work.top == 0 && work.right == extent && work.bottom == extent);
+            CHECK(work.depth.value == 500);
+            CHECK(work.depth.dx == (axis ? 250 : sign * 0x1.f4p-21f));
+            CHECK(work.depth.dy == (axis ? sign * 0x1.f4p-21f : 250));
+            CHECK(work.depth.x_origin == (axis ? 0 : static_cast<int>(distance)));
+            CHECK(work.depth.y_origin == (axis ? static_cast<int>(distance) : 0));
+            CHECK(work.depth.x_offset == 0.495f && work.depth.y_offset == 0.495f);
+            CHECK(renderer.draw(work));
+            return true;
+          };
+          rasterizer.draw(0x90, visible);
+          CHECK(hardware_work == 1 && cpu_fragments == fragments);
+          const auto stats = renderer.synchronize(gpu_colors, gpu_depths);
+          CHECK(stats.dispatches == ++dispatches && stats.fragments == fragments);
+          CHECK(stats.fallback_rectangles == 0 && renderer.fallback_reason().empty());
+          CHECK(gpu_colors == expected_colors && gpu_depths == expected_depths);
+          GLint program = 0;
+          get_integer(GL_CURRENT_PROGRAM, &program);
+          CHECK(program != 0);
+          auto &observed = programs[family][batch];
+          if (!observed)
+            observed = static_cast<GLuint>(program);
+          CHECK(observed == static_cast<GLuint>(program));
+          // Turning zfreeze off must replace the remembered plane: a fresh
+          // constant-depth primitive is 100 rather than the frozen 373/623/... .
+          gpu_phase = false;
+          rasterizer.hardware = {};
+          bp[0] &= ~(1u << 19);
+          cpu_fragments = 0;
+          std::fill(cpu_depths.begin(), cpu_depths.end(), 0x54321);
+          for (int y = 0; y + 1 < extent; ++y)
+            for (int x = 0; x + y + 1 < extent; ++x)
+              expected_depths[std::size_t(y) * 640 + x] = 100;
+          rasterizer.draw(0x90, visible);
+          CHECK(cpu_fragments == fragments && cpu_depths == expected_depths);
+          ++cases;
+        }
+  const std::array<GLuint, 4> ids{programs[0][0], programs[0][1], programs[1][0], programs[1][1]};
+  for (unsigned i = 0; i < ids.size(); ++i)
+    for (unsigned j = i + 1; j < ids.size(); ++j)
+      CHECK(ids[i] != ids[j]);
+  CHECK(cases == 16);
+  std::cout << "Verified authored wide depth origins through CPU and four GPU raster programs\n";
+}
+
 void projection_precision_checks() {
   Memory memory(Console::GameCube);
   std::vector<u8> tmem(1024 * 1024);
@@ -357,6 +505,122 @@ void projection_precision_checks() {
                                " hardware color=" + std::to_string(efb[0]));
   }
   std::cout << "Verified projected division at a fixed-point texture boundary\n";
+}
+
+void division_fragment_checks(bool projection, bool fog) {
+  Memory memory(Console::GameCube);
+  std::vector<u8> tmem(1024 * 1024);
+  // One constant RGBA8 tile makes the coordinate latch an independent oracle:
+  // the color remains fixed even when the projected coordinates change.
+  std::array<u8, 64> texels{};
+  for (unsigned texel = 0; texel < 16; ++texel) {
+    texels[texel * 2] = 255;
+    texels[texel * 2 + 1] = 200;
+    texels[32 + texel * 2] = 20;
+    texels[33 + texel * 2] = 40;
+  }
+  memory.copy_in(0x30000, texels);
+  gfx::HardwareRenderer renderer(memory, tmem);
+  const auto get_integer = graphics_function<void(APIENTRY *)(GLenum, GLint *)>("glGetIntegerv");
+  std::array<std::array<GLuint, 2>, 2> programs{};
+  std::vector<u32> pixels(640 * 528), depths(pixels.size());
+  u64 dispatches = 0;
+  unsigned cases = 0;
+  for (unsigned scenario = 0; scenario < 3; ++scenario) {
+    if ((scenario == 0 && !projection) || (scenario != 0 && !fog))
+      continue;
+    for (unsigned family = 0; family < 2; ++family)
+      for (const bool batch : {false, true})
+        for (unsigned member = 0; member < 2; ++member) {
+          std::array<u32, 256> bp{};
+          gfx::TevRegisters colors{}, konst{};
+          // An unused indirect prefetch selects the generic family. Its map is
+          // valid, and no indirect matrix changes the direct coordinates.
+          bp[0] = 1 | (1 << 4) | ((family == 0 ? 1u : 0u) << 16);
+          bp[0x28] = scenario == 0 ? 64 : 0;
+          bp[0x40] = 1 | (7 << 1) | 16;
+          bp[0x41] = 24;
+          bp[0x88] = 6 << 20;
+          bp[0x94] = 0x30000 >> 5;
+          bp[0xc0] = (scenario == 0 ? 0xfff8 : 0xfffa) | (1 << 19);
+          bp[0xc1] = (7 << 13) | (7 << 10) | (7 << 7) | ((scenario == 0 ? 4 : 5) << 4) | (1 << 19);
+          bp[0xf3] = (7 << 16) | (7 << 19);
+          bp[0xf6] = 4;
+          bp[0xf7] = 14;
+          if (scenario != 0) {
+            bp[0xee] = (scenario == 1 ? 127u : 125u) << 11;
+            bp[0xf1] = (1 << 21) | (scenario == 1 ? 1 << 20 : 0);
+            if (scenario == 2)
+              bp[0xef] = member == 0 ? 8388707 : 8388709;
+          }
+          gfx::RasterWork work{};
+          work.left = 13;
+          work.top = 11;
+          work.right = work.left + (batch ? 1 : 17);
+          work.bottom = work.top + (batch ? 1 : 17);
+          work.edges.fill({0, 0, 1});
+          const u32 depth = scenario == 1 ? 8388607 + member : 100;
+          work.depth.value = float(depth);
+          work.reciprocal_w.value = scenario == 0 ? 4.0f : 1.0f;
+          for (unsigned channel = 0; channel < 4; ++channel)
+            work.colors[0][channel].value = 255;
+          work.textures[0][0].value = 1;
+          work.textures[0][1].value = 2;
+          work.textures[0][2].value = scenario == 0 && member == 0 ? 3.0f : 4.0f;
+          // F1 divides adjacent depths by16777215; its factors are127,128.
+          // F2 divides4194303.75 by8388607/8388609; its factors are128,127.
+          // White-to-black fog therefore has these exact gray outputs.
+          const u32 expected_color = scenario == 0   ? 0xc81428
+                                     : scenario == 1 ? (member == 0 ? 0x808080 : 0x7f7f7f)
+                                                     : (member == 0 ? 0x7f7f7f : 0x808080);
+          std::fill(pixels.begin(), pixels.end(), 0x315a87);
+          std::fill(depths.begin(), depths.end(), 0x54321);
+          auto expected_pixels = pixels, expected_depths = depths;
+          for (int y = work.top; y < work.bottom; ++y)
+            for (int x = work.left; x < work.right; ++x) {
+              expected_pixels[std::size_t(y) * 640 + x] = expected_color;
+              expected_depths[std::size_t(y) * 640 + x] = depth;
+            }
+          renderer.upload(pixels, depths);
+          CHECK(renderer.begin(bp, colors, konst));
+          CHECK(renderer.draw(work));
+          // This object is only a recipient for GPU retained-state readback.
+          // It never shades a pixel or computes an expected result.
+          gfx::FragmentShader retained(memory, bp, colors, konst, tmem);
+          const auto stats = renderer.synchronize(pixels, depths, &retained);
+          CHECK(stats.dispatches == ++dispatches);
+          CHECK(stats.fragments == (batch ? 1u : 17u * 17u));
+          CHECK(stats.fallback_rectangles == 0);
+          CHECK(renderer.fallback_reason().empty());
+          CHECK(pixels == expected_pixels);
+          CHECK(depths == expected_depths);
+          if (scenario == 0) {
+            // Q=3 gives RN(1/3)*128 and RN(2/3)*128, truncated to42,85.
+            // Q=4 is an independent input sensitivity control:32,64.
+            const std::array<s32, 2> coordinates =
+                member == 0 ? std::array<s32, 2>{42, 85} : std::array<s32, 2>{32, 64};
+            const auto state = retained.texture_state();
+            CHECK(state.coordinates == coordinates);
+            CHECK((state.texture == gfx::Color{200, 20, 40, 255}));
+            CHECK((state.raw == gfx::Color{200, 20, 40, 255}));
+          }
+          GLint program = 0;
+          get_integer(GL_CURRENT_PROGRAM, &program);
+          CHECK(program != 0);
+          auto &observed = programs[family][batch];
+          if (!observed)
+            observed = static_cast<GLuint>(program);
+          CHECK(observed == static_cast<GLuint>(program));
+          ++cases;
+        }
+  }
+  const std::array<GLuint, 4> ids{programs[0][0], programs[0][1], programs[1][0], programs[1][1]};
+  for (unsigned i = 0; i < ids.size(); ++i)
+    for (unsigned j = i + 1; j < ids.size(); ++j)
+      CHECK(ids[i] != ids[j]);
+  CHECK(cases == 8 * ((projection ? 1u : 0u) + (fog ? 2u : 0u)));
+  std::cout << "Verified " << cases
+            << " analytic unequal-division projection/fog draws across four raster programs\n";
 }
 
 void projective_mip_checks() {
@@ -2012,6 +2276,7 @@ void zero_first_use_environment_checks() {
   unsigned draws = 0, failures = 0;
   for (unsigned mode = 0; mode < modes.size(); ++mode)
     for (unsigned denormal = 0; denormal < 4; ++denormal) {
+      std::cout << "[renderer] first-use row mode=" << mode << " denormal=" << denormal << '\n';
       CHECK(std::fesetenv(FE_DFL_ENV) == 0);
       Memory memory{Console::GameCube}, cpu_memory{Console::GameCube};
       std::vector<u8> tmem(1024 * 1024);
@@ -2833,7 +3098,9 @@ void benchmark(Fixture &software, Fixture &hardware) {
 } // namespace
 
 int main(int argc, char **argv) {
+  std::cout << std::unitbuf << "[renderer] begin fixture construction\n";
   Fixture software, hardware;
+  std::cout << "[renderer] returned fixture construction\n";
   bool required = false, measure = false, fog_only = false, texture_cache_only = false,
        xfb_only = false, projection_only = false, state_only = false, fixed_lod_only = false,
        counter_only = false, counter_benchmark_only = false, empty_coverage_only = false,
@@ -2856,7 +3123,9 @@ int main(int argc, char **argv) {
     division_rounding_only |= std::strcmp(argv[i], "--division-rounding-only") == 0;
   }
   try {
-    hardware.graphics.set_hardware_rendering(true);
+    renderer_stage("backend initialization",
+                   [&] { hardware.graphics.set_hardware_rendering(true); });
+    std::cout << "[renderer] device=" << hardware.graphics.hardware_device() << '\n';
   } catch (const gfx::HardwareUnavailable &error) {
     std::cerr << "Hardware backend unavailable: " << error.what() << '\n';
     return required ? 1 : 77;
@@ -2866,90 +3135,95 @@ int main(int argc, char **argv) {
   }
   return run_tests([&] {
     if (division_rounding_only) {
-      division_rounding_checks();
+      renderer_stage("division_rounding_checks", [&] { division_rounding_checks(); });
       return;
     }
     if (program_cache_only) {
-      zero_program_creation_checks();
-      zero_first_use_environment_checks();
-      zero_family_lifetime_checks();
-      zero_family_transitions();
+      renderer_stage("zero_program_creation_checks", [&] { zero_program_creation_checks(); });
+      renderer_stage("zero_first_use_environment_checks",
+                     [&] { zero_first_use_environment_checks(); });
+      renderer_stage("zero_family_lifetime_checks", [&] { zero_family_lifetime_checks(); });
+      renderer_stage("zero_family_transitions", [&] { zero_family_transitions(); });
       return;
     }
     if (division_identities_exhaustive) {
-      division_identity_checks(true);
+      renderer_stage("division_identity_checks", [&] { division_identity_checks(true); });
       return;
     }
     if (empty_coverage_only) {
-      logical_sequence_cap_checks();
-      empty_coverage_checks();
+      renderer_stage("logical_sequence_cap_checks", [&] { logical_sequence_cap_checks(); });
+      renderer_stage("empty_coverage_checks", [&] { empty_coverage_checks(); });
       return;
     }
     if (counter_benchmark_only) {
-      counter_benchmark();
+      renderer_stage("counter_benchmark", [&] { counter_benchmark(); });
       return;
     }
     if (counter_only) {
-      counter_checks();
+      renderer_stage("counter_checks", [&] { counter_checks(); });
       if (measure)
-        counter_benchmark();
+        renderer_stage("counter_benchmark", [&] { counter_benchmark(); });
       return;
     }
     if (state_only) {
-      state_upload_checks(measure);
+      renderer_stage("state_upload_checks", [&] { state_upload_checks(measure); });
       return;
     }
     if (fixed_lod_only) {
-      projective_mip_checks();
+      renderer_stage("projective_mip_checks", [&] { projective_mip_checks(); });
       if (measure)
-        projective_stage_benchmark(true);
+        renderer_stage("projective_stage_benchmark", [&] { projective_stage_benchmark(true); });
       return;
     }
     if (projection_only) {
-      division_rounding_checks();
-      division_identity_checks(false);
-      projection_precision_checks();
-      projective_mip_checks();
+      renderer_stage("division_rounding_checks", [&] { division_rounding_checks(); });
+      renderer_stage("division_identity_checks", [&] { division_identity_checks(false); });
+      renderer_stage("projection_precision_checks", [&] { projection_precision_checks(); });
+      renderer_stage("projective_mip_checks", [&] { projective_mip_checks(); });
+      renderer_stage("division_fragment_checks", [&] { division_fragment_checks(true, false); });
       if (measure)
-        projective_stage_benchmark();
+        renderer_stage("projective_stage_benchmark", [&] { projective_stage_benchmark(); });
       return;
     }
     if (xfb_only) {
-      xfb_checks(measure);
-      xfb_clear_checks();
+      renderer_stage("xfb_checks", [&] { xfb_checks(measure); });
+      renderer_stage("xfb_clear_checks", [&] { xfb_clear_checks(); });
       return;
     }
     if (texture_cache_only) {
-      texture_cache_checks(measure);
-      texture_cache_bank_checks();
-      texture_partial_upload_checks();
+      renderer_stage("texture_cache_checks", [&] { texture_cache_checks(measure); });
+      renderer_stage("texture_cache_bank_checks", [&] { texture_cache_bank_checks(); });
+      renderer_stage("texture_partial_upload_checks", [&] { texture_partial_upload_checks(); });
       return;
     }
     if (!fog_only) {
-      division_rounding_checks();
-      division_identity_checks(false);
-      empty_coverage_checks();
-      counter_checks();
-      logical_sequence_cap_checks();
-      state_upload_checks(false);
-      projection_precision_checks();
-      projective_mip_checks();
-      checks(software, hardware);
-      indirect_checks(software, hardware);
-      indirect_state_checks();
-      zero_program_creation_checks();
-      zero_first_use_environment_checks();
-      zero_family_lifetime_checks();
-      zero_family_transitions();
-      texture_cache_checks(false);
-      texture_cache_bank_checks();
-      texture_partial_upload_checks();
-      xfb_checks(false);
-      xfb_clear_checks();
+      renderer_stage("division_rounding_checks", [&] { division_rounding_checks(); });
+      renderer_stage("division_identity_checks", [&] { division_identity_checks(false); });
+      renderer_stage("empty_coverage_checks", [&] { empty_coverage_checks(); });
+      renderer_stage("counter_checks", [&] { counter_checks(); });
+      renderer_stage("logical_sequence_cap_checks", [&] { logical_sequence_cap_checks(); });
+      renderer_stage("state_upload_checks", [&] { state_upload_checks(false); });
+      renderer_stage("projection_precision_checks", [&] { projection_precision_checks(); });
+      renderer_stage("projective_mip_checks", [&] { projective_mip_checks(); });
+      renderer_stage("checks", [&] { checks(software, hardware); });
+      renderer_stage("indirect_checks", [&] { indirect_checks(software, hardware); });
+      renderer_stage("indirect_state_checks", [&] { indirect_state_checks(); });
+      renderer_stage("zero_program_creation_checks", [&] { zero_program_creation_checks(); });
+      renderer_stage("zero_first_use_environment_checks",
+                     [&] { zero_first_use_environment_checks(); });
+      renderer_stage("zero_family_lifetime_checks", [&] { zero_family_lifetime_checks(); });
+      renderer_stage("zero_family_transitions", [&] { zero_family_transitions(); });
+      renderer_stage("wide_depth_origin_checks", [&] { wide_depth_origin_checks(); });
+      renderer_stage("texture_cache_checks", [&] { texture_cache_checks(false); });
+      renderer_stage("texture_cache_bank_checks", [&] { texture_cache_bank_checks(); });
+      renderer_stage("texture_partial_upload_checks", [&] { texture_partial_upload_checks(); });
+      renderer_stage("xfb_checks", [&] { xfb_checks(false); });
+      renderer_stage("xfb_clear_checks", [&] { xfb_clear_checks(); });
     }
-    fog_checks();
-    fog_bucket_checks();
+    renderer_stage("division_fragment_checks", [&] { division_fragment_checks(!fog_only, true); });
+    renderer_stage("fog_checks", [&] { fog_checks(); });
+    renderer_stage("fog_bucket_checks", [&] { fog_bucket_checks(); });
     if (measure)
-      benchmark(software, hardware);
+      renderer_stage("benchmark", [&] { benchmark(software, hardware); });
   });
 }

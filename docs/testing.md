@@ -1001,9 +1001,8 @@ scratch and is not an atomic filesystem quota. Tracked requested logger
 memory is not an RSS guarantee. Both original children return zero without
 a bound firing, retry or substitution. The packet and independent audits
 remain under `tile-list-feasibility/` and `tile-capture-independent-review/`
-in the continuation cache. No offline GPU replay, tile shader or timer query
-has yet been run for this packet, so capture validity is not a GPU correctness
-or performance result.
+in the continuation cache. Capture validity alone does not establish GPU
+correctness or performance; the later stock replay is recorded below.
 
 A later frozen-d8 Sunshine interpreter continuation ends abnormally at field
 44,158, after 350,648,336,438 retired instructions and 350,648,712,764 attempts.
@@ -1048,3 +1047,43 @@ Evidence remains under `retired-instruction-census/runner-v5/` in the continuati
 cache. These are bootstrap/startup frequencies, not a host-time profile,
 full-route neutrality result or gameplay FPS measurement. No census-based CPU
 admission change is integrated.
+
+A standalone stock-shader replay subsequently passes on Intel Iris Xe,
+Linux llvmpipe and NVIDIA RTX 2000 Ada with driver 597.30. Each context executes
+the complete 171-draw interval twice, with distinct deterministic fills for
+unknown initial latch words. Full color, depth, all eleven counters, XFB bytes
+and captured meaningful selected fields match their original oracles. All
+three vendors also produce identical complete fixed-fill raw outputs and the
+same explicit latch-validity mask. Independent decoding checks every latch
+word: 1,167,360 written words agree between fills, while 1,536,000 untouched
+words retain their respective fills. These fills do not recover unknown
+historical input values.
+
+Each vendor passes eighteen authored positive cases and rejects three deliberate
+GPU mutations covering blend order, copy/clear order and retained texture state.
+Separate Windows/Linux host-only gates each pass fourteen controls and eighteen
+authored preflights without initializing SDL video or creating a context.
+Actual strict Release/LTO commands, standalone SDL/system-runtime linkage,
+all 98 build artifacts and source/dependency pins are independently checked.
+All baseline replay children and watchers terminate normally without a bound
+firing or a retry. The original compiler-warning and incomplete filesystem
+observation attempts remain preserved. Root review rehashes all 33 vendor
+output files and independently repeats the raw comparisons. Evidence remains
+under `stock16-interval-replay-v3/` in the continuation cache. No candidate
+tile shader, timer query, gameplay speed or physical Linux GPU qualification
+is established by this baseline.
+
+A separate CPU-only depth-anchor arithmetic study passes six positive checks
+across strict MSVC, GCC and Clang 18 ASan/UBSan builds. Three stock controls
+retain their exact depth-origin rejection and exit code 1; they are negative
+controls, not passing stock tests. The proposal preserves the original valid
+conversion branch and widens only the integral intermediate outside that range,
+checking signed pixel-origin subtraction across the full EFB. Authored cases
+exercise finite culled vertices, retained nonzero z-freeze gradients, boundary
+origins and unchanged coverage/nonfinite rejections. The complete existing
+rasterizer suite also passes for each proposal build. Independent review
+rehashes 229 sealed outputs and 142 build-tree artifacts and checks all 27
+terminal child/cleanup receipts. Evidence remains under
+`depth-origin-wide-study/component-runner-v2/` in the continuation cache.
+This study does not observe the actual Sunshine error inputs or establish a
+game fix; no proposal arithmetic is integrated.

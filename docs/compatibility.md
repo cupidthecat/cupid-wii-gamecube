@@ -34,6 +34,16 @@ any integer-frame offset. Their cause and timing remain unresolved; see
 speed nor isolated performance. First Shine, level completion and clean
 gameplay audio remain unverified.
 
+A separate frozen-d8 native continuation exits normally at 32,000 fields.
+All 400 raw frames through 24,000 match the interpreter route above; this
+does not compare complete CPU state at that earlier boundary. Ordinary input
+closes the save prompt, navigates around the tank, clears nearby goop and
+triggers the large goop creature's appearance. It remains active at the final
+bound, without a first Shine. Nine replay updates are accepted; one
+mistaken digital-trigger value is rejected before application and retained
+in the input history. The final card bytes match the earlier 24,000-field save.
+Host audio remains disabled, and no speed or saved-level restoration is claimed.
+
 ## Frozen Sunshine FLUDD and save capture
 
 The frozen `df978ec` Windows interpreter/OpenGL observer completes 24,000 fields
@@ -64,8 +74,16 @@ produces a visible jump at 6,600 and landing at 6,660. Later ordinary walking
 reaches the road crest overlooking the town and castle at 7,680. These frames
 show player control outside the opening cinematic.
 
+The Star Bit counter increases from zero to one by field 8,280. Ordinary
+walking into the plaza at 9,420–9,600 triggers the subsequent airship attack
+cinematic. Controls remain neutral afterward. The run exits normally at its
+original two-hour host limit, at field 13,056, while that cinematic continues.
+All nineteen replay updates are accepted without rejections. Only SRAM changes;
+the Wii save files remain unchanged. No completed objective or level save is
+observed.
+
 The passive observer saves already cached frames and previously passed its
-bounded plain-CLI comparison. The longer navigation run has no complete
+bounded plain-CLI comparison. This completed navigation run has no complete
 plain-CLI comparison yet and uses disabled host audio. These observations
 establish movement, jumping and route progress; they do not establish a
 completed objective, gameplay save restoration, clean host audio or full speed.

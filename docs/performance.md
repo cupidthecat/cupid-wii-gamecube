@@ -620,3 +620,33 @@ affinity reservation does not establish host isolation. No samples are
 discarded or repeated based on their result. The complete sealed evidence
 remains under `.cache/continuation-20261022/native-two-hit-fifo-timing/`.
 These results do not establish representative gameplay speed.
+
+## Rejected split-cap GPU experiment
+
+A private experiment splits each owned batched dispatch at eight rectangles,
+preserving the original draw order, state, global keys and program bytes.
+It uses 404 complete snapshots: 57 change and 347 remain literal controls.
+It does not merge snapshots or invent their initial framebuffer state.
+Correctness checks pass on Intel Iris Xe, llvmpipe and NVIDIA RTX 2000 Ada,
+including authored ordering controls and intentionally failing variants.
+
+One fixed window retains eleven pairs per snapshot and driver, or 26,664
+elapsed GPU queries. Summed per-snapshot medians for the 57 changed cases
+increase on every driver:
+
+| Driver | Original cap 16, ms | Split cap 8, ms | Increase |
+| --- | ---: | ---: | ---: |
+| Intel Iris Xe | 90.641408 | 144.776580 | 59.72% |
+| Mesa llvmpipe | 32.729378 | 58.128308 | 77.60% |
+| NVIDIA RTX 2000 Ada, 597.30 | 6.267904 | 10.168320 | 62.23% |
+
+The unchanged controls increase 0.97%, 1.23% and 0.03%, respectively. All
+negative deltas, ties, raw ranges and construction costs remain recorded;
+no query is discarded or repeated. The timer covers prepared-buffer binds,
+dispatches and their barriers, excluding uploads, restores and validation.
+These are conditional snapshot sums under shared CPU/GPU load, not a scene
+weighting or gameplay FPS result. The additional dispatches outweigh the
+reduced rectangle scans in this experiment. The candidate is rejected and
+production keeps cap 16. The sealed source, correctness checks and single
+query window remain under
+`.cache/continuation-20261022/batch-cap-study/cap8-timing/`.

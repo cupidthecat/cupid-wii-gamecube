@@ -891,3 +891,33 @@ continuation cache. This longer route uses the previously checked cached-frame
 observer, interpreter, OpenGL and disabled host audio; its complete plain-CLI
 comparison remains unperformed. These individual observations do not establish
 level completion, saved gameplay restoration, audio delivery or full speed.
+
+That Galaxy run subsequently exits normally at its original host limit:
+7,203.773225 seconds, 13,056 fields and 156,058,378,433 retired instructions.
+It retains 217 raw checkpoint frames, nineteen accepted replay updates, zero
+rejections and 238 unchanged driver samples. The Star Bit counter reaches one
+and ordinary plaza entry triggers the airship attack cinematic; its later
+automatic motion is not counted as player control. Only SRAM changes, with
+all Wii save files unchanged. The source profile, local seed, observer, game
+and fonts remain unchanged. The immutable 462-file manifest has SHA256
+`322c30efaac79168faac7ea5b26852b2876f9a2ad487f24ba6f11d8eab713527`;
+independent verification rehashes every entry. The final image remains in
+the cinematic, without a completed objective, level save or continuation
+prompt. The recorded terminal timestamp is a process-polling observation.
+
+The separate frozen-d8 native Sunshine continuation ends normally at exactly
+32,000 fields, retaining 533 raw checkpoint frames. Its first 400 raw frames
+match the current interpreter route through 24,000; no complete CPU-state
+comparison is made at that intermediate endpoint. Ordinary inputs close the
+save prompt, navigate to the central goop and trigger the raised creature's
+appearance. It remains active at termination, with no first Shine observed.
+The final card is byte-identical to the previously validated current-route save.
+All producer inputs remain unchanged. Nine replay updates are accepted;
+one invalid digital-R value is rejected without application and remains in
+the history. The audit distinguishes historical LF-text hashes from actual
+CRLF file-byte hashes without rewriting old receipts. The immutable 595-file
+manifest has SHA256
+`41cd7f4900768dfa5222695f7fdc10ad5e0df850c8dc63675f3b12f049f42768`.
+All entries are independently rehashed; the capture remains under
+`sunshine-native-progression-20261023T061605774402Z/` in the continuation cache.
+Its shared-host wall time does not establish speed, and host audio is disabled.

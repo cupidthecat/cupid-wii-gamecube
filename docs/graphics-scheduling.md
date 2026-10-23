@@ -13,6 +13,32 @@ after consumption. Register writes, gather bursts and FIFO reset use those
 same paths, so a disabled or blocked FIFO can resume immediately when its
 control or pointer changes.
 
+## Host floating-point environment
+
+FIFO command execution uses the default host floating-point environment and
+restores the caller's rounding, exception masks, and status flags afterward,
+including when command decoding throws. The scope starts in
+`CommandProcessor::submit` before decoding buffered commands. An empty pending
+buffer and disabled FIFO paths do not enter it. Guest FPSCR behavior, FIFO pointer
+and interrupt ordering, unrelated CP register traffic, and direct standalone XFB
+helpers keep their existing contracts.
+
+A quantized guest store can complete a gather burst and synchronously enter
+vertex and raster work while its CPU operation temporarily selects guest
+rounding. The command scope keeps that rounding from changing raster depth.
+The authored `fifo_environment` test sends identical triangle bytes through
+paired and ordinary stores for all four FPSCR rounding modes on both consoles.
+It checks identical coverage, color and depth, and caller-state restoration on
+success and error. It also checks empty submissions and a full disabled FIFO
+burst. Portable rounding and depth checks run on every architecture; x86-64
+builds additionally check MXCSR and retained flush modes.
+
+The shipping MSVC and GCC builds passed these checks and the existing graphics,
+guest-video, and hardware-renderer suites. Clang 18 ASan/UBSan also passed the
+FIFO, graphics, vertex, and rasterizer tests. These authored checks do not
+establish physical-console timing, commercial gameplay accuracy, or a
+performance gain.
+
 ## Behavior and checks
 
 The behavioral checkout is pinned at
@@ -23,6 +49,7 @@ The behavioral checkout is pinned at
 | --- | --- | --- |
 | `CommandProcessor::advance`, `advance_pending`, `update_interrupts` | `VideoCommon/CommandProcessor.cpp`, `SetCPStatusFromCPU`, `SetCPStatusFromGPU`, `UpdateInterrupts`, `RegisterMMIO`; `VideoCommon/PixelEngine.cpp`, token and finish callbacks; `VideoCommon/Fifo.cpp`, `RunGpu` | Read-enable, watermark and breakpoint conditions, event completion and register-driven FIFO work. |
 | `Devices::set_interrupts` | `Core/HW/ProcessorInterface.cpp`, `SetInterrupt`, `RegisterMMIO` | Applying owned cause bits while preserving unrelated PI causes. |
+| `CommandProcessor::submit` | `VideoCommon/Fifo.cpp`, `RunGpuOnCpu`; `Common/x64FPURoundMode.cpp`, save/default/restore helpers | Command execution owns the host floating-point environment and restores its caller. |
 
 Public graphics tests exercise PI acknowledgement and reassertion, inactive
 cause clearing, unrelated cause preservation, split token/finish countdowns,

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cupid/gfx/command_processor.hpp"
+#include "cupid/core/host_float_environment.hpp"
 #include "cupid/gfx/efb_copy.hpp"
 #include "cupid/gfx/xfb_copy.hpp"
 #include <algorithm>
@@ -163,6 +164,10 @@ void CommandProcessor::submit(std::span<const u8> data) {
   if (data.size() > 32 * 1024 * 1024 || pending_.size() > 32 * 1024 * 1024 - data.size())
     unavailable(0x0c008000, true, "Graphics command buffer exceeds its limit");
   pending_.insert(pending_.end(), data.begin(), data.end());
+  if (pending_.empty())
+    return;
+  // Command execution owns its host environment even when entered from a guest store.
+  const HostFloatEnvironment host_environment;
   std::size_t consumed = 0;
   while (consumed < pending_.size()) {
     std::size_t amount = 0;

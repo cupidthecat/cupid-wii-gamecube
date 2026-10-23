@@ -18,6 +18,7 @@
 namespace machine_speaker_transport {
 using namespace cupid;
 constexpr u32 ipc_base = 0x0d000000, request = 0x10000, transfer = 0x17000;
+constexpr u64 dac_period = 182250; // Eight stereo frames at the Wii reset rate of 32 kHz.
 
 void require(bool condition, const char *reason) {
   if (!condition)
@@ -46,7 +47,7 @@ struct Fixture {
   std::unique_ptr<platform::Output> output;
   std::filesystem::path root;
   u32 fd = 0;
-  u64 dma_hash = 0;
+  u64 dma_hash = 0, dma_first_tick = 0;
   unsigned sample_port = 0;
 
   explicit Fixture(bool speakers) {
@@ -95,6 +96,7 @@ struct Fixture {
     options.remote_speakers = speakers;
     output = std::make_unique<platform::Output>(options);
     dma_hash = output->audio_hash();
+    dma_first_tick = machine.devices().cycles() / dac_period;
     machine.set_output(output.get());
     require(output->remote_speaker_processing() == speakers, "Incorrect host speaker setting");
   }
@@ -262,10 +264,17 @@ struct Fixture {
     throw std::runtime_error(message.str());
   }
 
-  void unchanged_dma() const {
-    require(output->audio_samples() == 0 && output->audio_nonzero_samples() == 0 &&
-                output->audio_peak() == 0 && output->audio_hash() == dma_hash,
-            "Speaker packets changed main device DMA telemetry");
+  void check_dma_silence() {
+    // The idle Wii program leaves DMA disabled at its reset 32-kHz clock.
+    // Speaker transport advances guest time, so account for every silent tick,
+    // including the retained partial period when replacing the host output.
+    const u64 samples = (machine.devices().cycles() / dac_period - dma_first_tick) * 16;
+    u64 expected_hash = dma_hash;
+    for (u64 byte = 0; byte < samples * 2; ++byte)
+      expected_hash *= 1099511628211ULL;
+    require(output->audio_samples() == samples && output->audio_nonzero_samples() == 0 &&
+                output->audio_peak() == 0 && output->audio_hash() == expected_hash,
+            "Speaker transport changed the scheduled main DAC silence");
   }
 };
 
@@ -287,7 +296,7 @@ void checks() {
     fixture.samples(0);
     require(fixture.wait_audio(false).nonzero_samples == 0,
             "Default-disabled host processing emitted speaker samples");
-    fixture.unchanged_dma();
+    fixture.check_dma_silence();
     fixture.set_output(true);
     // Host processing is separate from the speaker bit in the HID status report.
     fixture.configure_speaker(0, false);
@@ -295,7 +304,7 @@ void checks() {
     const auto stats = fixture.wait_audio(true);
     require(stats.left_nonzero > 0 && stats.right_nonzero > 0,
             "Enabled speaker samples did not reach both host channels");
-    fixture.unchanged_dma();
+    fixture.check_dma_silence();
   }
   for (unsigned port = 1; port < 4; ++port) {
     Fixture fixture(true);
@@ -305,7 +314,7 @@ void checks() {
     const auto stats = fixture.wait_audio(true);
     require(stats.nonzero_samples > 0 && stats.left_nonzero > 0 && stats.right_nonzero > 0,
             "A nonzero Remote port did not reach the host audio channel");
-    fixture.unchanged_dma();
+    fixture.check_dma_silence();
   }
 }
 } // namespace machine_speaker_transport

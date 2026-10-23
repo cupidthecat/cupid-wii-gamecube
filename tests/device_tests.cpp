@@ -586,6 +586,189 @@ void video_timing_register_updates() {
   }
 }
 
+namespace audio_dma_clock_checks {
+struct Rate {
+  Console console;
+  u32 control, label;
+  u64 period;
+};
+
+// Independent integer CPU-tick calendar for eight stereo DAC frames.
+constexpr std::array rates{
+    Rate{Console::GameCube, 0, 48042, 80928},
+    Rate{Console::GameCube, 64, 32028, 121392},
+    Rate{Console::Wii, 0, 48000, 121500},
+    Rate{Console::Wii, 64, 32000, 182250},
+};
+
+struct Packet {
+  std::array<s16, 16> values;
+  u32 rate;
+  bool operator==(const Packet &) const = default;
+};
+
+std::array<s16, 16> signal(unsigned block) {
+  std::array<s16, 16> result{};
+  for (unsigned frame = 0; frame != 8; ++frame) {
+    result[frame * 2] = s16(100 + block * 8 + frame);
+    result[frame * 2 + 1] = s16(-100 - int(block * 8 + frame));
+  }
+  return result;
+}
+
+struct Fixture {
+  hw::Devices device;
+  Rate rate;
+  std::vector<Packet> packets;
+  std::vector<u32> reads;
+
+  explicit Fixture(Rate r, bool connect_memory) : device(r.console), rate(r) {
+    device.write(ai, r.control, 4); // Explicit rate, without AIS streaming.
+    device.audio_samples = [this](std::span<const s16> values, u32 label) {
+      CHECK(values.size() == 16);
+      Packet packet{{}, label};
+      std::copy(values.begin(), values.end(), packet.values.begin());
+      packets.push_back(packet);
+    };
+    if (connect_memory)
+      device.dma_read = [this](u32 address, std::span<u8> bytes) {
+        CHECK(address >= 0x120 && address <= 0x160 && (address - 0x120) % 32 == 0);
+        CHECK(bytes.size() == 32);
+        reads.push_back(address);
+        const auto values = signal((address - 0x120) / 32);
+        for (unsigned index = 0; index != values.size(); ++index) {
+          const u16 bits = u16(values[index]);
+          bytes[index * 2] = u8(bits >> 8);
+          bytes[index * 2 + 1] = u8(bits);
+        }
+      };
+  }
+
+  void start(u16 blocks) {
+    device.write(dsp + 0x30, 0x120, 4);
+    device.write(dsp + 0x36, 0x8000 | blocks, 2);
+  }
+
+  void packet(unsigned index, const std::array<s16, 16> &values) const {
+    CHECK(index < packets.size());
+    CHECK(packets[index].values == values && packets[index].rate == rate.label);
+  }
+};
+
+void enabled_controls() {
+  for (const Rate rate : rates) {
+    Fixture f(rate, true);
+    f.start(3);
+    for (unsigned block = 0; block != 3; ++block) {
+      f.device.advance(rate.period);
+      CHECK(f.packets.size() == block + 1);
+      f.packet(block, signal(block));
+    }
+    CHECK(f.reads == (std::vector<u32>{0x120, 0x140, 0x160}));
+    CHECK(f.device.read(dsp + 0x36, 2) == 0x8003);
+    CHECK(f.device.read(dsp + 0x3a, 2) == 2);
+    CHECK((f.device.read(dsp + 10, 2) & 8) != 0);
+    CHECK(f.device.read(ai + 8, 4) == 0);
+  }
+}
+
+void disabled_tick_calendar() {
+  for (const Rate rate : rates) {
+    Fixture f(rate, false); // Disabled delivery must need no DMA bus connection.
+    f.device.advance(rate.period - 1);
+    CHECK(f.packets.empty());
+    f.device.advance(1);
+    CHECK(f.packets.size() == 1);
+    f.packet(0, {});
+    f.device.advance(rate.period * 2);
+    CHECK(f.packets.size() == 3);
+    f.packet(1, {});
+    f.packet(2, {});
+    CHECK(f.reads.empty());
+    CHECK(f.device.read(dsp + 0x36, 2) == 0);
+    CHECK(f.device.read(dsp + 0x3a, 2) == 0);
+    CHECK((f.device.read(dsp + 10, 2) & 8) == 0);
+    CHECK(f.device.read(ai + 8, 4) == 0);
+
+    Fixture partitioned(rate, false);
+    for (unsigned block = 0; block != 3; ++block) {
+      u64 left = rate.period;
+      while (left) {
+        const u64 safe = partitioned.device.event_free_cycles();
+        const u64 piece = std::min(left, safe ? safe : 1);
+        partitioned.device.advance(piece);
+        left -= piece;
+      }
+    }
+    CHECK(partitioned.packets == f.packets);
+  }
+}
+
+void stop_restart_descriptor() {
+  for (const Rate rate : rates) {
+    Fixture f(rate, true);
+    f.start(3);
+    f.device.advance(rate.period);
+    f.packet(0, signal(0));
+    f.device.write(dsp + 10, 12, 2); // Clear the already elapsed start interrupt.
+    f.device.write(dsp + 0x36, 3, 2);
+    const auto blocks = f.device.read(dsp + 0x3a, 2);
+    const auto control = f.device.read(dsp + 10, 2);
+    f.device.advance(rate.period * 2);
+    CHECK(f.packets.size() == 3);
+    f.packet(1, {});
+    f.packet(2, {});
+    CHECK(f.reads == (std::vector<u32>{0x120}));
+    CHECK(f.device.read(dsp + 0x3a, 2) == blocks);
+    CHECK(f.device.read(dsp + 10, 2) == control);
+    CHECK(f.device.read(dsp + 0x36, 2) == 3);
+    f.start(3);
+    f.device.advance(rate.period);
+    f.packet(3, signal(0));
+    f.device.write(dsp + 10, 12, 2);
+    // Updating an enabled reload length does not replace the current prefix.
+    f.device.write(dsp + 0x36, 0x8001, 2);
+    f.device.advance(rate.period);
+    f.packet(4, signal(1));
+    CHECK((f.device.read(dsp + 10, 2) & 8) == 0);
+    f.device.advance(rate.period);
+    f.packet(5, signal(2));
+    CHECK(f.reads == (std::vector<u32>{0x120, 0x120, 0x140, 0x160}));
+    CHECK(f.device.read(dsp + 0x3a, 2) == 0);
+    CHECK((f.device.read(dsp + 10, 2) & 8) != 0);
+    CHECK(f.device.read(ai + 8, 4) == 0);
+  }
+}
+
+void absent_callback() {
+  for (const Rate rate : rates) {
+    hw::Devices device(rate.console);
+    device.write(ai, rate.control, 4);
+    // No audio callback and no bus connection are needed for idle DAC clocks.
+    device.advance(rate.period * 3);
+    CHECK(device.read(dsp + 0x36, 2) == 0);
+    CHECK((device.read(dsp + 10, 2) & 8) == 0);
+    unsigned reads = 0;
+    device.dma_read = [&](u32 address, std::span<u8> bytes) {
+      CHECK(address == 0x120 + reads * 32);
+      CHECK(bytes.size() == 32);
+      ++reads;
+      std::fill(bytes.begin(), bytes.end(), u8{0});
+    };
+    device.write(dsp + 0x30, 0x120, 4);
+    device.write(dsp + 0x36, 0x8003, 2);
+    device.advance(rate.period * 3);
+    CHECK(reads == 3);
+    CHECK(device.read(dsp + 0x3a, 2) == 2);
+    device.write(dsp + 0x36, 3, 2);
+    device.advance(rate.period * 2);
+    CHECK(reads == 3);
+    CHECK(device.read(dsp + 0x3a, 2) == 2);
+    CHECK(device.read(ai + 8, 4) == 0);
+  }
+}
+} // namespace audio_dma_clock_checks
+
 void audio_and_aram() {
   Devices devices(Console::GameCube);
   devices.write(pi + 4, 32, 4);
@@ -1690,6 +1873,10 @@ int main() {
     controller_calibration();
     controller_analog_modes();
     controller_poll_field_boundary();
+    audio_dma_clock_checks::enabled_controls();
+    audio_dma_clock_checks::disabled_tick_calendar();
+    audio_dma_clock_checks::stop_restart_descriptor();
+    audio_dma_clock_checks::absent_callback();
     audio_and_aram();
     disconnected_aram_live_descriptor();
     aram_dma_bank_boundaries();

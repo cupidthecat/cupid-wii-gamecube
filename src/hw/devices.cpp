@@ -1520,16 +1520,20 @@ void Devices::start_aram_dma() {
 }
 
 void Devices::audio_dma_block() {
-  if ((dsp_[0x36 / 2] & 0x8000) == 0)
-    return;
-  std::array<u8, 32> bytes{};
+  const bool enabled = (dsp_[0x36 / 2] & 0x8000) != 0;
   std::array<s16, 16> samples{};
-  dma_read(audio_address_, bytes);
-  for (unsigned i = 0; i < samples.size(); ++i)
-    samples[i] = static_cast<s16>((u16(bytes[i * 2]) << 8) | bytes[i * 2 + 1]);
+  if (enabled) {
+    std::array<u8, 32> bytes{};
+    dma_read(audio_address_, bytes);
+    for (unsigned i = 0; i < samples.size(); ++i)
+      samples[i] = static_cast<s16>((u16(bytes[i * 2]) << 8) | bytes[i * 2 + 1]);
+  }
   const u32 divisor = (console_ == Console::Wii ? 2250u : 2248u) * ((ai_[0] & 64) ? 3u : 2u) / 2;
   if (audio_samples)
     audio_samples(samples, 108000000u / divisor);
+  // The DAC clock continues with silence while DMA is disabled, without reading RAM.
+  if (!enabled)
+    return;
   if (audio_blocks_ != 0) {
     --audio_blocks_;
     audio_address_ += 32;

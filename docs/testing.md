@@ -1342,3 +1342,49 @@ The startup acceptance SHA256 is
 Evidence remains under `scalar-reuse-measurement-v3-components-handoff-v1/`
 and `scalar-reuse-measurement-v3-games-handoff-v1/` in the continuation cache.
 No adaptive rerun or product admission change follows these mixed results.
+
+## 2026-10-23 DAC clock and host floating controls
+
+Disabled main audio DMA now delivers sixteen zero samples on each eight-frame
+DAC tick. It performs no RAM read and preserves the DMA descriptor, block
+count and completion status. Public checks cover both consoles and rates,
+exact boundaries, split advances, stop/restart, reload length changes and
+absent callbacks. The stock implementation fails on the first missing silent
+packet. Output sample counts and hashes intentionally include these zeros;
+older captures retain their original PCM diagnostic scope.
+
+On x86-64, incoming host FTZ/DAZ previously changed guest subnormal results.
+The CPU scope now selects flushing from FPSCR.NI, preserves subnormal inputs,
+masks host floating traps and restores the complete incoming MXCSR. Its
+3,184 public cases cover both consoles, all host/guest rounding modes,
+signed scalar and paired operations, NI, unmasked host traps, quantized
+stores, guest program-fault delivery and rejected operations. Separate stock
+negative controls expose the changed result and leaked host status.
+
+Strict MSVC Release/LTO and GCC Release each pass thirteen selected CPU,
+device, runtime, guest-video and reference checks, including 2,435,072 NI
+arithmetic results and destination lanes. The rebuilt host-audio fixture and
+compiled mixer comparison also pass on both profiles; GCC additionally passes
+the owned Pulse shutdown check. These are fifteen distinct checks on Windows
+and sixteen on GCC, assembled from the selected run and the corrected audio
+fixture run. The fixture initially assumed no disabled-DMA samples, then used
+the wrong reset rate; its final independent calendar checks all zero samples
+and their hash at the Wii reset rate of 32 kHz, including output replacement.
+
+Clang 18 ASan/UBSan with leak detection passes those thirteen checks and the
+two rebuilt audio checks using system SDL. Its separately selected shutdown
+check fails because that recipe does not include the pinned SDL shutdown
+patch. The original failed assertion and earlier missing-target invocations
+remain preserved. Fresh validation with pinned dependencies is pending;
+none of these checks establishes clean commercial endpoint playback or speed.
+Logs remain under `disabled-dac-integrated-20261023/` in the continuation cache.
+
+The original fixed-depth Sunshine replay is stopped. Its 827 raw checkpoints
+reach field 49,620, beyond the earlier field-44,158 renderer failure. All 735
+historical frames through field 44,100 match byte-for-byte. The frozen
+`9245eff` binary, source freeze and build receipt retain their recorded hashes.
+The owner and child process IDs are absent; final state, exit status and
+storage flush are missing. Its planned 50,000-field endpoint remains incomplete.
+This evidence predates the latch readback and audio changes, and proves only
+the image prefix and later checkpoint progress. Review remains under
+`depth-route-partial-audit-20261023/` in the continuation cache.

@@ -30,8 +30,12 @@ unsafe final anchors and coverage coordinates retain explicit range errors.
 Authored public tests check both axes and signs, nonconstant frozen depth,
 literal boundary anchors and independent signed 64-bit pixel deltas. A private
 captured triangle also passes the normal draw API and retained-plane checks
-under MSVC, GCC and Clang ASan/UBSan. Game execution past its original failure
-point remains to be verified.
+under MSVC, GCC and Clang ASan/UBSan. A frozen `9245eff` replay later retains
+checkpoint images through field 49,620, beyond the original field-44,158
+failure. All 735 historical images match through field 44,100. The run stopped
+without final state or an observed exit code, so its planned 50,000-field
+endpoint and final persistence remain unverified. See [compatibility](compatibility.md)
+for the implementation scope.
 
 The actual-source comparison also checks 144 wide culled/frozen command pairs across both axes and signs, origin distances of 5, 8, 64 and 128 million pixels, W values of 0.5, 1 and 2, and three scissor offsets. Windows MSVC and Linux GCC each pass 82,221 emitted sample comparisons across these pairs and the existing 10,000-command corpus.
 

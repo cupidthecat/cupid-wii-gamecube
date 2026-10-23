@@ -2801,12 +2801,7 @@ void floating_host_rounding_tests() {
         CHECK(std::fesetround(modes[host]) == 0);
         _mm_setcsr((_mm_getcsr() & ~0x6000u) | simd_modes[simd]);
         const int incoming = std::fegetround();
-        const auto incoming_mode = std::find(modes.begin(), modes.end(), incoming);
-        // C libraries report split controls differently. A valid saved mode
-        // restores both controls; an unrecognized one leaves guest rounding.
-        const unsigned restored = incoming_mode == modes.end()
-                                      ? host
-                                      : static_cast<unsigned>(incoming_mode - modes.begin());
+        const unsigned incoming_simd = _mm_getcsr();
         state.pc = 0x1000;
         state.msr = msr::fp;
         state.fpscr = host;
@@ -2815,8 +2810,8 @@ void floating_host_rounding_tests() {
         memory.write32(0x1000, fp(21, 3, 1, 2));
         CHECK(cpu.step() == 1);
         CHECK(state.fpr[3].bits[0] == 0x3ff0000000000000ull + (host == 2 ? 1 : 0));
-        CHECK(std::fegetround() == modes[restored]);
-        CHECK((_mm_getcsr() & 0x6000u) == simd_modes[restored]);
+        CHECK(std::fegetround() == incoming);
+        CHECK(_mm_getcsr() == incoming_simd);
         ++cases;
       }
 #endif
@@ -2825,6 +2820,133 @@ void floating_host_rounding_tests() {
   CHECK(cases == 448);
 #else
   CHECK(cases == 416);
+#endif
+}
+
+void floating_host_subnormal_tests() {
+#if defined(_M_X64) || defined(__x86_64__)
+  struct HostEnvironment {
+    std::fenv_t saved{};
+    unsigned simd = _mm_getcsr();
+
+    HostEnvironment() {
+      CHECK(std::fegetenv(&saved) == 0);
+    }
+
+    ~HostEnvironment() {
+      std::fesetenv(&saved);
+      _mm_setcsr(simd);
+    }
+  } environment;
+
+  constexpr std::array<int, 4> modes{FE_TONEAREST, FE_TOWARDZERO, FE_UPWARD, FE_DOWNWARD};
+  constexpr std::array<unsigned, 4> simd_modes{0u, 0x6000u, 0x4000u, 0x2000u};
+  unsigned cases = 0;
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    Memory memory;
+    Interpreter cpu(memory, console);
+    auto &state = cpu.state();
+    for (unsigned host = 0; host < modes.size(); ++host)
+      for (unsigned guest = 0; guest < modes.size(); ++guest)
+        for (unsigned controls : {0u, 0x40u, 0x8000u, 0x8040u})
+          for (bool ni : {false, true})
+            for (unsigned primary : {4u, 59u, 63u})
+              for (bool divide : {false, true})
+                for (bool negative : {false, true}) {
+                  CHECK(std::fesetround(modes[host]) == 0);
+                  const unsigned incoming =
+                      (_mm_getcsr() & ~0xffc0u) | 0x1f80u | simd_modes[host] | controls;
+                  _mm_setcsr(incoming);
+                  state.pc = 0x1000;
+                  state.msr = msr::fp;
+                  state.spr[spr::hid0] = 0;
+                  state.spr[spr::hid2] = 0xa0000000;
+                  state.fpscr = guest | (ni ? 4u : 0u);
+                  const u64 magnitude = primary == 63 ? 1u : 0x36a0000000000000ull;
+                  const u64 input = magnitude | (negative ? 0x8000000000000000ull : 0);
+                  state.fpr[2].bits = {input, input};
+                  state.fpr[3].bits = {divide ? magnitude : 0, divide ? magnitude : 0};
+                  state.fpr[1].bits = {0x123456789abcdef0ull, 0x9182736455463728ull};
+                  const auto before = state;
+                  memory.write32(0x1000, fp(divide ? 18 : 21, 1, 2, 3, 0, primary, true));
+                  CHECK(cpu.step() == (divide ? primary == 63 ? 31u : 17u : 1u));
+                  const u64 sign = negative ? 0x8000000000000000ull : 0;
+                  const u64 expected =
+                      divide ? sign | 0x3ff0000000000000ull : sign | (ni ? 0 : magnitude);
+                  CHECK(state.fpr[1].bits[0] == expected);
+                  CHECK(state.fpr[1].bits[1] == (primary == 63 ? before.fpr[1].bits[1] : expected));
+                  const u32 category = divide     ? negative ? 8u : 4u
+                                       : ni       ? negative ? 0x12u : 2u
+                                       : negative ? 0x18u
+                                                  : 0x14u;
+                  CHECK(state.fpscr == (before.fpscr | (category << 12)));
+                  CHECK(state.cr == 0);
+                  CHECK(state.gpr == before.gpr && state.spr == before.spr &&
+                        state.sr == before.sr && state.msr == before.msr);
+                  for (unsigned reg = 0; reg < state.fpr.size(); ++reg)
+                    if (reg != 1)
+                      CHECK(state.fpr[reg].bits == before.fpr[reg].bits);
+                  CHECK(std::fegetround() == modes[host]);
+                  CHECK(_mm_getcsr() == incoming);
+                  ++cases;
+                }
+
+    // Unmasked host exceptions must not turn guest exceptional arithmetic into
+    // a host trap. Returning and delivering a guest program fault both restore
+    // every SIMD bit, including the incoming sticky flags and trap masks.
+    for (unsigned primary : {4u, 59u, 63u})
+      for (bool ni : {false, true})
+        for (bool guest_fault : {false, true})
+          for (unsigned controls : {0u, 0x40u, 0x8000u, 0x8040u}) {
+            CHECK(std::fesetround(FE_TONEAREST) == 0);
+            const unsigned incoming = (_mm_getcsr() & ~0xffc0u) | controls;
+            _mm_setcsr(incoming);
+            state.pc = 0x1000;
+            state.msr = msr::fp | (guest_fault ? 0x900u : 0u);
+            state.spr[spr::hid0] = 0;
+            state.spr[spr::hid2] = 0xa0000000;
+            state.fpscr = (ni ? 4u : 0u) | (guest_fault ? 0x10u : 0u);
+            state.fpr[2].bits = {0x3ff0000000000000ull, 0x3ff0000000000000ull};
+            state.fpr[3].bits = {0, 0};
+            memory.write32(0x1000, fp(18, 1, 2, 3, 0, primary));
+            CHECK(cpu.step() == (primary == 63 ? 31u : 17u));
+            CHECK(state.pc == (guest_fault ? 0x700u : 0x1004u));
+            CHECK((state.fpscr & 0x84000000u) == 0x84000000u);
+            if (guest_fault)
+              CHECK(state.spr[spr::srr0] == 0x1000 && (state.spr[spr::srr1] & 0x100000));
+            CHECK(std::fegetround() == FE_TONEAREST);
+            CHECK(_mm_getcsr() == incoming);
+            // Mask again before test-support or library work outside the CPU.
+            _mm_setcsr(incoming | 0x1f80u);
+            ++cases;
+          }
+
+    // Quantized stores also acquire guest controls. Both completion and an
+    // unsupported format must return the original split host environment.
+    for (bool rejected : {false, true})
+      for (unsigned controls : {0u, 0x40u, 0x8000u, 0x8040u}) {
+        CHECK(std::fesetround(FE_DOWNWARD) == 0);
+        const unsigned incoming = (_mm_getcsr() & ~0xffc0u) | 0x1f80u | 0x4000u | controls;
+        _mm_setcsr(incoming);
+        const int incoming_round = std::fegetround();
+        state.pc = 0x1000;
+        state.msr = msr::fp;
+        state.fpscr = 4;
+        state.spr[912] = rejected ? 1 : 4;
+        state.fpr[3].bits = {0x3ff8000000000000ull, 0x4004000000000000ull};
+        memory.write32(0x1000, imm(60, 3, 0, 0x200));
+        if (rejected)
+          CHECK_THROWS(cpu.step());
+        else {
+          CHECK(cpu.step() == 1);
+          CHECK(memory.read16(0x200) == 0x0102);
+        }
+        CHECK(std::fegetround() == incoming_round);
+        CHECK(_mm_getcsr() == incoming);
+        ++cases;
+      }
+  }
+  CHECK(cases == 3184);
 #endif
 }
 
@@ -3698,6 +3820,7 @@ int main() {
     bat_register_change_tests();
     mutable_bat_bank_tests();
     floating_host_rounding_tests();
+    floating_host_subnormal_tests();
     floating_tests();
     paired_tests();
     cache_tests();

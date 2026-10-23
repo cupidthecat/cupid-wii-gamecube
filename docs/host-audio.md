@@ -13,6 +13,13 @@ rate calculation. Speaker queues start at divisor 36,000 (3 kHz) before the
 first packet. Remote packets carry their own divisor and channel gains.
 Speaker processing is a host setting separate from the HID speaker-status bit.
 
+The main DAC supplies eight stereo frames on every scheduled tick. When its
+DMA enable bit is clear, it supplies sixteen zero samples without reading RAM
+or advancing the DMA descriptor, remaining block count or completion interrupt.
+The AI streaming sample counter has its own clock and enable bit. Disabling
+main DMA therefore inserts timed silence into its host queue rather than
+leaving the mixer to fill a missing source interval.
+
 Each queue stores overlapping, windowed 256-frame granules with a 128-frame
 stride. A six-point cubic Hermite interpolator produces output samples.
 The configured 80 ms buffer adjusts the bounded queue; excess backlog is
@@ -148,6 +155,9 @@ audio during controllable gameplay and real-time execution remain outstanding.
 
 The existing `audio_samples`, `audio_nonzero_samples`, `audio_peak` and
 `audio_hash` fields describe the original main DMA values before host mixing.
+They include the scheduled zero samples while main DMA is disabled. Adding
+those samples changes the count and hash even when host audio is disabled;
+older count/hash captures retain their original implementation scope.
 Remote packets and disc audio do not change them. The separate `disc_audio_samples`,
 `disc_audio_nonzero_samples`, `disc_audio_peak` and `disc_audio_hash` fields
 record delivered disc PCM before AI volume and host processing, including

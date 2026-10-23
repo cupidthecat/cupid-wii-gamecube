@@ -100,6 +100,15 @@ Page-table reads use CPU data backing, while R/C writes use the strict host span
 
 Reciprocal segments come from sampled outputs at the pinned reference's segment boundaries. The sampler called the actual reference functions and measured output fraction and slope. The runtime reconstructs the estimates with its own exponent handling and interpolation. Single fused arithmetic computes a host binary64 FMA, then resolves binary32 halfway cases by comparing an exact integer product and addend with the rounded result. Floating arithmetic applies the guest rounding mode within a scope and restores the host's previous mode afterward.
 
+On x86-64, the scope also clears incoming SIMD denormals-are-zero, masks host
+floating traps and selects output flushing from FPSCR.NI. Host FTZ/DAZ flags
+therefore cannot erase guest subnormal inputs or IEEE results. Scalar, paired
+and quantized operations share this scope. It restores the incoming MXCSR,
+including sticky flags and independently selected x87/SIMD rounding, on both
+normal and rejected instruction paths. Public tests cover 3,184 cases across
+both consoles, all four host and guest rounding modes, signed subnormals, NI,
+incoming FTZ/DAZ and unmasked host exceptions.
+
 NI preserves subnormal inputs and flushes tiny outputs to signed zero. Binary64 tininess follows significand rounding with an unrestricted exponent, before rounding into the subnormal range. This distinction matters when the final binary64 result would be the smallest normal number: multiplying that number by the value immediately below one still flushes, while a fused result closer to the normal boundary can remain normal. The runtime resolves this rare boundary with exact integer products, sums and quotient comparisons. It does not depend on host FTZ or DAZ settings. Single output conversion separately flushes values below the binary32 normal threshold before conversion rounding, matching `ForceSingle`.
 
 ## Validation

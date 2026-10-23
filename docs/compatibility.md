@@ -63,8 +63,13 @@ only the replay-update count differs because this run uses a collapsed static
 replay. It records the culled triangle and identifies a scaled depth-origin
 intermediate beyond signed 32-bit range. A bounded conversion fix passes that
 triangle and independent public rasterizer regressions under three compiler
-profiles. A new game run must still pass the original failure point; no first
-Shine, saved-level restoration or speed result is established by these checks.
+profiles. A later frozen `9245eff` replay retains 827 checkpoint frames through
+field 49,620, crossing the original failure point. All 735 historical frames
+through field 44,100 match byte-for-byte. The replay's owner and child are
+absent, and final state, exit code and storage flush are missing. Its planned
+50,000-field endpoint remains incomplete. This evidence predates the latch
+readback and disabled-DMA silence changes. No first Shine, saved-level
+restoration or speed result is established by these checks.
 Detailed failure evidence is recorded in [testing](testing.md).
 
 ## Frozen Sunshine FLUDD and save capture

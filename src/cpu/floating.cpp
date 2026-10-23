@@ -13,26 +13,55 @@ namespace cupid::cpu {
 namespace {
 class HostRounding {
 public:
-  explicit HostRounding(u32 mode) : saved_(std::fegetround()) {
+  explicit HostRounding(u32 fpscr) : saved_(std::fegetround()) {
     constexpr int modes[] = {FE_TONEAREST, FE_TOWARDZERO, FE_UPWARD, FE_DOWNWARD};
-    bool matching = saved_ == modes[mode & 3];
+    bool matching = saved_ == modes[fpscr & 3];
 #if defined(_M_X64) || defined(__x86_64__)
     constexpr unsigned simd_modes[] = {0u, 0x6000u, 0x4000u, 0x2000u};
-    matching = matching && (_mm_getcsr() & 0x6000u) == simd_modes[mode & 3];
+    simd_saved_ = _mm_getcsr();
+    matching = matching && (simd_saved_ & 0x6000u) == simd_modes[fpscr & 3];
+    // C libraries can report an unrecognized mode for split x87/SIMD controls.
+    // Preserve that complete environment before asking C to change rounding.
+    if (std::find(std::begin(modes), std::end(modes), saved_) == std::end(modes)) {
+      if (std::fegetenv(&split_saved_) != 0)
+        throw std::runtime_error("Host floating environment is unavailable");
+      split_saved_valid_ = true;
+    }
 #endif
     changed_ = !matching;
-    if (changed_ && std::fesetround(modes[mode & 3]) != 0)
+    if (changed_ && std::fesetround(modes[fpscr & 3]) != 0)
       throw std::runtime_error("Host floating rounding mode is unavailable");
+#if defined(_M_X64) || defined(__x86_64__)
+    // Guest arithmetic masks host traps and keeps subnormal inputs. Only NI
+    // selects output flushing; incoming host FTZ/DAZ must not change the guest.
+    const unsigned desired =
+        (simd_saved_ & ~0xffc0u) | 0x1f80u | simd_modes[fpscr & 3] | ((fpscr & 4) ? 0x8000u : 0u);
+    if (_mm_getcsr() != desired)
+      _mm_setcsr(desired);
+#endif
   }
 
   ~HostRounding() {
+#if defined(_M_X64) || defined(__x86_64__)
+    if (split_saved_valid_)
+      std::fesetenv(&split_saved_);
+    else if (changed_)
+      std::fesetround(saved_);
+    _mm_setcsr(simd_saved_);
+#else
     if (changed_)
       std::fesetround(saved_);
+#endif
   }
 
 private:
   int saved_;
   bool changed_ = false;
+#if defined(_M_X64) || defined(__x86_64__)
+  unsigned simd_saved_ = 0;
+  std::fenv_t split_saved_{};
+  bool split_saved_valid_ = false;
+#endif
 };
 
 constexpr u32 invalid_mask = 0x01f80700, exception_mask = 0x1ff80700;
@@ -219,7 +248,7 @@ void Interpreter::execute_float(u32 opcode) {
     exception(0x800, state_.pc);
     throw GuestFault{};
   }
-  const HostRounding rounding(state_.fpscr & 3);
+  const HostRounding rounding(state_.fpscr);
   const bool single = (opcode >> 26) == 59, rc = opcode & 1;
   const unsigned d = (opcode >> 21) & 31, a = (opcode >> 16) & 31, b = (opcode >> 11) & 31,
                  c = (opcode >> 6) & 31;
@@ -431,7 +460,7 @@ void Interpreter::execute_paired(u32 opcode) {
     exception(0x800, state_.pc);
     throw GuestFault{};
   }
-  const HostRounding rounding(state_.fpscr & 3);
+  const HostRounding rounding(state_.fpscr);
   const auto aa = state_.fpr[a], bb = state_.fpr[b], cc = state_.fpr[c];
   bool completed = true, checked = false;
   switch (xo) {
@@ -533,7 +562,7 @@ void Interpreter::quantized(u32 opcode, bool indexed) {
     exception(0x800, state_.pc);
     throw GuestFault{};
   }
-  const HostRounding rounding(state_.fpscr & 3);
+  const HostRounding rounding(state_.fpscr);
   const unsigned primary = opcode >> 26, sub = (opcode >> 1) & 63;
   const bool read = indexed ? (sub == 6 || sub == 38) : primary == 56 || primary == 57;
   const bool update = indexed ? sub >= 32 : (primary & 1) != 0;

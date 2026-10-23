@@ -1085,5 +1085,36 @@ rasterizer suite also passes for each proposal build. Independent review
 rehashes 229 sealed outputs and 142 build-tree artifacts and checks all 27
 terminal child/cleanup receipts. Evidence remains under
 `depth-origin-wide-study/component-runner-v2/` in the continuation cache.
-This study does not observe the actual Sunshine error inputs or establish a
-game fix; no proposal arithmetic is integrated.
+That initial study predates the actual Sunshine numeric record and establishes
+only its authored component scope.
+
+A later passive diagnostic replay reproduces the exact failure after
+350,648,712,764 attempts. All 735 checkpoint frames, the final frame and four
+stored files match the original byte for byte. All 60 final JSON keys are
+compared; the sole difference is the replay-update count, 19 versus 1, from
+using a collapsed static replay. The child returns 4 and its finite owner
+records actual wait and process cleanup. The new 761-file manifest has SHA256
+`1d2089c3ae16727f53f25d471efa6349cfbefedb0eef296bbb0db401f627c385`.
+The raw numeric error record remains private under
+`depth-diagnostic-route-v2-execution/reproduction/` in the continuation cache.
+
+The finalized depth-origin patch preserves the original signed 32-bit branch
+and widens only the integral scaled intermediate. It rejects final anchors
+that would overflow signed EFB pixel subtraction. A separate component attempt
+builds six targets per profile with strict MSVC Release/LTO, GCC 13 Release
+and Clang 18 ASan/UBSan, including leak checks. Twelve positive tests and six
+expected negative controls pass across 36 guarded command children. The
+captured triangle rejects at the exact old guard on stock and retains the
+expected finite nonconstant plane after the patch. Later public draw calls
+verify its frozen plane and CPU fragment depths. The exact public rasterizer
+implementation and full test suite pass in all three profiles; the public
+additions use authored analytic inputs and boundary values.
+
+Root review rehashes all 547 component files and verifies actual project
+compiler flags, six link maps per profile, expected exits and owned cleanup.
+The component handoff SHA256 is
+`07045f2591987b0b29a00c8215d076aae72557eef1d9656f362c362c46454e10`.
+Evidence remains under `depth-origin-wide-study/captured-component-v3/` and
+`captured-component-v3-result/` in the continuation cache. These checks qualify
+the recorded triangle and synthetic rasterizer behavior; a new game replay
+must still pass the original failure point.

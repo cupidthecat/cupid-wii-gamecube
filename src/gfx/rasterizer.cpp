@@ -24,11 +24,23 @@ int depth_origin(float value) {
   // A culled primitive uses only an interpolation origin, without the edge
   // products that require the smaller coverage-coordinate range.
   constexpr float limit = 2147483520.0f;
-  if (!std::isfinite(scaled) || scaled < -limit || scaled > limit)
+  if (std::isfinite(scaled) && scaled >= -limit && scaled <= limit) {
+    const int truncated = static_cast<int>(scaled);
+    const int rounded = truncated + (scaled - truncated >= 0.5f ? 1 : 0);
+    return (rounded + 6) >> 4;
+  }
+  // Binary32 values outside the original scaled range are integral. Widen
+  // only this intermediate while retaining the existing integer anchor.
+  constexpr float wide_limit = float(s64(std::numeric_limits<int>::max()) + 1) * 16;
+  if (!std::isfinite(scaled) || scaled < -wide_limit || scaled > wide_limit)
     throw VertexError("Raster depth origin exceeds the supported fixed-point range");
-  const int truncated = static_cast<int>(scaled);
-  const int rounded = truncated + (scaled - truncated >= 0.5f ? 1 : 0);
-  return (rounded + 6) >> 4;
+  const s64 rounded = static_cast<s64>(scaled);
+  const s64 origin = (rounded + 6) >> 4;
+  // Plane evaluation subtracts this anchor from signed 32-bit EFB pixels.
+  constexpr s64 minimum = 639 - s64(std::numeric_limits<int>::max());
+  if (origin < minimum || origin > std::numeric_limits<int>::max())
+    throw VertexError("Raster depth origin exceeds the supported fixed-point range");
+  return static_cast<int>(origin);
 }
 
 unsigned clip_mask(const Vector4 &v) {

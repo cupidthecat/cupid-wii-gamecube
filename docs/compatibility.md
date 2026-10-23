@@ -57,11 +57,15 @@ It stops at field 44,158 with a renderer X/Y depth-origin range error at
 735 checkpoint frames and the final state/frame remain sealed. The final card
 bytes match the earlier save. No first Shine or clean completion is established.
 
-The error concerns a projected interpolation origin, rather than a demonstrated
-unsupported CPU operation. The original capture contains no failing vertex or
-numeric projection dump, so its exact cause remains under investigation.
-Source analysis and synthetic arithmetic proposals do not yet establish a fix
-for this game stop. Detailed failure evidence is recorded in [testing](testing.md).
+An independent passive diagnostic replay reproduces the error, all 735 checkpoint
+frames, the final frame and every stored file. Across all 60 final JSON fields,
+only the replay-update count differs because this run uses a collapsed static
+replay. It records the culled triangle and identifies a scaled depth-origin
+intermediate beyond signed 32-bit range. A bounded conversion fix passes that
+triangle and independent public rasterizer regressions under three compiler
+profiles. A new game run must still pass the original failure point; no first
+Shine, saved-level restoration or speed result is established by these checks.
+Detailed failure evidence is recorded in [testing](testing.md).
 
 ## Frozen Sunshine FLUDD and save capture
 

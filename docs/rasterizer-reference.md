@@ -21,6 +21,18 @@ Scissor rectangles can wrap in both axes. Each valid wrapped region is rendered 
 
 Depth-plane origins use the defined signed conversion range separately from coverage coordinates. Culled triangles can project far outside the EFB and still update the plane used by a later zfreeze draw. Applying the edge-product range limit to those origins previously raised a raster-coordinate error. The public regression draws culled triangles with positive and negative eight-million-pixel X/Y origins, then checks all seven remembered plane fields through a later frozen draw. The baseline fails with that error; the corrected path passes Windows GCC and MSVC, and Linux GCC with address, undefined-behavior and float-cast-overflow sanitizers. Coverage coordinates retain their edge-arithmetic check.
 
+Origins whose scaled intermediate exceeds signed 32-bit range now use a signed
+64-bit intermediate. The original conversion and rounding remain unchanged
+within their prior range. Binary32 values outside that range are integral;
+after the original shift, the final anchor must still fit signed 32-bit storage
+and allow subtraction from every EFB pixel without overflow. Non-finite inputs,
+unsafe final anchors and coverage coordinates retain explicit range errors.
+Authored public tests check both axes and signs, nonconstant frozen depth,
+literal boundary anchors and independent signed 64-bit pixel deltas. A private
+captured triangle also passes the normal draw API and retained-plane checks
+under MSVC, GCC and Clang ASan/UBSan. Game execution past its original failure
+point remains to be verified.
+
 The actual-source comparison also checks 144 wide culled/frozen command pairs across both axes and signs, origin distances of 5, 8, 64 and 128 million pixels, W values of 0.5, 1 and 2, and three scissor offsets. Windows MSVC and Linux GCC each pass 82,221 emitted sample comparisons across these pairs and the existing 10,000-command corpus.
 
 The native Sunshine opening-transition failure was captured at field 6,717 and instruction 54,146,047,965. The diagnostic run matches every final state field, the last frame, all 24 MiB of main RAM and the PCM bytes from the earlier failed run. Its thirteen-vertex triangle strip reaches the error on primitive ten: the projected X origin is 4,552,191 pixels, or 72,835,056 in the coverage conversion, just beyond the coverage-only range. The actual source processes eleven triangles: eight are trivially rejected and three are culled. They emit no samples, but the culled triangles must update the remembered depth plane.

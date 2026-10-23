@@ -3,7 +3,9 @@
 #include "test_support.hpp"
 #include <bit>
 #include <cmath>
+#include <limits>
 #include <map>
+#include <string_view>
 
 using namespace cupid;
 using namespace cupid::gfx;
@@ -300,6 +302,115 @@ void wide_culled_depth_tests() {
     }
 }
 
+void widened_depth_intermediate_tests() {
+  const auto seed = [](Fixture &f, unsigned axis, float distance, bool small_w) {
+    f.bp.fill(0);
+    f.xf.fill(0);
+    f.bp[0] = (1u << 4) | (3u << 14);
+    f.bp[0x21] = (639u << 12) | 527u;
+    f.put(0x101a, 1);
+    f.put(0x101b, 1);
+    f.put(0x101c, 1000);
+    f.put(0x101f, 1000);
+    TransformedVertex a, b, c;
+    const float w = small_w ? 1.0f / std::abs(distance) : 1.0f;
+    a.clip_position = {0, 0, -0.5f * w, w};
+    a.clip_position[axis] = small_w ? (distance < 0 ? -1.0f : 1.0f) : distance;
+    b.clip_position = {0, 0, -0.75f, 1};
+    c.clip_position = {0, 0, -0.5f, 1};
+    c.clip_position[axis ^ 1u] = 1;
+    f.draw({a, b, c});
+    CHECK(f.samples.empty());
+  };
+  const auto remembered_plane = [](Fixture &f) {
+    f.bp[0] = (1u << 4) | (1u << 19);
+    f.bp[0x20] = (342u << 12) | 342u;
+    f.bp[0x21] = (357u << 12) | 357u;
+    f.bp[0x59] = 171u | (171u << 10);
+    f.put(0x101a, 8);
+    f.put(0x101b, 8);
+    f.put(0x101d, 350);
+    f.put(0x101e, 350);
+    std::optional<RasterPlane> plane;
+    f.rasterizer.hardware = [&](const RasterWork &work) {
+      plane = work.depth;
+      return true;
+    };
+    f.draw({f.vertex(0, 0, 100), f.vertex(4, 0, 100), f.vertex(0, 4, 100)});
+    CHECK(plane.has_value());
+    f.rasterizer.hardware = {};
+    return *plane;
+  };
+  const auto rejects = [](auto &&draw, std::string_view expected) {
+    bool rejected = false;
+    try {
+      draw();
+    } catch (const VertexError &error) {
+      CHECK(error.what() == expected);
+      rejected = true;
+    }
+    CHECK(rejected);
+  };
+  // Powers of two give independent analytic gradients and nonconstant frozen
+  // depth. The larger anchors require a scaled intermediate wider than int32.
+  for (unsigned axis = 0; axis < 2; ++axis)
+    for (float magnitude : {8388608.0f, 268435456.0f, 1073741824.0f})
+      for (float sign : {-1.0f, 1.0f}) {
+        Fixture f;
+        const float distance = magnitude * sign;
+        seed(f, axis, distance, true);
+        const auto p = remembered_plane(f);
+        CHECK(p.value == 500);
+        CHECK(p.dx == (axis ? 250 : 250 / distance));
+        CHECK(p.dy == (axis ? 250 / distance : 250));
+        CHECK(p.x_origin == (axis ? 0 : static_cast<int>(distance)));
+        CHECK(p.y_origin == (axis ? static_cast<int>(distance) : 0));
+        CHECK(p.x_offset == 0.495f && p.y_offset == 0.495f);
+        CHECK(p.at(0, 0) == 373.75f);
+        f.draw({f.vertex(0, 0, 100), f.vertex(4, 0, 100), f.vertex(0, 4, 100)});
+        CHECK(f.samples.at(0).depth == 373);
+        CHECK(f.samples.at(axis ? 1u : 640u).depth == 623);
+      }
+  for (unsigned axis = 0; axis < 2; ++axis) {
+    for (float distance : {-2147483008.0f, 2147483520.0f}) {
+      Fixture f;
+      seed(f, axis, distance, false);
+      const auto p = remembered_plane(f);
+      CHECK(p.x_origin == (axis ? 0 : static_cast<int>(distance)));
+      CHECK(p.y_origin == (axis ? static_cast<int>(distance) : 0));
+      for (int y : {0, 527})
+        for (int x : {0, 639}) {
+          const s64 dx = s64(x) - p.x_origin, dy = s64(y) - p.y_origin;
+          CHECK(dx >= std::numeric_limits<int>::min() && dx <= std::numeric_limits<int>::max());
+          CHECK(dy >= std::numeric_limits<int>::min() && dy <= std::numeric_limits<int>::max());
+          const float expected =
+              p.value + p.dx * (p.x_offset + float(dx)) + p.dy * (p.y_offset + float(dy));
+          CHECK(std::bit_cast<u32>(p.at(x, y)) == std::bit_cast<u32>(expected));
+        }
+    }
+    for (float distance : {-2147483648.0f, -2147483520.0f, 2147483648.0f}) {
+      Fixture f;
+      rejects([&] { seed(f, axis, distance, false); },
+              "Raster depth origin exceeds the supported fixed-point range");
+    }
+  }
+  // Projection overflow and coverage-edge coordinates retain their own bounds.
+  Fixture f;
+  f.bp[0] |= 3u << 14;
+  auto a = f.vertex(0, 0);
+  a.clip_position = {1, 0, 0, std::numeric_limits<float>::denorm_min()};
+  rejects([&] { f.draw({a, f.vertex(4, 0), f.vertex(0, 4)}); },
+          "Raster depth origin exceeds the supported fixed-point range");
+  Fixture coverage;
+  coverage.xf[0x1005] = 1;
+  rejects(
+      [&] {
+        coverage.draw(
+            {coverage.vertex(268435456.0f, 0), coverage.vertex(0, 0), coverage.vertex(0, 4)});
+      },
+      "Raster coordinate exceeds the supported fixed-point range");
+}
+
 void captured_strip_depth_tests() {
   // Reduction of an opening-transition strip: a degenerate first triangle
   // preserves strip parity before a culled triangle with a wide depth origin.
@@ -405,6 +516,7 @@ int main() {
     clipping_and_depth_tests();
     captured_strip_depth_tests();
     wide_culled_depth_tests();
+    widened_depth_intermediate_tests();
     line_and_point_tests();
   });
 }

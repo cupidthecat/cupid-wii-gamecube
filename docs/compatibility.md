@@ -55,6 +55,21 @@ Shine, level completion, clean gameplay host audio and full speed remain
 unverified. The 1,060-file immutable manifest is recorded with the detailed
 evidence in [testing](testing.md).
 
+## Current Galaxy controls
+
+The frozen `d8a88fc` Windows interpreter/OpenGL runtime reaches normal outdoor
+festival gameplay on NVIDIA 597.30. Ordinary Nunchuk input at fields
+6,420–6,480 moves Mario across the plaza. A separate A press at 6,570–6,580
+produces a visible jump at 6,600 and landing at 6,660. Later ordinary walking
+reaches the road crest overlooking the town and castle at 7,680. These frames
+show player control outside the opening cinematic.
+
+The passive observer saves already cached frames and previously passed its
+bounded plain-CLI comparison. The longer navigation run has no complete
+plain-CLI comparison yet and uses disabled host audio. These observations
+establish movement, jumping and route progress; they do not establish a
+completed objective, gameplay save restoration, clean host audio or full speed.
+
 ## Earlier platform captures
 
 | Game | Platform | Strongest observed behavior | Still unverified |

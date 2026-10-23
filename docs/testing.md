@@ -876,3 +876,18 @@ The qualification manifest SHA256 is
 All source, commands, PCM, failed comparisons and card audits remain under
 `windows-gameplay-audio/saved-restart-20261023T030024865931Z/` in the continuation
 cache. These observations do not qualify clean audio or saved level progress.
+
+The frozen-d8 Windows Galaxy navigation capture observes ordinary movement
+after Nunchuk Y=220 at fields 6,420–6,480, a jump after A at 6,570–6,580,
+and landing at 6,660. Independent visual review confirms the displacement,
+airborne Mario and subsequent landing outside the cinematic. The raw frame
+SHA256 values are `9bd0a86db1b78daa64c26ea8555654b930494e3f72075d0e17f774649c8d0508`
+at 6,480, `b420e250929f581f325e4b136a35efe1285e879ec52dce02f16627fce1f07e95`
+at 6,600 and `971cb9bd9bd8c51ec65354ad9da168e57a60dc8fc88fdf1d6e254d899d2a1091`
+at 6,660. Ordinary walking later reaches the road crest at 7,680. Input
+histories, raw frames, PNG reviews and milestone hashes remain under
+`passive-frame-observer/galaxy-navigation-20261023T061218485138Z/` in the
+continuation cache. This longer route uses the previously checked cached-frame
+observer, interpreter, OpenGL and disabled host audio; its complete plain-CLI
+comparison remains unperformed. These individual observations do not establish
+level completion, saved gameplay restoration, audio delivery or full speed.

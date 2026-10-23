@@ -594,3 +594,29 @@ with the request in this pair; Galaxy is faster. The observations verify the
 recorded outputs across adapters and do not establish representative gameplay
 speed. Commands, device strings, timings and hashes remain in
 `.cache/continuation-20261022/windows-gpu-hint-stock-pairs/`.
+
+## Rejected native single-operation replacement experiment
+
+A private two-hit FIFO prototype keeps the 1,024-entry limit, replacing the
+permanent single-operation cache with fixed executable slots. It passes
+416 timed component children and 32 fixed-work game children. CPU state and
+RAM checks pass throughout; game pairs also match frames and storage. All
+raw samples, cold costs, maintenance counts and negative controls remain
+recorded. The production cache is unchanged.
+
+Four fixed AB/BA startup pairs per game/platform give median elapsed-time
+ratios of 0.9856/1.0064 for Windows Sunshine/Galaxy and 0.9817/0.9911 for
+Linux. These small or mixed startup changes do not justify the required
+control regressions. In the GameCube component fixtures, the 1,024-operation
+resident loop is 15.6% slower on
+Windows and 17.0% slower on Linux; the unsupported-integer control is
+5.0%/9.6% slower. The phased hot-set fixture's inclusive time increases
+91.7%/29.7%, and the 1,025-operation cycle is 71.0%/20.2% slower. The
+prototype is rejected for integration.
+
+The experiment uses fixed software-rendered startup work with host audio
+disabled. Shared captures remain active on other logical processors; the
+affinity reservation does not establish host isolation. No samples are
+discarded or repeated based on their result. The complete sealed evidence
+remains under `.cache/continuation-20261022/native-two-hit-fifo-timing/`.
+These results do not establish representative gameplay speed.

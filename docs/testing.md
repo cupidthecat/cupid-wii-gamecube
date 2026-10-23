@@ -1119,6 +1119,15 @@ Evidence remains under `depth-origin-wide-study/captured-component-v3/` and
 the recorded triangle and synthetic rasterizer behavior; a new game replay
 must still pass the original failure point.
 
+The corrected producer also passes a separate Windows interpreter/OpenGL
+startup pair with host audio disabled. Plain and passive builds each reach
+one billion attempts and 72 VI fields. All 60 final JSON fields, raw frame
+bytes and four stored files match without exclusions; passive field 60 also
+matches the historical frame. Root startup acceptance SHA256 is
+`3f3abcd66e61cd70f0bc6dac49c4d33b04542e2953bb247d6bd2cd8a3d7bae70`.
+This short pair does not pass the old 44,158-field failure or establish longer
+gameplay, audio, save restoration or speed.
+
 ## 2026-10-23 graphics regression qualification
 
 The full hardware-renderer suite now includes sixteen authored wide-origin
@@ -1140,10 +1149,13 @@ cache, with SHA256
 
 The first Linux launch, which forced the SDL offscreen backend and software
 rendering, crashed during backend initialization. That failed sequence remains
-preserved, including its completed Windows suite. The later Linux suites use
-the previously successful inherited WSLg environment. Their success qualifies
-that separate recipe; the earlier crash's cause remains unresolved. These
-tests do not establish game progress or physical Linux GPU support.
+preserved, including its completed Windows suite. A separate single GDB run
+localizes the observed SIGSEGV to Mesa's screen initialization, reached through
+EGL and SDL offscreen window creation. The later renderer-string query has not
+been reached; the internal driver failure remains unexplained. The later Linux
+suites use the previously successful inherited WSLg environment. Their success
+qualifies that separate recipe. These tests do not establish game progress or
+physical Linux GPU support.
 
 ## 2026-10-23 graphics performance studies
 
@@ -1188,3 +1200,92 @@ head have the same committed source tree, but binary identity and the timeout's
 cause are not established. Renderer progress markers and retention of the two
 public CTest logs now preserve evidence for subsequent runs without removing
 cases or increasing the deadline.
+
+For test commit `19049adb120e`, all seven jobs pass in the
+[push matrix](https://github.com/cupidthecat/cupid-wii-gamecube/actions/runs/40011427236).
+The [pull-request matrix](https://github.com/cupidthecat/cupid-wii-gamecube/actions/runs/40011435144)
+passes six jobs and retains a Windows renderer timeout at 600.04 seconds.
+Both sanitizer jobs pass in each matrix. The passing Windows renderer takes
+384.13 seconds. The failed output is an exact prefix of the passing output,
+including all sixteen first-use rows and the completed wide-origin checks.
+Its last unfinished stage is `xfb_clear_checks`, but the existing markers do
+not record elapsed time. The buffered CI timestamps cannot establish which
+stage consumed the cumulative deadline. The committed trees match; checkout
+and generated SDL revision metadata differ, and binary equality is unproven.
+
+Additional `[renderer-time]` lines now report integral milliseconds from main
+entry and around each existing stage, including fixture construction and
+backend setup. The original marker lines, cases, order and 600-second deadline
+remain unchanged. Timing calls stay outside check functions and their floating
+environment guards. `stage_ms` includes the begin timing log, the function and
+its local destructors, and the original returned marker; it excludes the final
+timing log. These diagnostics can perturb scheduling and do not explain a
+previous timeout. An unfinished stage still lacks a completed duration.
+
+The updated test source, SHA256
+`85a4d744dff831ef3a7c405b626ce219c11603f8ee72d15ed32faa3129ee0a6a`,
+passes one complete default suite per profile against the accepted core
+archives: strict MSVC Release/LTO on Windows NVIDIA, GCC 13 Release on inherited
+WSLg llvmpipe, and Clang 18 ASan/UBSan with leak detection on that WSLg recipe.
+Each run preserves all 52 original stage markers and sixteen first-use rows,
+and validates 52 paired, monotonic integer timing lines. All owned processes
+terminate with complete pipe drains and cleanup. Root acceptance SHA256 is
+`0fcb22092b3b414ae1a1ba94ca5a6ab3b789398d45b428df62c5052b73c48fb6`.
+These runs share the host with the fixed Sunshine replay and qualify the test
+change's correctness, without isolating timing or explaining the hosted timeout.
+
+## 2026-10-23 scalar RAM admission study
+
+A private candidate reuses the first scalar RAM admission only when the first
+memory instruction recomputes the same effective address. Address changes,
+later memory operations and branch checks retain their original guards. Thirty
+semantic gates, six layout checks and eight startup parity pairs pass across
+strict MSVC, GCC and Clang ASan/UBSan builds. The timing study uses a frozen
+runtime snapshot with software graphics and no host audio.
+
+The fixed component window contains 768 children and 384 pairs across twelve
+guest loops, both consoles, both execution backends and MSVC/GCC. Separate
+untimed full-state/RAM oracles pass before measurement. Every raw trial,
+same-stock bracket, cold/setup/prime/warm cost, hot-loop cost and guardian cost
+is retained. Windows same-address cases improve in this fixture, but changed
+addresses and GCC cases include regressions. For example, the two Windows
+GameCube interpreter changed-valid-address hot ratios are 1.0758 and 1.0769;
+the GCC pure-integer equivalents are 1.0979 and 1.1073. Inclusive costs and
+controls remain available rather than selecting only favorable hot loops.
+
+The separately fixed startup window completes all 64 children and 32 pairs.
+Sunshine uses three billion attempts and reaches 320 VI fields; Galaxy uses
+one billion attempts and reaches 76. All complete JSON bytes and values, raw
+frames and stored files match their frozen baselines without exclusions.
+Both comparison orders and both same-stock brackets remain in every setting.
+Ratios below one indicate less time. The following values use guardian costs,
+including child launch, execution, waiting, serialization and storage flush:
+
+| Compiler | Game | Backend | Candidate/stock median | Two candidate/stock ratios, range | Two same-stock ratios, range |
+| --- | --- | --- | ---: | --- | --- |
+| Windows | Sunshine | native | 0.984924 | 0.956484-1.013363 | 1.001917-1.005378 |
+| Windows | Sunshine | interpreter | 0.990803 | 0.982358-0.999247 | 0.978654-0.996610 |
+| Windows | Galaxy | native | 0.989300 | 0.985473-0.993128 | 0.987518-1.106057 |
+| Windows | Galaxy | interpreter | 0.995942 | 0.995266-0.996619 | 0.954658-1.006206 |
+| GCC | Sunshine | native | 0.999647 | 0.994739-1.004556 | 0.948615-1.002853 |
+| GCC | Sunshine | interpreter | 1.073193 | 0.991565-1.154821 | 1.080008-1.110369 |
+| GCC | Galaxy | native | 1.029882 | 1.017948-1.041816 | 0.957333-1.009539 |
+| GCC | Galaxy | interpreter | 1.025346 | 1.020790-1.029903 | 0.975138-1.016367 |
+
+Fresh seed-copy costs are also retained separately and added to guardian costs.
+The combined medians preserve these results, including both GCC Galaxy
+regressions. The large GCC Sunshine interpreter ratio remains in the data.
+All four Windows comparison ranges overlap their observed control ranges.
+Two comparison pairs per setting provide descriptive evidence only; no
+confidence estimate or isolated-host claim is made. Other owned heavy work is
+held during measurement, but foreign cleanup and OS activity remain unknown.
+Windows logical CPU 0 and Linux vCPU 0 are recorded separately; their physical
+mapping is unproven. Startup costs do not establish gameplay frame rates.
+
+The candidate remains private. Root and independent peer reviews recompute all
+64 raw results, 32 pair records, eight settings and three startup cost metrics.
+The startup acceptance SHA256 is
+`c9950126b6648fa19364e8d8d809d17e8fc0ab4b23eb5f29dc65ef59379abc5c`.
+Evidence remains under `scalar-reuse-measurement-v3-components-handoff-v1/`
+and `scalar-reuse-measurement-v3-games-handoff-v1/` in the continuation cache.
+No adaptive rerun or product admission change follows these mixed results.

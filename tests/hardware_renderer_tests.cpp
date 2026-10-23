@@ -30,11 +30,35 @@
 namespace {
 using namespace cupid;
 
+// One epoch for every renderer_stage template instantiation and fixture construction.
+std::chrono::steady_clock::time_point renderer_run_started;
+
+std::chrono::steady_clock::time_point renderer_stage_started(std::string_view name) {
+  const auto started = std::chrono::steady_clock::now();
+  const auto run_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(started - renderer_run_started).count();
+  std::cout << "[renderer-time] begin " << name << " run_ms=" << run_ms << '\n';
+  return started;
+}
+
+void renderer_stage_returned(std::string_view name, std::chrono::steady_clock::time_point started) {
+  const auto returned = std::chrono::steady_clock::now();
+  const auto run_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(returned - renderer_run_started)
+          .count();
+  const auto stage_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(returned - started).count();
+  std::cout << "[renderer-time] returned " << name << " run_ms=" << run_ms
+            << " stage_ms=" << stage_ms << '\n';
+}
+
 template <typename Function> void renderer_stage(std::string_view name, Function function) {
   std::cout << "[renderer] begin " << name << '\n';
+  const auto started = renderer_stage_started(name);
   function();
   // The check's local objects have been destroyed before this marker.
   std::cout << "[renderer] returned " << name << '\n';
+  renderer_stage_returned(name, started);
 }
 
 template <typename Function> Function graphics_function(const char *name) {
@@ -3098,9 +3122,12 @@ void benchmark(Fixture &software, Fixture &hardware) {
 } // namespace
 
 int main(int argc, char **argv) {
+  renderer_run_started = std::chrono::steady_clock::now();
   std::cout << std::unitbuf << "[renderer] begin fixture construction\n";
+  const auto fixture_started = renderer_stage_started("fixture construction");
   Fixture software, hardware;
   std::cout << "[renderer] returned fixture construction\n";
+  renderer_stage_returned("fixture construction", fixture_started);
   bool required = false, measure = false, fog_only = false, texture_cache_only = false,
        xfb_only = false, projection_only = false, state_only = false, fixed_lod_only = false,
        counter_only = false, counter_benchmark_only = false, empty_coverage_only = false,

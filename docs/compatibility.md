@@ -34,6 +34,12 @@ any integer-frame offset. Their cause and timing remain unresolved; see
 speed nor isolated performance. First Shine, level completion and clean
 gameplay audio remain unverified.
 
+A later private rejection observer completes another 12,000-field restart
+with zero product drops and zero events across all six source queues. Its
+single 120-second callback window is valid, but no endpoint waveform is
+recorded. This diagnostic does not reproduce or explain the earlier sixteen
+drops, and does not change the failed audio qualification.
+
 A separate frozen-d8 native continuation exits normally at 32,000 fields.
 All 400 raw frames through 24,000 match the interpreter route above; this
 does not compare complete CPU state at that earlier boundary. Ordinary input
@@ -82,11 +88,15 @@ All nineteen replay updates are accepted without rejections. Only SRAM changes;
 the Wii save files remain unchanged. No completed objective or level save is
 observed.
 
-The passive observer saves already cached frames and previously passed its
-bounded plain-CLI comparison. This completed navigation run has no complete
-plain-CLI comparison yet and uses disabled host audio. These observations
-establish movement, jumping and route progress; they do not establish a
-completed objective, gameplay save restoration, clean host audio or full speed.
+The passive observer saves already cached frames. A fresh plain-CLI run with
+the exact final input reaches the same 156,059,049,984 step attempts and
+13,056 fields. All sixty JSON keys are compared; the only differences are
+the expected host-limit versus instruction-limit outcome and nineteen
+versus one accepted replay updates. Every other field, the raw final frame
+and every persisted file match. Both runs use disabled host audio. These
+observations establish movement, jumping and route progress; they do not
+establish a completed objective, gameplay save restoration, clean host audio
+or full speed.
 
 ## Earlier platform captures
 

@@ -889,8 +889,9 @@ histories, raw frames, PNG reviews and milestone hashes remain under
 `passive-frame-observer/galaxy-navigation-20261023T061218485138Z/` in the
 continuation cache. This longer route uses the previously checked cached-frame
 observer, interpreter, OpenGL and disabled host audio; its complete plain-CLI
-comparison remains unperformed. These individual observations do not establish
-level completion, saved gameplay restoration, audio delivery or full speed.
+comparison is subsequently completed below. These individual observations do
+not establish level completion, saved gameplay restoration, audio delivery
+or full speed.
 
 That Galaxy run subsequently exits normally at its original host limit:
 7,203.773225 seconds, 13,056 fields and 156,058,378,433 retired instructions.
@@ -947,3 +948,59 @@ All raw costs and unfavorable controls remain in the continuation cache under
 the [performance results](performance.md#rejected-lrctr-native-extension)
 show material control regressions. These passing checks do not qualify
 commercial gameplay performance or full CPU accuracy.
+
+The exact-endpoint plain Galaxy comparison subsequently completes normally
+at 156,059,049,984 attempts, 156,058,378,433 retired instructions and 13,056
+fields. All sixty JSON keys are compared against the frozen navigation run;
+only outcome (`time-limit` versus `instruction-limit`) and accepted replay
+updates (nineteen versus one) differ. All other keys, the raw frame and the
+complete stored-file tree match. The 43-file immutable manifest SHA256 is
+`ae4aa1059649cb5e7bc12109cecd0c37cf1a88ab66213b84b6c7f380c230c4ac`.
+Independent review rehashes every entry and repeats the whole comparison.
+The original handle returns zero; no restart or extension occurs. Its
+6,602.176527-second shared-host wall time is not a source-causal speed result.
+Evidence remains under
+`passive-frame-observer/galaxy-full-route-plan-20261023T082042962921Z/`
+in the continuation cache.
+
+A later queue-rejection diagnostic completes one further 12,000-field
+Sunshine saved-card restart with zero product drops, zero observed rejection
+events and zero counts for all six sources. All trace lifetime and callback
+recorder gates pass; one bounded callback contains 5,758,976 stereo frames.
+Independent review rehashes the complete 383-file raw manifest and recomputes
+all 11,517,952 sample values and 5,624 packet bounds. This run has no endpoint
+waveform and does not reproduce the earlier sixteen drops. The earlier audio
+qualification remains failed; [host audio](host-audio.md#later-queue-rejection-diagnostic)
+records the exact scope and retained external metadata changes.
+
+A private ordered-tile host packer passes strict MSVC, GCC and Clang 18
+ASan/UBSan checks. Authored independent oracles check every payload word,
+ordered record index, invalid-input transaction and fixed-capacity bound.
+A constructive maximum reaches 2,176 unique tiles and references, requiring
+24,967 words. These checks exercise only host packing, without GPU execution
+or a speed claim.
+
+A separate neutral plain/capture pair then completes naturally at 2,040
+fields on NVIDIA 597.30. Complete final JSON matches with zero exclusions,
+as do raw frames and every stored file, including the immutable historical
+plain case. The capture contains one complete natural synchronization
+interval: 171 consecutive draws, including the fixed 64-record target and
+all prefix/suffix draws. Independent parsing verifies all 10,396 events,
+231 blobs, original scalar/batch membership, all 254 payload words, keys,
+capacities and the exact endpoint. Every byte of shader input buffers 1, 4
+and 6 is known at each of the forty fragment dispatches. Initial write-only
+pixel latches remain explicitly unknown; only captured meaningful fields
+have actual selected-value oracles.
+
+The packet SHA256 is
+`c1757a13e641f6e9f17726b0f038ec540b94f6fd890b546bc0795b0038cb1eb4`.
+Source stability checks rehash 23 private source files, 323 external pins
+and twenty build outputs. The protected evidence/build root occupies about
+93.2 MiB. Its 512 MiB logical envelope excludes separately measured guest
+scratch and is not an atomic filesystem quota. Tracked requested logger
+memory is not an RSS guarantee. Both original children return zero without
+a bound firing, retry or substitution. The packet and independent audits
+remain under `tile-list-feasibility/` and `tile-capture-independent-review/`
+in the continuation cache. No offline GPU replay, tile shader or timer query
+has yet been run for this packet, so capture validity is not a GPU correctness
+or performance result.

@@ -76,6 +76,49 @@ failures remain under
 No endpoint settings, services or drivers are changed. This observation does
 not qualify unchanged delivery, clean gameplay audio or physical Linux audio.
 
+### Later queue-rejection diagnostic
+
+A separate frozen-d8 private observer records a timestamp and source only
+after an existing FIFO rejection. Fixed storage and lifecycle checks retain
+all six queues without changing their counters or PCM. Authored collector,
+ordering, overflow and close-lifetime checks pass under MSVC, GCC and Clang
+ASan/UBSan. An audio-disabled stock/observer startup pair matches complete
+JSON, frame and storage without exclusions.
+
+The one authorized playback run then ends naturally at 12,000 fields. It
+reports zero product drops, zero rejection events and zero per-source counts.
+The final trace is complete and readable after the actual device close, with
+six unique bindings, no omitted events and no recorder errors. This does not
+reproduce, localize or reconstruct the earlier sixteen drops; no product fix
+or new audio qualification follows.
+
+One callback window is armed after reviewed Airport movement. The ordinary
+input sequence has ended by the arm, so this is not sustained movement during
+the whole window. Its 120-second QPC deadline contains 5,758,976 stereo frames
+in 5,624 complete signed-16-bit, 48 kHz packets. All 23,035,904 bytes and packet
+offsets are accounted for, with no overflow or duplicate arm. A deadline at
+callback boundaries need not contain exactly 5,760,000 nominal frames. The
+PCM SHA256 is
+`b6067bcad59023a6724547e84bdcf8d6cf08b3f8ec5a2d6e620fe40d80dbc891`.
+
+Forty-nine read-only endpoint snapshots retain the raw foreign-session peaks,
+including small nonzero browser values. An external endpoint-gain change
+occurs before the arm and remains recorded. The observer changes no endpoint
+settings. No endpoint waveform is captured, and neither gain nor registered
+effects identify the cause of the earlier mismatch. All four stored files
+remain byte-identical to the copied seed; prior FLUDD/coin restoration is not
+shown.
+
+The diagnostic audit SHA256 is
+`71239324c45e422d9243352c69befdef163ba0bf4f729351b2e5cd57b459d913`;
+the final handoff SHA256 is
+`9097ae6bdcf1e14ecb9b27496f1387f99c48d595607ca1b70887a302efc3c281`.
+Independent review rehashes all 383 raw manifest entries, 63 frozen inputs
+and 22 handoff artifacts, and recomputes all callback values and packet
+bounds. Evidence remains under
+`.cache/continuation-20261022/windows-gameplay-audio/drop-playback-plan-v3-20261023T091650Z/`.
+The earlier failed gameplay-audio qualification remains open.
+
 ### Earlier startup observation
 
 An earlier 224-file Windows Sunshine startup completes 320 fields with SDL's

@@ -650,3 +650,52 @@ reduced rectangle scans in this experiment. The candidate is rejected and
 production keeps cap 16. The sealed source, correctness checks and single
 query window remain under
 `.cache/continuation-20261022/batch-cap-study/cap8-timing/`.
+
+## Rejected LR/CTR native extension
+
+A private extension admits canonical LR/CTR register transfers to the native
+backend. One-cycle reads may join resident groups; two-cycle writes remain
+group boundaries. It retains the original 1,024-operation cache and compact
+pages. The candidate passes the authored correctness suites and all 832
+measured children: 768 component children and 64 fixed-work game children.
+It is rejected for integration because targeted gains accompany material
+control regressions and small, mixed startup changes.
+
+Four fixed AB/BA pairs cover each of 96 component settings across both console
+modes, both CPU backends and Windows/Linux. Affected native hot-loop elapsed
+ratios range from 0.365 to 0.723 on Windows and 0.443 to 0.705 on Linux.
+Several Windows native controls are consistently slower:
+
+| Component | GameCube elapsed increase | Wii elapsed increase |
+| --- | ---: | ---: |
+| Resident 64-operation loop | 11.39% | 8.67% |
+| Other SPR, XER | 7.04% | 7.09% |
+| Noncanonical LR encoding | 10.05% | 9.45% |
+| LR after cache saturation | 6.62% | 4.53% |
+
+These percentages use medians of the four paired ratios. Both resident-loop
+controls are slower in all four pairs. Cold LR round-trip median costs also
+increase: 62.2 to 77.6 microseconds on Windows GameCube, and 50.0205 to
+79.6075 microseconds on Linux GameCube. All setup, cold, warm, hot and inclusive
+costs, counter differences, maintenance counts and remaining controls are
+retained; no cause is assigned to the regressions.
+
+Native startup paired median ratios are 0.9894/1.0060 for Windows
+Sunshine/Galaxy and 0.9982/0.9829 for Linux. Interpreter startup ratios are
+1.0081/1.0064 and 1.0239/1.0647; the last setting spans 0.8715 to 1.1979.
+All required guest-state, frame and storage comparisons pass. Software graphics
+and disabled host audio limit these results to startup work.
+
+The first component interval fails after 40.112599 seconds on a driver assertion
+that incorrectly requires native cache occupancy from the interpreter. Its 138
+children all return zero. Corrected offline validation recovers all 69 pairs;
+only the remaining 315 pairs run in a separate 288.992642-second interval.
+The original failure and 632.290067-second gap remain recorded. The subsequent
+64-child game stage completes once, without timeout or repeat. Shared gameplay,
+audio load changes and the observed WSL clock offset remain explicit; affinity
+does not establish isolation. No row is filtered or rerun based on its result.
+
+The complete assessment and 4,034-file seal remain under
+`.cache/continuation-20261022/native-lrctr-timing/continuation-v3/`.
+These mechanism and startup results do not qualify gameplay speed or justify
+changing production CPU admission.

@@ -921,3 +921,29 @@ manifest has SHA256
 All entries are independently rehashed; the capture remains under
 `sunshine-native-progression-20261023T061605774402Z/` in the continuation cache.
 Its shared-host wall time does not establish speed, and host audio is disabled.
+
+The private LR/CTR native proposal passes strict MSVC, GCC and Clang 18
+ASan/UBSan correctness checks, including the full 131,072-encoding classifier
+matrix, 10,240 transfer comparisons, complete CPU state, ordered bus/RAM,
+group quotas, cache saturation, partial prefixes and event boundaries.
+An untimed four-binary harness gate retires 45,864 instructions with exact
+state, ordered bus and full 16 MiB RAM comparisons. Sixteen startup parity
+children also pass: interpreter JSON matches without exclusions, while native
+comparisons permit only fifteen individually named execution diagnostics.
+Guest state, raw frames and persisted files match within every required pair.
+
+The later fixed experiment retains 384 component pairs and 32 game pairs,
+or 832 unique measured children. Every child returns zero without timeout;
+all required semantic comparisons pass. The first driver's interpreter-cache
+assertion failure, corrected offline recovery and separate continuation remain
+distinct. Independent verification rehashes all 4,034 sealed files and
+832 receipts, then recomputes every component and startup paired median/range.
+The assessment SHA256 is
+`407aa4a3fd9c0542332a35df6614ec368d92ab7cc6f0bcdd6dd9f87e936d00c7`;
+the final seal SHA256 is
+`0b5e135a1b81ce7cb578cd9aa64ad9914e5cd44c5224cf0e9abfc6eed13b2031`.
+All raw costs and unfavorable controls remain in the continuation cache under
+`native-lrctr-timing/continuation-v3/`. The candidate stays private because
+the [performance results](performance.md#rejected-lrctr-native-extension)
+show material control regressions. These passing checks do not qualify
+commercial gameplay performance or full CPU accuracy.

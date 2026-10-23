@@ -1,9 +1,38 @@
 # Compatibility
 
-Complete playability and full-speed execution remain unverified. The frozen
-Windows Sunshine capture below shows controlled FLUDD use and save completion;
-current-core route replay and restart/load remain pending. Other captures and
-endpoint-audio observations retain their own source scopes.
+Complete playability and full-speed execution remain unverified. Current
+Windows Sunshine execution shows controlled FLUDD use and save completion.
+A separate saved-card restart reaches a controllable Airport, but does not
+show the preceding FLUDD or coin progress restored. Endpoint audio fails its
+independent delivery checks. Other captures retain their own source scopes.
+
+## Current Sunshine route and restart
+
+The `d8a88fc` Windows interpreter/OpenGL runtime completes the 24,000-field
+Sunshine route twice on NVIDIA 597.30, using identical ordinary inputs,
+validated USA font slots and isolated storage copies. The plain CLI and a
+passive cached-frame observer match all 60 final JSON fields without
+exclusions, the raw final frame and every stored file. All 400 passive frames
+also match the earlier frozen route below, including controlled spray,
+M-mark removal, coin collection and the game's save-complete prompt.
+
+The resulting card A has SHA256
+`242cbceb084ea3e2a6e227758ab9d6f72c22faf0371feb2f2656707cbda71b86`.
+A separate current-runtime restart from a copy recognizes slot A, enters
+Airport and responds to ordinary stick movement. It ends normally at 12,000
+fields, with all four persisted files unchanged and both cards structurally
+valid. The loaded scene shows zero coins and no FLUDD; this establishes slot
+recognition and controllable world entry, without proving restoration of the
+prior gameplay changes.
+
+That restart also uses actual WASAPI playback. A bounded 120-second capture
+retains the real callback output and a separate endpoint loopback. Recorder
+and packet-continuity checks pass, but the product reports 16 cumulative
+queue drops and the complete callback span has no exact endpoint match at
+any integer-frame offset. Their cause and timing remain unresolved; see
+[host audio](host-audio.md). Shared-host captures establish neither full
+speed nor isolated performance. First Shine, level completion and clean
+gameplay audio remain unverified.
 
 ## Frozen Sunshine FLUDD and save capture
 
@@ -20,10 +49,11 @@ payload change. This establishes an observed guest save and persisted changes,
 without decoding the game-specific save fields or proving restart/load.
 
 The capture shares CPU/GPU resources with recorded correctness work. Its
-checkpoint observer can repartition three GPU diagnostics, so a plain/passive
-current-core route replay remains necessary. First Shine, level completion,
-gameplay host audio and full speed remain unverified. The 1,060-file immutable
-manifest is recorded with the detailed evidence in [testing](testing.md).
+checkpoint observer can repartition three GPU diagnostics; the later plain/
+passive comparison above independently verifies the current route. First
+Shine, level completion, clean gameplay host audio and full speed remain
+unverified. The 1,060-file immutable manifest is recorded with the detailed
+evidence in [testing](testing.md).
 
 ## Earlier platform captures
 
@@ -34,7 +64,7 @@ manifest is recorded with the detailed evidence in [testing](testing.md).
 | Super Mario Galaxy, USA (`RMGE01`) | Windows, MSVC Release, RTX 3060 | Pointer/slot selection, normal Play input and opening storybook through field 2,970; nonzero guest PCM. | Gameplay controls, gameplay save/load, host playback, full speed. |
 | Super Mario Galaxy, USA (`RMGE01`) | Linux, GCC Release, Mesa | Title, pointer/slot selection and opening storybook through field 2,130; nonzero guest PCM. | Gameplay controls, gameplay save/load, commercial host playback, physical GPU execution, full speed. |
 
-The current captures use OpenGL graphics, headless output, disabled host audio,
+Those earlier captures use OpenGL graphics, headless output, disabled host audio,
 bounded execution and private copies of user storage. Linux uses Mesa llvmpipe,
 which is a software driver. These conditions do not establish host playback
 or physical GPU acceleration on Linux.

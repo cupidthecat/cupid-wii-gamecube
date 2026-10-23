@@ -41,7 +41,44 @@ divisors and rate steps outside the portable integer range fail explicitly.
 
 ## Diagnostics and validation
 
-A current 224-file Windows Sunshine startup completes 320 fields with SDL's
+### Current gameplay observation
+
+A frozen `d8a88fc` Windows Sunshine saved-card restart reaches controllable
+Airport gameplay and ends normally at 12,000 fields. Actual SDL WASAPI output
+uses signed 16-bit stereo at 48 kHz. One armed 120-second window records the
+real callback's 5,760,000 frames in 5,625 packets, without observer overflow,
+invalid lengths, duplicate arming or control errors. Startup and load playback
+are outside that callback recording.
+
+The selected Realtek endpoint remains unmuted, with its existing volume near
+29 percent and native stereo float32 at 48 kHz. The separate 150-second
+loopback retains 7,199,520 frames in 14,999 packets. Device positions are
+contiguous, timestamp errors are zero, and only the first packet has a
+discontinuity flag. Format, gain and mute remain stable across 151 snapshots;
+no sampled foreign session has a nonzero peak. These are sampled metadata
+observations, without an acoustic or exclusive-endpoint claim.
+
+Audio qualification fails two independent gates. The product reports 16
+cumulative dropped granules across the whole run; their timing relative to
+the capture window is unknown. The complete callback span also fails exact
+signed16/32768-to-float identity at every possible integer-frame alignment.
+No gain normalization, segment alignment or omitted middle samples qualify
+that comparison. A separate single-offset gain/residual fit is diagnostic
+only and has substantial residual error. Neither failure establishes its
+cause or demonstrates full-speed playback.
+
+The result receipt SHA256 is
+`322ccb7d5c40459cd336b6e2d3428ad6853d641e7df0cf4f9b26b9ef4db18baa`.
+Raw callback/endpoint PCM, packet timing, endpoint/session metadata, authored
+analyzer positive and negative controls, unchanged input hashes and original
+failures remain under
+`.cache/continuation-20261022/windows-gameplay-audio/saved-restart-20261023T030024865931Z/`.
+No endpoint settings, services or drivers are changed. This observation does
+not qualify unchanged delivery, clean gameplay audio or physical Linux audio.
+
+### Earlier startup observation
+
+An earlier 224-file Windows Sunshine startup completes 320 fields with SDL's
 WASAPI driver and the selected Razer Kraken V3 X endpoint. A private callback
 observer records 2,155,520 stereo frames, including 363,651 nonzero samples.
 All 4,311,040 signed-16-bit sample values divided by 32,768 match the endpoint's

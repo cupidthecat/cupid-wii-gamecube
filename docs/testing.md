@@ -827,8 +827,12 @@ storage at 320/76 fields. Exact-head packages pass executable verification and
 retain all eleven legal files byte for byte. The first integration attempt's
 direct-GL test linker errors remain preserved beside the corrected SDL-loaded
 test and passing logs in `indirect-zero-study/proposal/`. These local checks
-do not establish full-speed gameplay. The complete hosted matrix at `4418323`
-passes all seven jobs; the newer source scopes await their own full matrices.
+do not establish full-speed gameplay. The complete hosted matrices at
+[`b566e7d`](https://github.com/cupidthecat/cupid-wii-gamecube/actions/runs/39885566703),
+[`d8a88fc`](https://github.com/cupidthecat/cupid-wii-gamecube/actions/runs/39886432599)
+and documentation checkpoint
+[`ae17dd2`](https://github.com/cupidthecat/cupid-wii-gamecube/actions/runs/39887546716)
+each pass all seven jobs. These results cover their recorded source heads.
 
 The separately frozen Sunshine FLUDD/save capture uses producer `df978ec`,
 USA font slots and NVIDIA 597.30. It ends normally at field 24,000 with 400 raw
@@ -841,5 +845,34 @@ The immutable 1,060-file manifest SHA256 is
 Artifacts remain under `frame-observer-df978ec/` in the continuation cache;
 `sunshine-long-card-structure-audit.json` records the card checks. Shared-host
 overlaps, original mistaken controls and observer counter differences remain
-recorded. Current-core plain/passive replay, restart/load and full speed remain
-pending; [compatibility](compatibility.md) states the gameplay scope.
+recorded. The subsequent current-core route and restart checks below retain
+their own scopes; [compatibility](compatibility.md) states the gameplay limits.
+
+The frozen `d8a88fc` plain/passive Sunshine pair completes 24,000 fields in
+both runs. All 60 final JSON fields match without exclusions, as do the raw
+final frame and complete storage. All 400 passive cached frames match the
+earlier route. Its only cross-source final differences are revision, accepted
+replay-update count and three GPU diagnostics; guest CPU, RAM, audio and frame
+fields match. The passive observer adds no guest-state reads or GPU diagnostic
+synchronization. The immutable 596-file manifest SHA256 is
+`fe39ddf4514d2ff7a6344040fd34d92ca9c89ea0eccd798270696fd4544d9dea`.
+Independent checks rehash every entry and repeat the full-state, frame and
+storage comparisons. Receipts remain under
+`passive-frame-observer/sunshine24000-20261023T021637796414Z/` in the continuation
+cache. Shared CPU/GPU/audio work and raw wall times remain recorded separately;
+this is a route-correctness result, without a full-speed claim.
+
+A separate frozen-d8 saved-card restart ends normally at 12,000 fields. Slot
+recognition, Airport entry and ordinary movement are visible. Original seed
+and final storage match all four files, and both card structures remain valid.
+The prior FLUDD/coin progress is not shown restored. Actual WASAPI output
+supplies 5,760,000 stereo frames over one bounded 120-second callback window,
+without recorder overflow or control errors. Loopback packet continuity and
+metadata checks pass. Two independent qualification gates fail: 16 cumulative
+product queue drops and no exact complete-span endpoint match. The queue-drop
+counter covers the entire run; no window-specific timing or cause is inferred.
+The qualification manifest SHA256 is
+`65a9e492621e1de1becf384d83a61109ef0333ee7d46b3f32da05a66f04927ab`.
+All source, commands, PCM, failed comparisons and card audits remain under
+`windows-gameplay-audio/saved-restart-20261023T030024865931Z/` in the continuation
+cache. These observations do not qualify clean audio or saved level progress.

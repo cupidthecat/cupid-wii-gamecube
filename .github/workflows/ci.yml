@@ -1,0 +1,152 @@
+name: build-and-test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: gcc
+            lto: "OFF"
+            artifact: linux-gcc
+          - compiler: clang
+            lto: "OFF"
+            artifact: linux-clang
+          - compiler: gcc
+            lto: "ON"
+            artifact: linux-gcc-lto
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install build and host-output requirements
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ clang libsdl2-dev pulseaudio libgl1-mesa-dri xvfb xauth
+      - name: Configure
+        run: cmake -S . -B build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=${{ matrix.compiler == 'gcc' && 'gcc' || 'clang' }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler == 'gcc' && 'g++' || 'clang++' }} -DCUPID_ENABLE_LTO=${{ matrix.lto }} -DCUPID_WARNINGS_AS_ERRORS=ON -DCUPID_REQUIRE_HARDWARE_TESTS=ON -DCUPID_COMMIT=${GITHUB_SHA}
+      - name: Build
+        run: cmake --build build/ci --parallel 2
+      - name: Test
+        env:
+          LIBGL_ALWAYS_SOFTWARE: 1
+        run: xvfb-run -a ctest --test-dir build/ci --output-on-failure
+      - name: Preserve public CTest logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ctest-logs-${{ matrix.artifact }}-${{ github.run_attempt }}
+          path: |
+            build/ci/Testing/Temporary/LastTest.log
+            build/ci/Testing/Temporary/LastTestsFailed.log
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Verify packaged executable
+        run: cmake -DBUILD_DIR=build/ci -P tools/package-verify.cmake
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ matrix.artifact }}
+          path: build/ci/cupid-wii-gamecube-*.tar.gz
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Configure MSVC
+        run: cmake -S . -B build/ci -G "Visual Studio 17 2022" -A x64 -DCUPID_WARNINGS_AS_ERRORS=ON -DCUPID_REQUIRE_HARDWARE_TESTS=ON -DCUPID_COMMIT=${{ github.sha }}
+      - name: Build
+        run: cmake --build build/ci --config Release --parallel 2
+      - name: Install software OpenGL for graphics tests
+        shell: pwsh
+        run: |
+          $mesaArchive = Join-Path $env:RUNNER_TEMP 'mesa3d-26.2.3-release-msvc.7z'
+          $mesaDirectory = Join-Path $env:RUNNER_TEMP 'mesa3d-26.2.3'
+          Invoke-WebRequest -Uri 'https://github.com/pal1000/mesa-dist-win/releases/download/26.2.3/mesa3d-26.2.3-release-msvc.7z' -OutFile $mesaArchive
+          if ((Get-FileHash -LiteralPath $mesaArchive -Algorithm SHA256).Hash -ne '3f3613adb43cfd0f2e665ce2400b130c275f0b3317cb3a05566320a3a67589ed') {
+            throw 'Software OpenGL archive checksum mismatch'
+          }
+          New-Item -ItemType Directory -Path $mesaDirectory -Force | Out-Null
+          Push-Location $mesaDirectory
+          try {
+            cmake -E tar xf $mesaArchive
+            if ($LASTEXITCODE -ne 0) { throw 'Software OpenGL extraction failed' }
+          } finally {
+            Pop-Location
+          }
+          foreach ($library in 'opengl32.dll', 'libgallium_wgl.dll') {
+            Copy-Item -LiteralPath (Join-Path $mesaDirectory "x64/$library") -Destination 'build/ci/Release'
+          }
+      - name: Test
+        env:
+          GALLIUM_DRIVER: llvmpipe
+          LIBGL_ALWAYS_SOFTWARE: 1
+          LP_NUM_THREADS: 2
+        run: ctest --test-dir build/ci -C Release --output-on-failure
+      - name: Preserve public CTest logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ctest-logs-windows-msvc-${{ github.run_attempt }}
+          path: |
+            build/ci/Testing/Temporary/LastTest.log
+            build/ci/Testing/Temporary/LastTestsFailed.log
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Verify packaged executable
+        run: cmake -DBUILD_DIR=build/ci -P tools/package-verify.cmake
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-msvc
+          path: build/ci/cupid-wii-gamecube-*.zip
+          if-no-files-found: error
+
+  sanitizers:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install compilers
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ clang
+      - name: Configure instrumented headless runtime
+        run: cmake -S . -B build/sanitizers -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCUPID_HEADLESS_ONLY=ON -DCUPID_ENABLE_SANITIZERS=ON -DCUPID_WARNINGS_AS_ERRORS=ON -DCMAKE_C_COMPILER=${{ matrix.compiler == 'gcc' && 'gcc' || 'clang' }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler == 'gcc' && 'g++' || 'clang++' }}
+      - name: Build
+        run: cmake --build build/sanitizers --parallel 2
+      - name: Run address and undefined-behavior checks
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build/sanitizers --output-on-failure
+      - name: Preserve public CTest logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ctest-logs-sanitizers-${{ matrix.compiler }}-${{ github.run_attempt }}
+          path: |
+            build/sanitizers/Testing/Temporary/LastTest.log
+            build/sanitizers/Testing/Temporary/LastTestsFailed.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  source-checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install source-check tools
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build clang-18 clang-format-18 clang-tidy-18 python3 libsdl2-dev
+      - name: Configure
+        run: cmake -S . -B build/checks -G Ninja -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18
+      - name: Check formatting
+        run: cmake --build build/checks --target format-check
+      - name: Verify generated audio coefficients
+        run: python3 tools/generate-audio-window.py --check
+      - name: Check static analysis
+        run: cmake --build build/checks --target static-check

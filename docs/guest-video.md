@@ -1,0 +1,11 @@
+# Authored guest video test
+
+`tests/guest_video_tests.cpp` builds a redistributable DOL from newly authored PowerPC instructions. It passed Linux GCC with warnings treated as errors in both console modes. It uses no console firmware or commercial assets.
+
+The guest configures a linked PI/CP FIFO ring, writes complete gather bursts, uploads VCD/VAT, matrix, viewport and material state, and draws four colored quads through BP/TEV state. It copies the 16 by 16 EFB region into a tiled RGBA8 texture in RAM, clears that EFB region through the same copy command, then redraws the image by sampling the copied texture through texgen, RAM texture decoding and TEV. Guest CPU loads read eight AR/GB words from the four colored quadrants and store them in RAM for assertions.
+
+The guest copies the restored image into separate YUYV RAM buffers at direct scale 0.5 and inverse scale 2. Guest CPU loads verify eight words across the resulting 8-row and 31-row images, including the color boundary and the untouched extra row after the inverse-scale copy. It then makes the displayed unit-scale copy and programs VI with a 27 MHz sample clock, 429-sample half-lines and a 525-half-line field. The test advances the machine through CPU instructions until the real VI callback presents the frame to headless output. It checks every decoded pixel, RAM chroma values, 512 shaded fragments and the expected frame hash `d1b3bddfb83371c5`.
+
+A host controller state enters through the device input API. The guest reads it through SI and stores its buttons and analog values in RAM. Changing the B button causes a guest conditional branch to emit a new material, quad and framebuffer copy. The next VI field presents a yellow frame with hash `d083ce55750a7325` and a cumulative count of 768 shaded fragments. The test does not write host pixel data into RAM, advance device clocks directly or call presentation itself.
+
+This checks CPU execution, memory translation, write gathering, command parsing, vertex transformation, rasterization, shading, EFB texture encoding and sampling, framebuffer copy, controller polling and presentation together. It does not verify physical keyboard mapping, real hardware behavior, disc boot, IOS services or commercial gameplay.

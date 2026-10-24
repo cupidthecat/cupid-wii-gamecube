@@ -76,7 +76,7 @@ void division_rounding_checks() {
   constexpr std::string_view raster_source =
 #include "../src/gfx/hardware_shader.inc"
       ;
-  constexpr auto first = raster_source.find("float divide_estimate("),
+  constexpr auto first = raster_source.find("uint limb_quotient("),
                  last = raster_source.find("bool compare_value(");
   static_assert(first != std::string_view::npos && last > first);
   quotient_test::verify_gpu_division(raster_source.substr(first, last - first));
@@ -112,7 +112,7 @@ void division_identity_checks(bool exhaustive) {
   constexpr std::string_view raster_source =
 #include "../src/gfx/hardware_shader.inc"
       ;
-  constexpr auto first = raster_source.find("float divide_estimate("),
+  constexpr auto first = raster_source.find("uint limb_quotient("),
                  last = raster_source.find("bool compare_value(");
   static_assert(first != std::string_view::npos && last > first);
   // The renderer checks that both raster shaders contain identical helpers.

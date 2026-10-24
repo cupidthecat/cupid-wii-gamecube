@@ -46,7 +46,7 @@ constexpr const char *clear_source =
     ;
 
 constexpr std::string_view fog_math_source(std::string_view shader) {
-  const auto first = shader.find("double positive_float_value(");
+  const auto first = shader.find("uint limb_quotient(");
   if (first == std::string_view::npos)
     return {};
   const auto last = shader.find("bool compare_value(", first);
@@ -67,7 +67,22 @@ constexpr std::size_t rounded_division_count(std::string_view shader) {
 
 static_assert(!fog_math_source(compute_source).empty() && !fog_math_source(batch_source).empty() &&
                   fog_math_source(compute_source) == fog_math_source(batch_source),
-              "Raster shaders must use identical fog math.");
+              "Raster shaders must use identical rounded division.");
+
+constexpr std::size_t integer_quotient_count(std::string_view shader) {
+  constexpr std::string_view quotient = "limb_quotient(";
+  std::size_t count = 0, position = 0;
+  while ((position = shader.find(quotient, position)) != std::string_view::npos) {
+    ++count;
+    position += quotient.size();
+  }
+  return count;
+}
+
+static_assert(integer_quotient_count(compute_source) == 2 &&
+                  integer_quotient_count(batch_source) == 2,
+              "Each raster shader must define and call one integer quotient helper.");
+
 static_assert(rounded_division_count(compute_source) == 7 &&
                   rounded_division_count(batch_source) == 7,
               "Each raster shader must retain one rounded division definition and six uses.");

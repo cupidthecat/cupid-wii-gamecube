@@ -778,3 +778,60 @@ tests and game runs share the host. The comparison uses the frozen initial
 indexed CPU base and does not measure gameplay FPS or establish a whole-game
 gain. Exact sources, drivers, samples and process costs remain under
 `.cache/gpu-texture-copy-20261023/`.
+
+## Synchronization callers
+
+A fixed 8,000-field Sunshine census at `a26beb8` uses the interpreter, OpenGL
+rendering and disabled host audio. It records 23 GL entry points, six SDL_GL
+calls and the callers of CPU/GPU synchronization. All 60 final state
+fields, raw state/stdout/frame bytes and stored files match the preceding
+reference run. The 135 checkpoint boundaries, synchronization counts, readback
+bytes and final hardware fragment total reconcile independently.
+
+The fixed field 6,000–8,000 window takes 447.097668 seconds. Projected texture
+range rejection accounts for 34,449 of 35,390 draw declines and 26,241 of
+27,182 dirty synchronizations caused by those declines. Its synchronization
+calls take 89.638871 seconds within the 97.870984-second draw-decline total;
+these values overlap. Another 1,000 dirty synchronizations serve CPU color
+peeks. The 29 APIs together account for 121.469527 seconds.
+
+These are instrumented host call durations on a shared host. They include
+driver work, scheduling and waits for preceding work; they do not identify
+GPU execution time or establish a speed gain. Raw streams, exact comparisons,
+source pins and the independent reconciliation remain in
+`.cache/gfx-sync-reason-run-v2-20261024/` and
+`.cache/gfx-sync-reason-postterminal-review-20261024/`.
+
+## Integer shader division
+
+Both raster shaders determine rounded binary32 division from integer quotient
+and remainder, replacing the binary64 estimate and midpoint correction search.
+The helper normalizes the significands and expands the remainder in three
+bounded chunks. It preserves signed zero, gradual underflow, ties to even,
+overflow and canonical NaN results. Unit divisors and equal magnitudes retain
+their exact fast paths. This division helper requires neither shader integer64
+nor binary64 arithmetic.
+
+A fixed native comparison uses six processes in AB/BA/AB order. Each process
+runs six profiles, retaining the first one-draw sample and a warm 64-draw sample.
+All full color/depth readbacks, expected values and paired records match.
+Warm unequal-projection candidate/baseline wall-time medians are 0.802310 with
+mip selection and 0.639091 with fixed LOD. Every sample remains recorded,
+including the first unit-divisor warm sample at 1.176048 and the first unequal
+mip cold draw at 4.078421 seconds versus 0.029350 seconds. The first inclusive
+candidate process takes 7.022113 seconds versus 4.375379 seconds; subsequent
+process pairs are close. Timer-query intervals include submission, readback
+and scheduling effects and are not treated as pure GPU execution time.
+
+Sixteen fixed startup runs cover both supplied games, interpreter/native CPU
+execution and both comparison orders. All eight pairs match all 60 state
+values, raw state/stdout/frame bytes and stored files. Timing is mixed; the
+first Sunshine interpreter candidate takes 1.286247 times the baseline.
+A separate instrumented Sunshine run reaches 8,000 fields with all 60 values
+and raw outputs matching the stock synchronization census. Its 1,232.462020
+seconds include raw capture overhead and overlap a CPU benchmark window.
+These shared-host observations establish neither an isolated whole-game gain
+nor full-speed gameplay. Sources, every cold/warm/process cost, fixed plans
+and exact comparisons remain under `.cache/integer-gpu-quotient-clean-20261024/`,
+`.cache/integer-gpu-quotient-clean-stages-20261024/` and
+`.cache/projected-guard-clean-quotient-run-20261024/`.

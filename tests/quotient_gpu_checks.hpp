@@ -22,7 +22,7 @@ template <typename Function> Function division_function(const char *name) {
 }
 
 // The caller owns a current GL4.3 context. Expected answers remain on the host;
-// shaders read only operands, the forced estimate and case-classification flags.
+// shaders receive only operand bits and an independent global row tag.
 inline void verify_gpu_division(std::string_view helper_source) {
 #define CUPID_TEST_GL(type, name) const auto name = division_function<type>("gl" #name)
   CUPID_TEST_GL(PFNGLCREATESHADERPROC, CreateShader);
@@ -65,99 +65,87 @@ inline void verify_gpu_division(std::string_view helper_source) {
   } cleanup{DeleteBuffers, DeleteShader, DeleteProgram};
 
   const auto cases = quotient_test::division_cases();
-  std::vector<std::uint32_t> inputs(4 + cases.size() * 4), results(cases.size() * 3);
-  inputs[0] = static_cast<std::uint32_t>(cases.size());
-  for (std::size_t row = 0; row < cases.size(); ++row) {
-    inputs[4 + row * 4] = cases[row].numerator;
-    inputs[5 + row * 4] = cases[row].denominator;
-    inputs[6 + row * 4] = cases[row].seed;
-    inputs[7 + row * 4] = cases[row].flags;
+  constexpr std::size_t batch_cases = 32768;
+  static_assert((4 + batch_cases * 2) * sizeof(std::uint32_t) < 512 * 1024);
+  static_assert(batch_cases * 3 * sizeof(std::uint32_t) < 512 * 1024);
+  const std::string source =
+      "#version 430 core\nlayout(local_size_x=64) in;\n"
+      "layout(std430,binding=0) readonly buffer Inputs {uint inputs[];};\n"
+      "layout(std430,binding=1) buffer Results {uint results[];};\n" +
+      std::string(helper_source) +
+      "void main() {uint row=gl_GlobalInvocationID.x;if(row>=inputs[0])return;"
+      "uint base=4u+row*2u;uint answer=floatBitsToUint(rounded_divide("
+      "uintBitsToFloat(inputs[base]),uintBitsToFloat(inputs[base+1u])));"
+      "results[row*3u]=answer;results[row*3u+1u]=~answer;"
+      "results[row*3u+2u]=(inputs[1]+row)^0x9e3779b9u;}\n";
+  cleanup.shader = CreateShader(GL_COMPUTE_SHADER);
+  const char *text = source.c_str();
+  ShaderSource(cleanup.shader, 1, &text, nullptr);
+  CompileShader(cleanup.shader);
+  GLint compiled = 0;
+  GetShaderiv(cleanup.shader, GL_COMPILE_STATUS, &compiled);
+  if (!compiled) {
+    std::array<char, 8192> log{};
+    GetShaderInfoLog(cleanup.shader, GLsizei(log.size()), nullptr, log.data());
+    throw std::runtime_error(std::string("Division rounding test shader: ") + log.data());
   }
+  cleanup.program = CreateProgram();
+  AttachShader(cleanup.program, cleanup.shader);
+  LinkProgram(cleanup.program);
+  GLint linked = 0;
+  GetProgramiv(cleanup.program, GL_LINK_STATUS, &linked);
+  if (!linked) {
+    std::array<char, 8192> log{};
+    GetProgramInfoLog(cleanup.program, GLsizei(log.size()), nullptr, log.data());
+    throw std::runtime_error(std::string("Division rounding test program: ") + log.data());
+  }
+  DeleteShader(cleanup.shader);
+  cleanup.shader = 0;
+  UseProgram(cleanup.program);
   GenBuffers(GLsizei(cleanup.buffers.size()), cleanup.buffers.data());
-  BindBuffer(GL_SHADER_STORAGE_BUFFER, cleanup.buffers[0]);
-  BufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(inputs.size() * sizeof(std::uint32_t)),
-             inputs.data(), GL_STATIC_DRAW);
   BindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, cleanup.buffers[0]);
   BindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, cleanup.buffers[1]);
   std::uint64_t checks = 0;
-  for (unsigned forced = 0; forced < 2; ++forced) {
-    std::string helper(helper_source);
-    if (forced) {
-      const auto end_estimate = helper.find("double positive_float_value(");
-      if (end_estimate == std::string::npos)
-        throw std::runtime_error("Missing division helper boundary");
-      helper.replace(0, end_estimate,
-                     "float divide_estimate(float numerator,float denominator) {"
-                     "return uintBitsToFloat(forced_seed);}\n");
+  for (std::size_t offset = 0; offset < cases.size(); offset += batch_cases) {
+    const auto count = std::min(batch_cases, cases.size() - offset);
+    std::vector<std::uint32_t> inputs(4 + count * 2), results(count * 3);
+    inputs[0] = static_cast<std::uint32_t>(count);
+    inputs[1] = static_cast<std::uint32_t>(offset);
+    for (std::size_t row = 0; row < count; ++row) {
+      inputs[4 + row * 2] = cases[offset + row].numerator;
+      inputs[5 + row * 2] = cases[offset + row].denominator;
     }
-    const std::string source =
-        "#version 430 core\nlayout(local_size_x=64) in;\n"
-        "layout(std430,binding=0) readonly buffer Inputs {uint inputs[];};\n"
-        "layout(std430,binding=1) buffer Results {uint results[];};\n"
-        "uint forced_seed;\n" +
-        helper +
-        "void main() {uint row=gl_GlobalInvocationID.x;if(row>=inputs[0])return;"
-        "uint base=4u+row*4u;forced_seed=inputs[base+2u];uint answer;" +
-        (forced ? "if((inputs[base+3u]&4u)==0u)answer=0x5a17f00du;else " : "") +
-        "answer=floatBitsToUint(rounded_divide(uintBitsToFloat(inputs[base]),"
-        "uintBitsToFloat(inputs[base+1u])));"
-        "results[row*3u]=answer;results[row*3u+1u]=~answer;"
-        "results[row*3u+2u]=row^0x9e3779b9u;}\n";
-    cleanup.shader = CreateShader(GL_COMPUTE_SHADER);
-    const char *text = source.c_str();
-    ShaderSource(cleanup.shader, 1, &text, nullptr);
-    CompileShader(cleanup.shader);
-    GLint compiled = 0;
-    GetShaderiv(cleanup.shader, GL_COMPILE_STATUS, &compiled);
-    if (!compiled) {
-      std::array<char, 8192> log{};
-      GetShaderInfoLog(cleanup.shader, GLsizei(log.size()), nullptr, log.data());
-      throw std::runtime_error(std::string("Division rounding test shader: ") + log.data());
-    }
-    cleanup.program = CreateProgram();
-    AttachShader(cleanup.program, cleanup.shader);
-    LinkProgram(cleanup.program);
-    GLint linked = 0;
-    GetProgramiv(cleanup.program, GL_LINK_STATUS, &linked);
-    if (!linked) {
-      std::array<char, 8192> log{};
-      GetProgramInfoLog(cleanup.program, GLsizei(log.size()), nullptr, log.data());
-      throw std::runtime_error(std::string("Division rounding test program: ") + log.data());
-    }
-    DeleteShader(cleanup.shader);
-    cleanup.shader = 0;
-    UseProgram(cleanup.program);
+    BindBuffer(GL_SHADER_STORAGE_BUFFER, cleanup.buffers[0]);
+    BufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(inputs.size() * sizeof(std::uint32_t)),
+               inputs.data(), GL_STATIC_DRAW);
     for (std::uint32_t poison : {0x963c5aa5u, 0x69c3a55au}) {
       std::fill(results.begin(), results.end(), poison);
       BindBuffer(GL_SHADER_STORAGE_BUFFER, cleanup.buffers[1]);
       BufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(results.size() * sizeof(std::uint32_t)),
                  results.data(), GL_DYNAMIC_DRAW);
-      DispatchCompute(static_cast<GLuint>((cases.size() + 63) / 64), 1, 1);
+      DispatchCompute(static_cast<GLuint>((count + 63) / 64), 1, 1);
       MemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
       GetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
                        GLsizeiptr(results.size() * sizeof(std::uint32_t)), results.data());
-      for (std::size_t row = 0; row < cases.size(); ++row) {
-        const std::uint32_t expected =
-            forced && !(cases[row].flags & 4) ? 0x5a17f00d : cases[row].expected;
-        const std::array<std::uint32_t, 3> values{expected, ~expected,
-                                                  static_cast<std::uint32_t>(row) ^ 0x9e3779b9};
+      for (std::size_t row = 0; row < count; ++row) {
+        const auto global_row = offset + row;
+        const auto expected = cases[global_row].expected;
+        const std::array<std::uint32_t, 3> values{
+            expected, ~expected, static_cast<std::uint32_t>(global_row) ^ 0x9e3779b9};
         for (std::size_t field = 0; field < values.size(); ++field) {
           ++checks;
           if (results[row * 3 + field] != values[field])
-            throw std::runtime_error("Division rounding mismatch row=" + std::to_string(row) +
-                                     " forced=" + std::to_string(forced) +
-                                     " field=" + std::to_string(field) +
-                                     " expected=" + std::to_string(values[field]) +
-                                     " actual=" + std::to_string(results[row * 3 + field]));
+            throw std::runtime_error(
+                "Division rounding mismatch row=" + std::to_string(global_row) +
+                " field=" + std::to_string(field) + " expected=" + std::to_string(values[field]) +
+                " actual=" + std::to_string(results[row * 3 + field]));
         }
       }
     }
-    UseProgram(0);
-    DeleteProgram(cleanup.program);
-    cleanup.program = 0;
   }
-  std::cout << "Verified " << cases.size() << " division cases and " << checks
-            << " exact GPU words with ordinary and forced estimates\n";
+  UseProgram(0);
+  std::cout << "Verified " << cases.size() << " integer division cases and " << checks
+            << " exact GPU words in bounded batches with two output poisons\n";
 }
 
 } // namespace quotient_test

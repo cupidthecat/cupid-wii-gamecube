@@ -1516,3 +1516,86 @@ and stored files match without exclusions. Sunshine takes 15.572/14.781 seconds
 and Galaxy 35.835/34.914 seconds, preceding/combined, under shared host load.
 These bounded prefixes do not qualify gameplay speed. Logs, complete source
 pins and every comparison remain under `gpu-merged-*` in the continuation cache.
+
+The combined `a26beb8` tree also completes one fixed Sunshine replay with
+normal WASAPI audio at exactly 10,000 VI fields in 1,837.153 seconds. The
+original owner waits for emulator exit zero; the runner also exits zero.
+All 166 expected checkpoints through field 9,960 are present, with equal
+CPU/device cycles and zero logged audio queue drops. All sixty saved-state
+values are compared with both preceding runs. Fifty-four match; the retained
+differences are revision metadata, two host audio counters and three hardware
+work counters. CPU/RAM hashes, total GX commands/fragments, guest PCM/disc
+hashes and counts, the raw final frame and every stored file match.
+
+The observed 9,900-field span takes 1,823.643 seconds, or 5.428694 VI/s.
+Field 9,960 is reached at 1,827.274 seconds, versus 2,248.311 seconds for the
+preceding bulk-copy observation and 2,033.076 seconds for the earlier traced
+run. These sequential shared-host observations do not isolate a GPU speedup.
+Every complete fixed 600-field window is retained; the later windows from
+6,000 through 9,600 range from 3.448006 to 5.412801 VI/s. Full-speed gameplay
+remains unqualified.
+
+A preplanned late profiler attempt returns zero but reports session creation
+failure on stderr and creates no trace. Its three overlapping 60-field
+intervals remain marked as command overhead, with no stack evidence claimed.
+Separate passive process counters record 11.25 CPU seconds across a
+30.003-second bracket; they do not identify a wait source. Saved state and
+stdout retain their independently advancing host audio counters: saved state
+has 1,024 additional mixed frames and 2,048 additional nonzero sample values.
+The final image shows Mario, a nearby FLUDD device and an NPC at the Airport;
+it does not establish device acquisition or level completion. Zero product
+queue drops do not establish clean endpoint playback. The full source/input
+pins, terminal review, every difference and window, and file seal remain in
+`a26-gpu-texture-audio-telemetry-20261023` in the continuation cache.
+
+Both hosted seven-job matrices pass at `a26beb8`: Windows, normal GCC and
+Clang, GCC LTO, source checks, and GCC/Clang address/undefined-behavior checks.
+Hosted software-rendering checks do not qualify a physical Linux GPU or
+audio endpoint.
+
+## Integer raster division
+
+The hardware division fixture exercises the actual helper shared by both
+raster shaders. Its 1,123,224 operand pairs include every encoded exponent
+pair with four significand-boundary pairs and four sign combinations, all
+23 subnormal leading bits in either operand, result underflow boundaries,
+literal sticky/tie anchors, special values and a fixed random sequence.
+An independent 64-bit integer oracle supplies expected bits; strict MSVC,
+GCC and undefined-behavior-checked oracle runs agree on the corpus hash.
+Three deliberately incorrect rounding variants fail their literal anchors.
+
+GPU inputs contain operand bits and a global row tag. Expected values remain
+on the host. Dispatches contain at most 32,768 cases, using at most 262,160
+input bytes and 393,216 output bytes. Each output carries the quotient, its
+complement and the row tag. Two distinct output poisons require 6,739,344
+exact word checks. The integer helper has no forced estimate or estimator
+fallback, so the fixture makes no estimate-path coverage claim.
+
+The final private source passes twelve required-context gates: matched stock
+and candidate hardware suites and 3,384-profile raster fixtures on native
+Windows OpenGL, GCC with software OpenGL, and Clang address/undefined-behavior
+checks with software OpenGL. The Linux checks link current graphics, main
+and test objects before a frozen core archive. Sanitizer coverage applies to
+those selected objects, not the full core. Full embedded shader literals,
+compiler dependencies and native debug-source records are checked against
+the pinned inputs. Headless renderer stubs compile as well.
+
+A fresh baseline neutrality run, six component processes and sixteen startup
+processes also exit zero under their original owners. The longer 8,000-field
+candidate capture matches all final values and raw outputs, and its complete
+capture counts reconcile with synchronization reasons at every checkpoint.
+These checks cover arithmetic and the recorded game prefixes; they do not
+establish completed levels, physical Linux GPU behavior or gameplay speed.
+Gate receipts and independent reviews remain in the ignored
+`integer-gpu-quotient-clean-*` and `projected-guard-clean-quotient-*` cache trees.
+
+After integration, the actual repository source builds with MSVC Release/LTO
+and GCC Release. Eleven selected graphics, reference-encoder and CLI checks
+pass on each, including the full hardware suite, program cache, all division
+cases, the 3,384-profile fixture and hardware guest video. Unlike the private
+Linux overlay gates, this GCC build rebuilds the current project core and uses
+installed dependencies. Formatting changes preserve every non-whitespace byte
+and all literals/comments; both complete shader sources remain unchanged.
+All sixteen complete shader blobs in the eight checked executables match.
+Final JUnit reports, raw CTest logs, source/binary hashes and normalization
+proofs remain in `.cache/quotient-public-integration-20261024/`.

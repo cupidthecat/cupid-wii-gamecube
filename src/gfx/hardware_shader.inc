@@ -10,61 +10,80 @@ layout(std430, binding=4) readonly buffer Textures { uint textures[]; };
 layout(std430, binding=5) buffer TextureState { uint texture_state[]; };
 layout(std430, binding=6) readonly buffer FogThresholds { uint fog_thresholds[]; };
 
-// Driver division estimates can miss a binary32 rounding boundary even when
-// computed in binary64. Correct them before texture or fog quantization.
-float divide_estimate(float numerator, float denominator) {
-  return float(double(numerator)/double(denominator));
+// Integer quotient and remainder determine binary32 round-to-nearest, ties-to-even.
+uint limb_quotient(uint n, uint d) {
+  uint sign = (n ^ d) & 0x80000000u;
+  n &= 0x7fffffffu;
+  d &= 0x7fffffffu;
+  uint inf = 0x7f800000u;
+  if (n > inf || d > inf || (n == 0 && d == 0) || (n == inf && d == inf))
+    return 0x7fc00000u;
+  if (d == 0 || n == inf)
+    return inf | sign;
+  if (d == inf || n == 0)
+    return sign;
+  if (d == 0x3f800000u)
+    return n | sign;
+  if (n == d)
+    return 0x3f800000u | sign;
+  int ne = int(n >> 23), de = int(d >> 23);
+  n &= 0x7fffffu;
+  d &= 0x7fffffu;
+  if (ne != 0)
+    n |= 0x800000u;
+  else {
+    int shift = 23 - findMSB(n);
+    n <<= shift;
+    ne = 1 - shift;
+  }
+  if (de != 0)
+    d |= 0x800000u;
+  else {
+    int shift = 23 - findMSB(d);
+    d <<= shift;
+    de = 1 - shift;
+  }
+  bool below = n < d;
+  int exponent = ne - de + 127 - int(below);
+  if (exponent > 254)
+    return inf | sign;
+  if (exponent < -23)
+    return sign;
+  uint quotient = below ? 0u : 1u;
+  uint remainder = below ? n : n - d;
+  // Each remainder is below the 24-bit divisor. An eight-bit extension fits
+  // uint32, so no native shader integer64 or double support is required.
+  for (uint chunk = 0; chunk < 3; ++chunk) {
+    uint width = chunk == 2 && !below ? 7u : 8u;
+    uint expanded = remainder << width;
+    uint digit = expanded / d;
+    remainder = expanded - digit * d;
+    quotient = (quotient << width) | digit;
+  }
+  if (exponent <= 0) {
+    uint shift = uint(1 - exponent);
+    uint discarded = quotient & ((1u << shift) - 1u);
+    uint halfway = 1u << (shift - 1u);
+    quotient >>= shift;
+    if (discarded > halfway ||
+        (discarded == halfway && (remainder != 0 || (quotient & 1u) != 0)))
+      ++quotient;
+    return sign | quotient;
+  }
+  if (remainder > d - remainder ||
+      (remainder == d - remainder && (quotient & 1u) != 0))
+    ++quotient;
+  if (quotient == 0x1000000u) {
+    quotient >>= 1;
+    ++exponent;
+  }
+  if (exponent > 254)
+    return inf | sign;
+  return sign | (uint(exponent) << 23) | (quotient & 0x7fffffu);
 }
 
-double positive_float_value(uint bits) {
-  uint fraction=bits&8388607u,exponent=bits>>23u;
-  if (exponent==0u) {
-    if (fraction==0u) return 0.0LF;
-    int leading=findMSB(fraction);
-    fraction=(fraction<<uint(23-leading))&8388607u;
-    exponent=uint(leading+874);
-  } else exponent+=896u;
-  return packDouble2x32(uvec2(fraction<<29u,(exponent<<20u)|(fraction>>3u)));
-}
-bool above_float_midpoint(double numerator,double denominator,uint lower) {
-  precise double first=positive_float_value(lower);
-  // The conceptual successor of the greatest finite binary32 value is 2^128.
-  precise double second=lower==2139095039u ? packDouble2x32(uvec2(0u,1151u<<20u)) : positive_float_value(lower+1u);
-  precise double midpoint=(first+second)*0.5LF;
-  // Midpoint and denominator have at most 25 and 24 significand bits.
-  precise double product=midpoint*denominator;
-  return numerator>product || (numerator==product && (lower&1u)!=0u);
-}
-float rounded_divide(float numerator,float denominator) {
-  uint nbits=floatBitsToUint(numerator),dbits=floatBitsToUint(denominator);
-  uint sign=(nbits^dbits)&2147483648u;
-  nbits&=2147483647u; dbits&=2147483647u;
-  if (nbits>2139095040u || dbits>2139095040u ||
-      (nbits==0u && dbits==0u) || (nbits==2139095040u && dbits==2139095040u))
-    return uintBitsToFloat(2143289344u);
-  if (dbits==0u || nbits==2139095040u) return uintBitsToFloat(2139095040u|sign);
-  if (dbits==2139095040u) return uintBitsToFloat(sign);
-  if (nbits==0u) return uintBitsToFloat(sign);
-  // Unit and equal-magnitude divisors are exact in every finite binary32
-  // class, including subnormals. Preserve their bits without an estimate.
-  if (dbits==1065353216u) return uintBitsToFloat(nbits|sign);
-  if (nbits==dbits) return uintBitsToFloat(1065353216u|sign);
-  precise double n=positive_float_value(nbits),d=positive_float_value(dbits);
-  uint candidate=floatBitsToUint(divide_estimate(numerator,denominator))&2147483647u;
-  if (candidate>2139095040u) candidate=2139095040u;
-  for (uint attempt=0u;attempt<8u;++attempt) {
-    if (candidate!=0u && !above_float_midpoint(n,d,candidate-1u)) --candidate;
-    else if (candidate!=2139095040u && above_float_midpoint(n,d,candidate)) ++candidate;
-    else return uintBitsToFloat(candidate|sign);
-  }
-  // An estimate flushed to zero can be far from a nonzero subnormal quotient.
-  uint lower=0u,upper=2139095040u;
-  while (lower<upper) {
-    uint middle=lower+(upper-lower)/2u;
-    if (above_float_midpoint(n,d,middle)) lower=middle+1u;
-    else upper=middle;
-  }
-  return uintBitsToFloat(lower|sign);
+float rounded_divide(float n, float d) {
+  return uintBitsToFloat(limb_quotient(floatBitsToUint(n), floatBitsToUint(d)));
 }
 
 bool compare_value(uint mode, uint value, uint reference) {

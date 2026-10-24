@@ -319,7 +319,11 @@ void guest_stream() {
     machine.devices().advance(period * 2);
     const auto stats = output.disc_audio_stats();
     CHECK(stats.samples == 672 && stats.nonzero_samples == 336 && stats.peak == 8192);
-    CHECK(output.audio_samples() == 0);
+    // Two 168-frame stream periods span 42 eight-frame DAC ticks. Main DMA
+    // stays disabled, so each tick contributes sixteen silent sample values.
+    CHECK(output.audio_samples() == 672);
+    CHECK(output.audio_nonzero_samples() == 0 && output.audio_peak() == 0);
+    CHECK(output.audio_hash() == 4394956093784124453ULL);
     CHECK(machine.cpu().state().spr[cpu::spr::dar] == 0);
   }
 }

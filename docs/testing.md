@@ -1388,3 +1388,24 @@ storage flush are missing. Its planned 50,000-field endpoint remains incomplete.
 This evidence predates the latch readback and audio changes, and proves only
 the image prefix and later checkpoint progress. Review remains under
 `depth-route-partial-audit-20261023/` in the continuation cache.
+
+The rebuilt `169cce8` Windows interpreter/OpenGL CLI also completes fresh
+one-billion-attempt startup comparisons for both supplied games. Sunshine
+reaches 72 VI fields and Galaxy reaches 76. Every one of the sixty JSON fields
+is compared with a frozen `9245eff` run using the same fonts, replay and copied
+storage seed. Fifty-seven fields match; the differences are revision metadata,
+main sample count and main sample hash. Sunshine's count changes from 73,296
+to 202,656 values; Galaxy's changes from 85,376 to 91,424. Nonzero counts and
+peaks match. Final raw frames and every persisted file match byte-for-byte.
+These checks do not reconcile complete PCM waveforms or qualify host playback,
+gameplay or speed. Commands, source/binary/input hashes and all differences
+remain under `runtime-controls-startup-20261023/` in the continuation cache.
+
+Both seven-job CI matrices pass at `675ec57`. At `169cce8`, hosted Linux tests
+expose a remaining streamed-audio fixture assumption that disabled main DMA
+produces no samples. Its two 168-frame stream periods also span exactly 42
+eight-frame main DAC ticks at the authored rate. The corrected assertion
+checks all 672 zero values, zero peak/nonzero count and their literal FNV64
+hash. The focused fixture passes MSVC Release/LTO, GCC Release and Clang
+ASan/UBSan with leak detection. The original hosted failure remains recorded;
+new-head CI must verify the corrected complete suite.

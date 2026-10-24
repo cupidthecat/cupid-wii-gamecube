@@ -293,6 +293,8 @@ std::size_t CommandProcessor::decode(std::span<const u8> bytes) {
 }
 
 void CommandProcessor::write_bp(unsigned index, u32 value) {
+  if (hardware_ && (index == 0x55 || index == 0x56))
+    hardware_->reset_bounding_box(index == 0x56);
   const u32 mask = bp_state_[0xfe];
   bp_state_[index] = (bp_state_[index] & ~mask) | (value & mask);
   if (index != 0xfe)
@@ -580,13 +582,14 @@ void CommandProcessor::write_color(unsigned x, unsigned y, u32 value) {
 }
 
 void CommandProcessor::copy_efb(u32 control) {
-  if (hardware_ && bp_state_[0x4d] && (control & (1 << 14))) {
+  if (hardware_ && bp_state_[0x4d]) {
     const unsigned x = bp_state_[0x49] & 1023, y = (bp_state_[0x49] >> 10) & 1023;
     if (x >= width || y >= height)
       return;
     try {
       upload_hardware();
-      if (hardware_->copy_xfb(bp_state_))
+      if ((control & (1 << 14)) ? hardware_->copy_xfb(bp_state_)
+                                : hardware_->copy_texture(bp_state_))
         return;
     } catch (const std::exception &error) {
       unavailable(0x0c008000, true, error.what());

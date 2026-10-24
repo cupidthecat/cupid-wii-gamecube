@@ -755,3 +755,26 @@ These shared-host component results support the indexed path while retaining
 its measured costs; they do not establish a commercial gameplay gain.
 Source pairs, plans, commands and every sample remain under
 `.cache/continuation-20261022/indexed-scalar-20261023/`.
+
+## GPU tiled EFB encoding
+
+GPU texture copies encode compact tile rows directly from EFB storage instead
+of reading back the full color/depth buffers for CPU encoding. A fixed native
+MSVC comparison uses matched strict `/GL` drivers and frozen source pairs.
+Six processes run in AB/BA/AB order, with nine samples of 32 full-frame copies
+per mode and variant. Every output byte and hash matches.
+
+| Source and copy size | CPU bulk median seconds | GPU median seconds |
+| --- | ---: | ---: |
+| RGBA6, full | 0.291518 | 0.019829 |
+| RGBA6, half | 0.142869 | 0.012780 |
+| Z24, full | 0.237687 | 0.019339 |
+| Z24, half | 0.088563 | 0.012766 |
+
+These warm-copy ratios range from 6.94 to 14.70. Initialization and shader
+compilation occur before the measured copy loop. Inclusive process costs
+remain recorded, including the slower first two processes. Other builds,
+tests and game runs share the host. The comparison uses the frozen initial
+indexed CPU base and does not measure gameplay FPS or establish a whole-game
+gain. Exact sources, drivers, samples and process costs remain under
+`.cache/gpu-texture-copy-20261023/`.

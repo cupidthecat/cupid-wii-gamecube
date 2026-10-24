@@ -765,7 +765,18 @@ void guest_audio_dma_tests(Console console) {
   for (unsigned i = 0; i < 806; ++i)
     cpu.step();
   CHECK(cpu.state().pc == 0 && output.empty());
-  devices.advance(10 * (console == Console::Wii ? 121500 : 80928));
+  // The rate write keeps the constructor's queued 32 kHz tick. The ARAM
+  // transfer has already consumed part of that first interval on GameCube.
+  const u64 initial_period = console == Console::Wii ? 182250 : 121392;
+  const u64 elapsed = console == Console::GameCube ? 246 * 5 : 0;
+  const u64 period = console == Console::Wii ? 121500 : 80928;
+  devices.advance(initial_period - elapsed - 1);
+  CHECK(output.empty());
+  devices.advance(1);
+  CHECK(output.size() == 16);
+  devices.advance(9 * period - 1);
+  CHECK(output.size() == 144);
+  devices.advance(1);
   CHECK(output.size() == 160);
   CHECK(output[0] == 0 && output[1] == 0);
   for (unsigned i = 1; i < 80; ++i)

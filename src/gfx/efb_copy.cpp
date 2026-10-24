@@ -110,8 +110,7 @@ void encode_pixel(std::span<u8> block, unsigned pixel, unsigned copy_format, con
 }
 } // namespace
 
-EfbCopyLayout copy_efb_texture(Memory &memory, std::span<const u32> bp,
-                               const EfbCopySource &source) {
+EfbCopyPlan plan_efb_texture(std::span<const u32> bp) {
   if (bp.size() < 256)
     throw std::invalid_argument("EFB texture copy requires 256 BP registers");
   const u32 control = bp[0x52];
@@ -128,8 +127,6 @@ EfbCopyLayout copy_efb_texture(Memory &memory, std::span<const u32> bp,
   if (depth && (copy_format == 2 || copy_format == 3 || copy_format == 4 || copy_format == 5 ||
                 copy_format == 7))
     unsupported("depth tile format " + std::to_string(copy_format));
-  if (!(depth ? bool(source.depth) : bool(source.color)))
-    throw std::invalid_argument("EFB texture copy has no selected source callback");
   const unsigned scale = (control & (1 << 9)) ? 2 : 1;
   const unsigned block_width = copy_format <= 2 || (copy_format >= 7 && copy_format <= 10) ? 8 : 4;
   const unsigned block_height = copy_format == 0 ? 8 : 4;
@@ -150,6 +147,48 @@ EfbCopyLayout copy_efb_texture(Memory &memory, std::span<const u32> bp,
   const u64 extent = u64(layout.block_rows - 1) * layout.stride + layout.row_bytes;
   if (u64(layout.destination) + extent > u64{1} << 32)
     unsupported("destination address wraps");
+  EfbCopyPlan plan;
+  plan.layout = layout;
+  plan.source_format = source_format;
+  plan.copy_format = copy_format;
+  plan.scale = scale;
+  plan.block_width = block_width;
+  plan.block_height = block_height;
+  plan.block_bytes = block_bytes;
+  plan.columns = columns;
+  plan.left = left;
+  plan.top = top;
+  plan.convert_intensity = !depth && (control & (1 << 15)) && (control & (1 << 16)) &&
+                           (copy_format <= 3 || copy_format == 8);
+  return plan;
+}
+
+EfbCopyLayout copy_efb_texture(Memory &memory, std::span<const u32> bp,
+                               const EfbCopySource &source) {
+  if (bp.size() < 256)
+    throw std::invalid_argument("EFB texture copy requires 256 BP registers");
+  const u32 control = bp[0x52];
+  if (control & (1 << 14))
+    unsupported("XFB target passed to the texture encoder");
+  const unsigned source_format = bp[0x43] & 7;
+  if (source_format > 3)
+    unsupported("source pixel format " + std::to_string(source_format));
+  const unsigned encoded_format = (control >> 3) & 15;
+  const unsigned copy_format = (encoded_format >> 1) | ((encoded_format & 1) << 3);
+  if (copy_format > 12)
+    unsupported("undefined tile format " + std::to_string(copy_format));
+  const bool depth = source_format == 3;
+  if (depth && (copy_format == 2 || copy_format == 3 || copy_format == 4 || copy_format == 5 ||
+                copy_format == 7))
+    unsupported("depth tile format " + std::to_string(copy_format));
+  if (!(depth ? bool(source.depth) : bool(source.color)))
+    throw std::invalid_argument("EFB texture copy has no selected source callback");
+  const auto plan = plan_efb_texture(bp);
+  const auto &layout = plan.layout;
+  const unsigned scale = plan.scale, block_width = plan.block_width;
+  const unsigned block_height = plan.block_height, block_bytes = plan.block_bytes;
+  const unsigned columns = plan.columns, left = plan.left, top = plan.top;
+  const u64 extent = u64(layout.block_rows - 1) * layout.stride + layout.row_bytes;
   auto destination = memory.range(layout.destination, static_cast<std::size_t>(extent));
   std::vector<u8> encoded(static_cast<std::size_t>(layout.block_rows) * layout.row_bytes);
   const bool convert_intensity = !depth && (control & (1 << 15)) && (control & (1 << 16)) &&

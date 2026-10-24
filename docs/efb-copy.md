@@ -6,6 +6,13 @@ The encoder returns the destination, logical and padded dimensions, block-row co
 bytes per block row, and configured stride. Command processing owns copy triggers and
 the subsequent optional EFB clear; XFB conversion uses its separate path.
 
+`gfx::plan_efb_texture` validates the complete layout without sampling or
+changing RAM. The OpenGL backend uses that plan to encode tiles directly from
+GPU EFB storage and reads back only the encoded bytes. It preserves the CPU
+encoder's row ordering when strides overlap and performs masked GPU clear
+after RAM delivery. The ordinary callback encoder retains its validation,
+callback and error ordering.
+
 BP `0x43` selects the source representation. RGB8 supplies opaque alpha. RGBA6 restores
 the six-bit channels before either expansion or filtering. The RGB565 source setting
 currently uses the behavioral reference's RGB8 storage treatment; native RGB565/Z16

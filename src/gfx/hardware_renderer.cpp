@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cupid/gfx/hardware_renderer.hpp"
+#include "cupid/gfx/efb_copy.hpp"
 #include "cupid/gfx/xfb_copy.hpp"
 #include "hardware_batch.hpp"
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string_view>
@@ -35,6 +37,9 @@ constexpr const char *compute_source =
     ;
 constexpr const char *xfb_source =
 #include "hardware_xfb_shader.inc"
+    ;
+constexpr const char *texture_copy_source =
+#include "hardware_texture_copy_shader.inc"
     ;
 constexpr const char *clear_source =
 #include "hardware_clear_shader.inc"
@@ -153,7 +158,7 @@ struct HardwareRenderer::Impl {
 
   // Family zero is generic; family one has no indirect prefetch stages.
   std::array<detail::FragmentPrograms, 2> fragment_programs{};
-  GLuint xfb_program = 0, clear_program = 0;
+  GLuint xfb_program = 0, clear_program = 0, texture_copy_program = 0;
   std::array<GLuint, 8> buffers{};
 #define CUPID_GL_FUNCTION(type, name) type name = load_gl<type>("gl" #name)
   CUPID_GL_FUNCTION(PFNGLCREATESHADERPROC, CreateShader);
@@ -454,6 +459,8 @@ struct HardwareRenderer::Impl {
       DeleteProgram(xfb_program);
     if (clear_program)
       DeleteProgram(clear_program);
+    if (texture_copy_program)
+      DeleteProgram(texture_copy_program);
     SDL_GL_DeleteContext(context);
     SDL_DestroyWindow(window);
     if (initialized)
@@ -868,6 +875,92 @@ bool HardwareRenderer::copy_xfb(std::span<const u32> bp) {
   return true;
 }
 
+bool HardwareRenderer::copy_texture(std::span<const u32> bp) {
+  const auto plan = plan_efb_texture(bp);
+  const auto &layout = plan.layout;
+  const u64 extent = u64(layout.block_rows - 1) * layout.stride + layout.row_bytes;
+  auto destination = impl_->memory.range(layout.destination, static_cast<std::size_t>(extent));
+  const auto bytes = std::size_t(layout.block_rows) * layout.row_bytes;
+  const auto words = bytes / sizeof(u32);
+  impl_->xfb_staging.resize(words);
+  impl_->current();
+  impl_->flush_batch();
+  std::array<u32, 288> parameters{};
+  parameters[0] = static_cast<u32>(words);
+  parameters[1] = plan.columns;
+  parameters[2] = plan.block_bytes;
+  parameters[3] = plan.block_width;
+  parameters[4] = plan.block_height;
+  parameters[5] = plan.scale;
+  parameters[6] = plan.copy_format;
+  parameters[7] = plan.source_format;
+  parameters[8] = plan.convert_intensity;
+  parameters[9] = plan.source_format == 3 && plan.scale == 2;
+  parameters[15] = plan.left;
+  parameters[16] = plan.top;
+  const auto clear_width = std::min((bp[0x4a] & 1023) + 1, 640 - plan.left);
+  const auto clear_height = std::min(((bp[0x4a] >> 10) & 1023) + 1, 528 - plan.top);
+  parameters[17] = plan.left + clear_width;
+  parameters[18] = plan.top + clear_height;
+  parameters[19] = ((bp[0x4f] & 255) << 24) | ((bp[0x50] & 0xffff) << 8) | ((bp[0x4f] >> 8) & 255);
+  parameters[20] = bp[0x41];
+  parameters[21] = bp[0x40] & 16;
+  parameters[22] = bp[0x51];
+  const unsigned groups = static_cast<unsigned>((words + 63) / 64);
+  const unsigned horizontal = std::min(groups, 1024u);
+  parameters[23] = horizontal * 64;
+  impl_->BindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->buffers[3]);
+  impl_->BufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(parameters), parameters.data());
+  impl_->BindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->buffers[7]);
+  if (bytes > impl_->xfb_capacity) {
+    impl_->BufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(bytes), nullptr, GL_DYNAMIC_DRAW);
+    impl_->xfb_capacity = bytes;
+  }
+  if (!impl_->texture_copy_program)
+    impl_->texture_copy_program = impl_->compile_program(texture_copy_source, "texture copy");
+  impl_->UseProgram(impl_->texture_copy_program);
+  impl_->DispatchCompute(horizontal, (groups + horizontal - 1) / horizontal, 1);
+  impl_->MemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+  impl_->GetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, GLsizeiptr(bytes),
+                          impl_->xfb_staging.data());
+  // Compact staging keeps every encoded row intact. Applying rows in order also
+  // retains the defined last-writer behavior when the guest stride overlaps.
+  for (unsigned row = 0; row < layout.block_rows; ++row) {
+    const auto source = std::span<const u32>(impl_->xfb_staging)
+                            .subspan(std::size_t(row) * layout.row_bytes / sizeof(u32),
+                                     layout.row_bytes / sizeof(u32));
+    auto target = destination.subspan(std::size_t(row) * layout.stride, layout.row_bytes);
+    if constexpr (std::endian::native == std::endian::little)
+      std::memcpy(target.data(), source.data(), source.size_bytes());
+    else
+      for (std::size_t word = 0; word < source.size(); ++word)
+        for (unsigned byte = 0; byte < sizeof(u32); ++byte)
+          target[word * sizeof(u32) + byte] = static_cast<u8>(source[word] >> (byte * 8));
+  }
+  if (bp[0x52] & (1 << 11)) {
+    impl_->UseProgram(impl_->clear_program);
+    impl_->DispatchCompute((clear_width + 7) / 8, (clear_height + 7) / 8, 1);
+    impl_->MemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+    impl_->dirty = true;
+  }
+  const auto &family = impl_->fragment_programs[impl_->active_family];
+  impl_->UseProgram(family.scalar_initialized ? family.scalar : 0);
+  return true;
+}
+
+void HardwareRenderer::reset_bounding_box(bool vertical) {
+  if (!impl_->dirty)
+    return;
+  impl_->current();
+  impl_->flush_batch();
+  // Earlier fragments still contribute to counts, the other axis and retained
+  // shader state. Only bounds after this reset may extend the new CPU pair.
+  const std::array<u32, 2> empty{0xffffffffu, 0};
+  impl_->BindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->buffers[2]);
+  impl_->BufferSubData(GL_SHADER_STORAGE_BUFFER, (vertical ? 3 : 1) * sizeof(u32), sizeof(empty),
+                       empty.data());
+}
+
 HardwareStats HardwareRenderer::synchronize(std::span<u32> colors, std::span<u32> depths,
                                             FragmentShader *shader) {
   HardwareStats result;
@@ -980,8 +1073,15 @@ bool HardwareRenderer::draw(const RasterWork &) {
 void HardwareRenderer::upload(std::span<const u32>, std::span<const u32>) {
 }
 
+bool HardwareRenderer::copy_texture(std::span<const u32>) {
+  return false;
+}
+
 bool HardwareRenderer::copy_xfb(std::span<const u32>) {
   return false;
+}
+
+void HardwareRenderer::reset_bounding_box(bool) {
 }
 
 HardwareStats HardwareRenderer::synchronize(std::span<u32>, std::span<u32>, FragmentShader *) {

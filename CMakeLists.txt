@@ -168,6 +168,16 @@ if(CUPID_BUILD_TESTS)
     # Direct invocation without selectors still runs the complete suite.
     set_tests_properties(hardware_renderer hardware_renderer_program_cache PROPERTIES TIMEOUT 600 LABELS "public;backend;graphics"
       SKIP_RETURN_CODE 77)
+    add_executable(cupid_gpu_texture_copy_tests tests/gpu_texture_copy_tests.cpp)
+    target_include_directories(cupid_gpu_texture_copy_tests PRIVATE tests)
+    target_link_libraries(cupid_gpu_texture_copy_tests PRIVATE cupid_core)
+    if(CUPID_REQUIRE_HARDWARE_TESTS)
+      add_test(NAME gpu_texture_copy COMMAND cupid_gpu_texture_copy_tests --require-device)
+    else()
+      add_test(NAME gpu_texture_copy COMMAND cupid_gpu_texture_copy_tests)
+    endif()
+    set_tests_properties(gpu_texture_copy PROPERTIES TIMEOUT 300 LABELS "public;backend;graphics"
+      SKIP_RETURN_CODE 77)
     if(CUPID_REQUIRE_HARDWARE_TESTS)
       add_test(NAME guest_video_hardware COMMAND cupid_guest_video_tests --hardware --require-device)
     else()
@@ -194,6 +204,10 @@ if(CUPID_BUILD_TESTS)
     set_tests_properties(host_audio PROPERTIES TIMEOUT 60 LABELS "public;backend;audio"
       ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
   else()
+    add_test(NAME gpu_texture_copy COMMAND "${CMAKE_COMMAND}" -E echo
+      "SKIP: hardware texture copies are excluded from this headless build")
+    set_tests_properties(gpu_texture_copy PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP:"
+      LABELS "public;backend;graphics")
     add_test(NAME hardware_renderer COMMAND "${CMAKE_COMMAND}" -E echo
       "SKIP: hardware rendering is excluded from this headless build")
     set_tests_properties(hardware_renderer PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP:"

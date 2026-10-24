@@ -34,6 +34,9 @@ public:
   void upload(std::span<const u32> colors, std::span<const u32> depths);
   // Encodes RAM-visible XFB bytes before an optional GPU EFB clear.
   bool copy_xfb(std::span<const u32> bp);
+  bool copy_texture(std::span<const u32> bp);
+  // Retire earlier bounds before replacing one BP bounding-box pair.
+  void reset_bounding_box(bool vertical);
   HardwareStats synchronize(std::span<u32> colors, std::span<u32> depths,
                             FragmentShader *shader = nullptr);
   const std::string &device() const;

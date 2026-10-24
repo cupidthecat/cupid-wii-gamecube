@@ -2277,6 +2277,45 @@ void buffer_fragment_fallback_checks() {
   std::cout << "Verified queued GPU destinations through CPU blending and all color/alpha masks\n";
 }
 
+void bounding_box_reset_checks() {
+  const std::array<std::array<float, 3>, 4> quad{
+      {{-1, -1, -0.5f}, {1, -1, -0.5f}, {1, 1, -0.5f}, {-1, 1, -0.5f}}};
+  const std::array<std::array<float, 3>, 4> later{
+      {{0, 0, -0.5f}, {0.5f, 0, -0.5f}, {0.5f, 0.5f, -0.5f}, {0, 0.5f, -0.5f}}};
+  const std::array<u32, 1> colors{0x316593b7};
+  unsigned cases = 0;
+  for (const u8 reg : std::array<u8, 2>{0x55, 0x56})
+    for (u32 mask : {0xffffffu, 0x3ffu, 0xffc00u, 0u})
+      for (bool draw_after_reset : {false, true})
+        for (bool repeated_reset : {false, true}) {
+          Fixture software, hardware;
+          hardware.graphics.set_hardware_rendering(true);
+          for (auto *fixture : {&software, &hardware}) {
+            fixture->bp(0x55, 500 | (501 << 10));
+            fixture->bp(0x56, 600 | (601 << 10));
+            fixture->draw(0x80, quad, colors);
+            // A BP reset replaces its selected pair after earlier fragments,
+            // including an identical-value or fully masked register write.
+            fixture->bp(0xfe, mask);
+            fixture->bp(reg, 700 | (701 << 10));
+            if (repeated_reset) {
+              fixture->draw(0x80, later, colors);
+              fixture->bp(0xfe, mask);
+              fixture->bp(reg, 700 | (701 << 10));
+            }
+            if (draw_after_reset)
+              fixture->draw(0x80, later, colors);
+          }
+          for (u32 address = 0x0c001010; address <= 0x0c001016; address += 2)
+            CHECK(software.graphics.read(address, 2) == hardware.graphics.read(address, 2));
+          const auto stats = hardware.graphics.hardware_stats();
+          CHECK(stats.fragments == software.graphics.fragment_count());
+          CHECK(stats.efb_readbacks == 1);
+          ++cases;
+        }
+  std::cout << "Verified " << cases << " queued fragment bounding-box reset boundaries\n";
+}
+
 void efb_texture_copy_checks() {
   const std::array<std::array<float, 3>, 4> quad{
       {{-1, -1, -0.5f}, {1, -1, -0.5f}, {1, 1, -0.5f}, {-1, 1, -0.5f}}};
@@ -2286,8 +2325,9 @@ void efb_texture_copy_checks() {
   hardware.graphics.set_hardware_rendering(true);
   unsigned cases = 0;
   for (unsigned source_format = 0; source_format < 4; ++source_format)
-    for (unsigned copy_format : {6u, 8u, 11u}) {
-      if (copy_format == 11 && source_format != 3)
+    for (unsigned copy_format = 0; copy_format <= 12; ++copy_format) {
+      if (source_format == 3 && (copy_format == 2 || copy_format == 3 || copy_format == 4 ||
+                                 copy_format == 5 || copy_format == 7))
         continue;
       for (bool half : {false, true})
         for (unsigned mask = 0; mask < 8; ++mask) {
@@ -3452,11 +3492,11 @@ int main(int argc, char **argv) {
   std::cout << "[renderer] returned fixture construction\n";
   renderer_stage_returned("fixture construction", fixture_started);
   bool required = false, measure = false, fog_only = false, texture_cache_only = false,
-       xfb_only = false, efb_copy_only = false, projection_only = false, state_only = false,
-       fixed_lod_only = false, counter_only = false, counter_benchmark_only = false,
-       empty_coverage_only = false, division_identities_exhaustive = false,
-       division_rounding_only = false, program_cache_only = false,
-       skip_program_cache_checks = false;
+       xfb_only = false, efb_copy_only = false, bbox_only = false, projection_only = false,
+       state_only = false, fixed_lod_only = false, counter_only = false,
+       counter_benchmark_only = false, empty_coverage_only = false,
+       division_identities_exhaustive = false, division_rounding_only = false,
+       program_cache_only = false, skip_program_cache_checks = false;
   for (int i = 1; i < argc; ++i) {
     program_cache_only |= std::strcmp(argv[i], "--program-cache-only") == 0;
     skip_program_cache_checks |= std::strcmp(argv[i], "--skip-program-cache-checks") == 0;
@@ -3466,6 +3506,7 @@ int main(int argc, char **argv) {
     texture_cache_only |= std::strcmp(argv[i], "--texture-cache-only") == 0;
     xfb_only |= std::strcmp(argv[i], "--xfb-only") == 0;
     efb_copy_only |= std::strcmp(argv[i], "--efb-copy-only") == 0;
+    bbox_only |= std::strcmp(argv[i], "--bbox-only") == 0;
     projection_only |= std::strcmp(argv[i], "--projection-only") == 0;
     state_only |= std::strcmp(argv[i], "--state-only") == 0;
     fixed_lod_only |= std::strcmp(argv[i], "--fixed-lod-only") == 0;
@@ -3487,6 +3528,10 @@ int main(int argc, char **argv) {
     return 1;
   }
   return run_tests([&] {
+    if (bbox_only) {
+      renderer_stage("bounding_box_reset_checks", [&] { bounding_box_reset_checks(); });
+      return;
+    }
     if (efb_copy_only) {
       renderer_stage("buffer_fragment_fallback_checks", [&] { buffer_fragment_fallback_checks(); });
       renderer_stage("efb_texture_copy_checks", [&] { efb_texture_copy_checks(); });
@@ -3528,6 +3573,7 @@ int main(int argc, char **argv) {
     if (state_only) {
       renderer_stage("state_upload_checks", [&] { state_upload_checks(measure); });
       renderer_stage("latch_state_readback_checks", [&] { latch_state_readback_checks(); });
+      renderer_stage("bounding_box_reset_checks", [&] { bounding_box_reset_checks(); });
       return;
     }
     if (fixed_lod_only) {
@@ -3570,6 +3616,7 @@ int main(int argc, char **argv) {
       renderer_stage("indirect_checks", [&] { indirect_checks(software, hardware); });
       renderer_stage("indirect_state_checks", [&] { indirect_state_checks(); });
       renderer_stage("latch_state_readback_checks", [&] { latch_state_readback_checks(); });
+      renderer_stage("bounding_box_reset_checks", [&] { bounding_box_reset_checks(); });
       if (!skip_program_cache_checks) {
         renderer_stage("zero_program_creation_checks", [&] { zero_program_creation_checks(); });
         renderer_stage("zero_first_use_environment_checks",

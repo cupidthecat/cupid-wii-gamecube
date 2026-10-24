@@ -55,7 +55,7 @@ Draw-state uploads compare all 256 BP words and all 32 TEV/konst words with
 the last uploaded array. Equal arrays reuse the existing GPU register buffer.
 An identical admitted state also reuses its eligibility result and packed
 registers. Each draw still checks all reachable texture bytes. A
-rejected state leaves the last GPU register array intact. XFB copy and clear
+rejected state leaves the last GPU register array intact. Framebuffer copy and clear
 commands use a separate parameter buffer and restore the fragment program.
 
 The BP indirect-stage count controls indirect texture prefetches. A zero count
@@ -72,7 +72,7 @@ A failed pair deletes its partial programs and propagates the backend error.
 Compilation and each program's first real dispatch use the default host
 floating-point environment and restore the caller's controls and exception
 flags. This covers drivers that defer compilation until dispatch. Cached
-draws avoid saving the environment. XFB copies restore only an already-used
+draws avoid saving the environment. Copy commands restore only an already-used
 scalar program, or program zero until the next draw binds its program.
 
 Projected texture coordinates keep the CPU path's float rounding at each step:
@@ -142,8 +142,9 @@ before treating them as evidence of physical GPU acceleration.
 
 ## EFB visibility
 
-CPU reads, CPU pokes, texture copies, bounding-box reads and software fallback
-synchronize pending EFB writes. Software writes
+CPU reads, CPU pokes, bounding-box reads and software fallback restore pending
+EFB writes to the CPU buffers. GPU texture and XFB copies finish earlier draws
+before encoding directly from GPU storage. Software writes
 mark the GPU copy stale, and the next hardware rectangle uploads the current
 raw EFB arrays. Format changes reinterpret the same stored color bits.
 
@@ -162,7 +163,7 @@ so later dirty synchronization reads the updated GPU state.
 Color and depth pokes obey the CPU framebuffer address selectors and update
 their selected EFB pixels independently of GX blend/depth write masks.
 Out-of-range pixels are ignored. Combined color/depth accesses remain
-unsupported. Texture copies run the checked CPU encoder after readback.
+unsupported. Texture copies use the shared checked layout and GPU tile encoder.
 
 XFB copies use a compute shader to filter and encode the GPU's raw EFB into
 packed YUYV output. Only the copied row bytes return to the CPU before the
@@ -774,8 +775,8 @@ artifact root. Adapter choice does not by itself establish a speed gain.
 
 ## CPU buffer visibility
 
-Texture copies and software XFB fallback copies synchronize the EFB once before
-encoding. Their pixel callbacks read the synchronized CPU buffers directly.
+Software texture and XFB copies synchronize the EFB once before encoding.
+Their pixel callbacks read the synchronized CPU buffers directly.
 Copy-trigger clear uses the same buffers after encoding, preserving color,
 alpha and depth masks. CPU EFB peeks still synchronize before reading.
 
@@ -784,6 +785,27 @@ drains queued GPU work before a software fallback begins, including a fallback
 inside an otherwise eligible draw. No new GPU command is submitted between
 these fragment reads. This avoids repeated synchronization and statistics
 construction for every copied or software-shaded pixel.
+
+## GPU texture copies and bounding-box resets
+
+Texture copies support all thirteen tile formats with the same checked layout
+plan as the CPU encoder. The shader preserves six-bit averaging, depth-half
+channel order and intensity conversion. Each invocation owns one output word;
+the host reads only the compact encoded rows. Applying those rows in order
+preserves overlapping strides. RAM becomes visible before optional masked
+clear. Source padding, destination validation and the software diagnostics
+retain their existing contracts.
+
+Copies retain pending fragment counts, bounding boxes and traversal latches.
+Later GPU draws, texture-cache checks and CPU fallback observe the normal
+ordered state. The encoding program compiles on first use and restores the
+already initialized scalar fragment program, or program zero.
+
+BP bounding-box resets retire queued rectangles before replacing the selected
+coordinate pair. They reset only that axis's GPU accumulation words, preserving
+the other axis, accepted-fragment count and retained shader keys. This avoids
+a full EFB readback while preventing earlier fragments from extending newly
+written bounds. Repeated and fully masked BP writes still perform the reset.
 
 ## Behavior mappings
 
@@ -804,6 +826,8 @@ validated graphics modules and an independently written compute shader.
 | Decoded texture cache and GPU sampling | `VideoBackends/Software/TextureSampler.cpp`, `Sample`, `SampleMip`; `VideoCommon/TextureCacheBase.cpp`, `LoadImpl`, `GetTexture`, `GetSamplerState`, `BindTextures`; `VideoCommon/TextureInfo.cpp`, `FromStage`; `VideoCommon/TextureDecoder_Common.cpp`, `TexDecoder_GetPaletteSize`; `VideoCommon/VertexManagerBase.cpp`, `Flush` | Texture decoding, reachable source/palette extents, independent sampler state, wraps, fixed filtering weights, mip selection and exact content invalidation. |
 | Raw EFB storage, GPU blending and CPU access | `VideoBackends/Software/SWEfbInterface.cpp`, `BlendTev`, `SetColor`, `SetDepth`, `ZCompare`; `VideoCommon/EFBInterface.cpp`, `HardwareEFBInterface::PokeColor`, `PokeDepth`; `VideoCommon/FramebufferManager.cpp`, `PokeEFBColor`, `PokeEFBDepth`; `Core/PowerPC/MMU.cpp`, `EFB_Write` | Pixel packing, blend/logic masks, depth ordering, ARGB pokes, bounds and unconditional poke stores. |
 | GPU XFB encoding, packed readback and copy-trigger clear | `VideoBackends/Software/SWEfbInterface.cpp`, `EncodeXFB`, `SetColor`, `SetDepth`; `VideoBackends/Software/EfbCopy.cpp`, `ClearEfb`; `VideoCommon/TextureCacheBase.cpp`, `GetRAMCopyFilterCoefficients`, `CopyRenderTargetToTexture`; `VideoCommon/TextureConversionShader.cpp`, `WriteXFBEncoder`; `VideoCommon/FramebufferManager.cpp`, `FlushEFBPokes`, `InvalidatePeekCache` | Filter coefficients, gamma quantization, YUYV packing, scaled staging rows, RAM visibility and clear ordering. The compute path retains the validated software chroma weights where the generated encoder differs. |
+| GPU tiled texture copies | `VideoBackends/Software/TextureEncoder.cpp`, `Encode` and color/depth encoders; `VideoBackends/Software/EfbCopy.cpp`, `ClearEfb`; `VideoCommon/BPStructs.cpp`, copy trigger handling | Tile layout, six-bit filtering, intensity, depth-half channel order, compact RAM staging and masked clear ordering. |
+| Queued bounding-box resets | `VideoCommon/BPStructs.cpp`, `BPWritten`, clear-bounds cases and pipeline flush; `VideoCommon/BoundingBox.cpp`, `Set`, `Flush` | Complete earlier raster work before replacing either coordinate pair, including repeated writes. |
 
 See [graphics behavior mappings](graphics-reference.md) for the independent
 CPU differential tests that establish the reused decoding, rasterization,

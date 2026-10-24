@@ -1433,9 +1433,11 @@ Thirteen selected strict MSVC Release/LTO tests pass for the initial indexed
 decoder, bulk EFB and queued audio changes: CPU, native integer, CPU groups,
 device, disc stream, event budget, runtime groups, graphics, FIFO environment,
 EFB copy/access, XFB copy and guest video. The final shared-decoder CPU group
-fixture separately passes strict MSVC Release/LTO and strict GCC with
+fixture separately passes strict MSVC Release/LTO, strict GCC and Clang 18
+ASan/UBSan with
 1,868,844 complete CPU/RAM/ordered bus comparisons and 59,442,206 grouped
-instructions. Additional sanitizer receipts retain their own source scope.
+instructions. Sanitizers instrument the C++ runtime and fixture; emitted
+machine code is checked through differential execution.
 
 The initial Windows interpreter/OpenGL combination completes eight fixed-work
 startup children in AB/BA order: Sunshine reaches three billion attempts and
@@ -1454,3 +1456,63 @@ integrated speedup. Their exact evidence remains under
 `final-indexed-startup-20261023/` in the continuation cache. A separate normal
 audio gameplay observation uses the frozen initial decoder and retains that
 distinct source scope.
+
+## GPU tiled copies and queued bounding-box reset
+
+The direct GPU copy fixture covers 3,384 complete RAM/EFB/clear profiles across
+all legal tile/source pairs, both scales, four intensity-flag combinations,
+odd and edge footprints, zero/overlapping/long strides and clear masks. It
+passes native MSVC, GCC/llvmpipe and Clang 18 ASan/UBSan. A separate Wii MEM2
+run passes the same 3,384 profiles. Shader execution and host drivers remain
+outside compiler sanitizer instrumentation. Two intentionally incorrect
+half-scale and depth-channel shaders each fail the fixture.
+
+The queued draw/copy/clear fixture expands to 752 cases. A separate review
+matches 4,096 old/refactored CPU encoder cases, including callback order and
+exception type/message. Additional combined sequences preserve traversal
+latches across copies, masked clear, later scalar/batched GPU draws, copied
+RAM replacing an active texture and retained-map CPU fallback.
+
+The frozen GPU implementation completes sixteen fixed-work game children:
+two AB/BA pairs per game on Windows and Linux. Sunshine reaches three billion
+attempts/320 fields and Galaxy one billion/76 fields. Linux retains all sixty
+reported fields, frames and stored files. Windows retains all fields except
+revision metadata, plus exact frames and storage. This comparison precedes
+the final shared CPU decoder and bounding-box correction; final combined
+receipts retain their separate source scope. No gameplay speed is qualified.
+
+A newly authored regression reproduces a queued bounding-box reset failure
+on the earlier GPU core. The corrected path passes 32 native and llvmpipe
+cases, including either axis, partial/full/zero BP masks, repeated writes,
+earlier and later draws, the unaffected axis and accepted-fragment counts.
+Each case requires a single final EFB readback. Linux state/latch checks and
+the complete native hardware suite also pass. The fix resets only two GPU
+accumulation words after earlier rectangles complete.
+
+At `7688c15`, hosted normal GCC and Clang suites expose the DSP fixture's old
+assumption that a rate write moves the already queued initial tick. The fixed
+fixture checks one cycle before/at the retained 32 kHz boundary, one cycle
+before/at the tenth fast-rate packet, and the complete 160-value PCM result.
+It passes native MSVC and strict GCC against the queued-DAC core. The original
+CI failures remain recorded. The frozen earlier full GCC run passes its other
+65 tests and skips the private disc placeholder; its DSP failure is retained.
+
+Implementation, negative controls, fixed windows and review receipts remain
+in `.cache/gpu-texture-copy-20261023/`, `.cache/gpu-texture-copy-review-20261023/`
+and `.cache/bbox-linux-review-20261023/`. Games and captures remain private.
+
+The final combined MSVC Release/LTO tree passes nine selected tests: DSP,
+graphics, CPU EFB copy, guest video, full hardware rendering, program-cache
+checks, the 3,384-profile GPU fixture, hardware guest video and the compiled
+EFB encoder comparison. A strict GCC overlay links the final three graphics
+objects before the frozen core archive; the full hardware suite, GPU fixture,
+CPU/reference encoders and DSP checks pass, with old graphics objects excluded.
+The headless renderer stubs compile, and missing-device fixture controls return
+77 when optional and fail when required.
+
+One final native startup pair per supplied game compares this combined tree
+with the preceding shared-decoder binary. All sixty JSON values, raw frames
+and stored files match without exclusions. Sunshine takes 15.572/14.781 seconds
+and Galaxy 35.835/34.914 seconds, preceding/combined, under shared host load.
+These bounded prefixes do not qualify gameplay speed. Logs, complete source
+pins and every comparison remain under `gpu-merged-*` in the continuation cache.

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cupid/cpu/floating.hpp"
 #include "cupid/cpu/interpreter.hpp"
+#include "floating_predicates.hpp"
 #include <algorithm>
 #include <cfenv>
 #include <cmath>
@@ -186,31 +187,32 @@ ArithmeticResult calculate(State &state, bool &checked, unsigned operation, doub
       binary64_arithmetic_is_tiny(operation, a, b, c, state.fpscr & 3, std::signbit(result)))
     result = std::copysign(0.0, result);
   u32 flags = 0;
-  if (std::isnan(result)) {
+  if (floating_predicates::isnan(result)) {
     const double second = operation == 25 ? c : b;
     if (signaling(std::bit_cast<u64>(a)) || signaling(std::bit_cast<u64>(second)) ||
         (fused && signaling(std::bit_cast<u64>(c))))
       flags |= snan_flag;
     state.fpscr &= ~0x60000u;
-    if (std::isnan(a))
+    if (floating_predicates::isnan(a))
       result = std::bit_cast<double>(std::bit_cast<u64>(a) | 0x8000000000000ull);
-    else if (std::isnan(second))
+    else if (floating_predicates::isnan(second))
       result = std::bit_cast<double>(std::bit_cast<u64>(second) | 0x8000000000000ull);
-    else if (fused && std::isnan(c))
+    else if (fused && floating_predicates::isnan(c))
       result = std::bit_cast<double>(std::bit_cast<u64>(c) | 0x8000000000000ull);
     else {
       result = std::bit_cast<double>(0x7ff8000000000000ull);
       if (operation == 18)
         flags |= b == 0 ? 0x00200000 : 0x00400000;
-      else if (operation == 25 || (fused && std::isnan(a * c)))
+      else if (operation == 25 || (fused && floating_predicates::isnan(a * c)))
         flags |= 0x00100000;
       else
         flags |= 0x00800000;
     }
-  } else if (operation == 18 && std::isinf(result) && b == 0)
+  } else if (operation == 18 && floating_predicates::isinf(result) && b == 0)
     flags |= 0x04000000;
   else if ((operation == 20 || operation == 21 || fused) &&
-           (std::isinf(a) || std::isinf(b) || (fused && std::isinf(c))))
+           (floating_predicates::isinf(a) || floating_predicates::isinf(b) ||
+            (fused && floating_predicates::isinf(c))))
     state.fpscr &= ~0x60000u;
   if (flags)
     signal(state, checked, flags);
@@ -220,7 +222,7 @@ ArithmeticResult calculate(State &state, bool &checked, unsigned operation, doub
 u32 floating_compare(State &state, bool &checked, u64 a_bits, u64 b_bits, bool ordered) {
   const double a = std::bit_cast<double>(a_bits), b = std::bit_cast<double>(b_bits);
   u32 result;
-  if (std::isnan(a) || std::isnan(b)) {
+  if (floating_predicates::isnan(a) || floating_predicates::isnan(b)) {
     result = 1;
     const bool snan = signaling(a_bits) || signaling(b_bits);
     if (snan)
@@ -248,12 +250,30 @@ void Interpreter::execute_float(u32 opcode) {
     exception(0x800, state_.pc);
     throw GuestFault{};
   }
-  const HostRounding rounding(state_.fpscr);
   const bool single = (opcode >> 26) == 59, rc = opcode & 1;
   const unsigned d = (opcode >> 21) & 31, a = (opcode >> 16) & 31, b = (opcode >> 11) & 31,
                  c = (opcode >> 6) & 31;
   const unsigned xo = (opcode >> 1) & 1023, low = xo & 31;
   const u64 b_bits = state_.fpr[b].bits[0];
+  if (!single && low == 8) {
+    switch (xo) {
+    case 40:
+    case 72:
+    case 136:
+    case 264:
+      // Binary register operations preserve payloads and need no host FP controls.
+      state_.fpr[d].bits[0] = xo == 40    ? b_bits ^ 0x8000000000000000ull
+                              : xo == 136 ? b_bits | 0x8000000000000000ull
+                              : xo == 264 ? b_bits & 0x7fffffffffffffffull
+                                          : b_bits;
+      if (rc)
+        field(1, state_.fpscr >> 28);
+      return;
+    default:
+      break;
+    }
+  }
+  const HostRounding rounding(state_.fpscr);
   const double av = state_.fpr[a].value(), bv = state_.fpr[b].value(), cv = state_.fpr[c].value();
   bool completed = false, checked = false;
   if (!single) {
@@ -262,22 +282,6 @@ void Interpreter::execute_float(u32 opcode) {
     case 32:
       field((opcode >> 23) & 7,
             floating_compare(state_, checked, state_.fpr[a].bits[0], b_bits, xo == 32));
-      completed = true;
-      break;
-    case 40:
-      state_.fpr[d].bits[0] = b_bits ^ 0x8000000000000000ull;
-      completed = true;
-      break;
-    case 72:
-      state_.fpr[d].bits[0] = b_bits;
-      completed = true;
-      break;
-    case 136:
-      state_.fpr[d].bits[0] = b_bits | 0x8000000000000000ull;
-      completed = true;
-      break;
-    case 264:
-      state_.fpr[d].bits[0] = b_bits & 0x7fffffffffffffffull;
       completed = true;
       break;
     case 583:
@@ -332,9 +336,10 @@ void Interpreter::execute_float(u32 opcode) {
                              : mode == 3 ? std::floor(bv)
                                          : nearest_integer(bv);
       u32 value;
-      const bool invalid = std::isnan(bv) || rounded >= 2147483648.0 || rounded < -2147483648.0;
+      const bool invalid =
+          floating_predicates::isnan(bv) || rounded >= 2147483648.0 || rounded < -2147483648.0;
       if (invalid) {
-        value = std::isnan(bv) || rounded < 0 ? 0x80000000 : 0x7fffffff;
+        value = floating_predicates::isnan(bv) || rounded < 0 ? 0x80000000 : 0x7fffffff;
         if (signaling(b_bits))
           signal(state_, checked, snan_flag);
         signal(state_, checked, 0x100);
@@ -353,7 +358,7 @@ void Interpreter::execute_float(u32 opcode) {
     }
     case 12: {
       const double result = rounded_single(state_, bv);
-      if (std::isnan(bv)) {
+      if (floating_predicates::isnan(bv)) {
         const bool invalid = signaling(b_bits);
         if (invalid)
           signal(state_, checked, snan_flag);
@@ -393,7 +398,7 @@ void Interpreter::execute_float(u32 opcode) {
       flags = snan_flag;
     if (flags)
       signal(state_, checked, flags);
-    if (flags || std::isnan(bv) || std::isinf(bv))
+    if (flags || floating_predicates::isnan(bv) || floating_predicates::isinf(bv))
       state_.fpscr &= ~0x60000u;
     const bool inhibited = ((flags & invalid_mask) && (state_.fpscr & 0x80)) ||
                            ((flags & 0x04000000) && (state_.fpscr & 0x10));
@@ -418,7 +423,7 @@ void Interpreter::execute_float(u32 opcode) {
       double value =
           single ? rounded_single(state_, result.value) : rounded_double(state_, result.value);
       if (low == 30 || low == 31) {
-        if (!std::isnan(value))
+        if (!floating_predicates::isnan(value))
           value = -value;
       }
       state_.fpr[d].set(value);
@@ -460,6 +465,37 @@ void Interpreter::execute_paired(u32 opcode) {
     exception(0x800, state_.pc);
     throw GuestFault{};
   }
+  if (low == 8 || low == 16) {
+    switch (xo) {
+    case 40:
+    case 72:
+    case 136:
+    case 264: {
+      const auto bits = state_.fpr[b].bits;
+      for (unsigned n = 0; n < 2; ++n)
+        state_.fpr[d].bits[n] = xo == 40    ? bits[n] ^ 0x8000000000000000ull
+                                : xo == 136 ? bits[n] | 0x8000000000000000ull
+                                : xo == 264 ? bits[n] & 0x7fffffffffffffffull
+                                            : bits[n];
+      if (opcode & 1)
+        field(1, state_.fpscr >> 28);
+      return;
+    }
+    case 528:
+    case 560:
+    case 592:
+    case 624: {
+      // Snapshot both sources before writing an aliased destination.
+      const auto aa = state_.fpr[a].bits, bb = state_.fpr[b].bits;
+      state_.fpr[d].bits = {aa[(xo - 528) / 64], bb[((xo - 528) / 32) & 1]};
+      if (opcode & 1)
+        field(1, state_.fpscr >> 28);
+      return;
+    }
+    default:
+      break;
+    }
+  }
   const HostRounding rounding(state_.fpscr);
   const auto aa = state_.fpr[a], bb = state_.fpr[b], cc = state_.fpr[c];
   bool completed = true, checked = false;
@@ -473,22 +509,6 @@ void Interpreter::execute_paired(u32 opcode) {
           floating_compare(state_, checked, aa.bits[lane], bb.bits[lane], (xo & 32) != 0));
     break;
   }
-  case 40:
-  case 72:
-  case 136:
-  case 264:
-    for (unsigned n = 0; n < 2; ++n)
-      state_.fpr[d].bits[n] = xo == 40    ? bb.bits[n] ^ 0x8000000000000000ull
-                              : xo == 136 ? bb.bits[n] | 0x8000000000000000ull
-                              : xo == 264 ? bb.bits[n] & 0x7fffffffffffffffull
-                                          : bb.bits[n];
-    break;
-  case 528:
-  case 560:
-  case 592:
-  case 624:
-    state_.fpr[d].bits = {aa.bits[(xo - 528) / 64], bb.bits[((xo - 528) / 32) & 1]};
-    break;
   default:
     completed = false;
     break;
@@ -505,7 +525,8 @@ void Interpreter::execute_paired(u32 opcode) {
       signal(state_, checked, 0x04000000);
       state_.fpscr &= ~0x60000u;
     }
-    if (std::isnan(first) || std::isnan(second) || std::isinf(first) || std::isinf(second))
+    if (floating_predicates::isnan(first) || floating_predicates::isnan(second) ||
+        floating_predicates::isinf(first) || floating_predicates::isinf(second))
       state_.fpscr &= ~0x60000u;
     if (square_root && (first < 0 || second < 0)) {
       signal(state_, checked, 0x200);
@@ -540,7 +561,7 @@ void Interpreter::execute_paired(u32 opcode) {
         values[n] = rounded_single(state_, calculate(state_, checked, operation, aa.value(n),
                                                      bb.value(n), multiplier, true)
                                                .value);
-        if ((low == 30 || low == 31) && !std::isnan(values[n]))
+        if ((low == 30 || low == 31) && !floating_predicates::isnan(values[n]))
           values[n] = -values[n];
       }
     }
@@ -606,7 +627,7 @@ void Interpreter::quantized(u32 opcode, bool indexed) {
         raw = binary64_to_binary32_store(state_.fpr[d].bits[lane], true);
       else {
         const double value = state_.fpr[d].value(lane);
-        if (std::isnan(value))
+        if (floating_predicates::isnan(value))
           unsupported("NaN integer quantization is not implemented");
         const float scaled = std::ldexp(static_cast<float>(value), scale);
         const float minimum = type == 6 ? -128.0f : type == 7 ? -32768.0f : 0.0f;

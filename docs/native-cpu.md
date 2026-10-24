@@ -207,3 +207,34 @@ results, final states and executable hashes remain in the ignored
 `.cache/cpu-native-register-20261004/` directory. Larger code coverage and faster
 rejection dispatch leave per-instruction host calls and fetch/timer processing
 in place. Full-speed execution still requires further CPU and device work.
+
+## Resident hint and floating-point dispatch costs
+
+The runtime combines ordinary integer, cache-flush, conditional-branch and
+scalar-RAM opportunity hints in one read of the recent cache line. The result
+matches the existing hint predicates, including previous-line and following-line
+cases. This query performs no backing reads and changes no cache replacement
+state. Execution still validates translation, authoritative tags and stable RAM
+identity before using any resident instruction.
+
+Instruction and device quotas use ordered scalar minimum operations. Every
+original deadline query still executes in the same order, with the same integer
+widths, overflow headroom and host-poll bound.
+
+Scalar sign/move instructions and paired sign/move/merge instructions operate on
+raw register bits before entering a host rounding scope. They preserve payloads,
+bitwise signed-zero behavior, untouched lanes, FPSCR and destination/source aliases. Record forms
+still update CR1, and floating-point availability and paired-execution rejection
+retain their exception priority. Arithmetic, comparisons, estimates, conversion
+and quantized transfers keep their existing host rounding controls.
+
+The MSVC x64 build evaluates boolean NaN, infinity and finite classifications
+from register bits. Other compiler targets keep their standard-library predicates.
+This changes neither guest arithmetic nor the implementations of exponent
+scaling, integer conversion and floating-point class recording.
+
+The public raw-operation fixture checks complete CPU state, authored RAM and
+instruction-fetch order. On x64 it also checks x87 and SIMD rounding, flush modes,
+sticky flags and unmasked controls. The cache-hint fixture compares every hint
+result with the separate predicates, then verifies subsequent fetches against an
+untouched cache, including eviction, invalidation, aliases and locked misses.

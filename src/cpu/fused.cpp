@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cupid/cpu/floating.hpp"
+#include "floating_predicates.hpp"
 #include <array>
 #include <cmath>
 #include <stdexcept>
@@ -99,7 +100,7 @@ Magnitude signed_sum(Magnitude first, bool first_negative, const Magnitude &seco
 
 bool binary64_arithmetic_is_tiny(unsigned operation, double a, double b, double c,
                                  u32 rounding_mode, bool negative) {
-  if (!std::isfinite(a))
+  if (!floating_predicates::isfinite(a))
     return false;
   // Just below the minimum normal, unrestricted binary64 significands have
   // half a subnormal ULP of spacing. Nearest rounding reaches normal at the
@@ -110,7 +111,7 @@ bool binary64_arithmetic_is_tiny(unsigned operation, double a, double b, double 
   const auto minimum_normal = decode(std::bit_cast<double>(0x0010000000000000ull));
   const auto av = decode(a);
   if (operation == 18) {
-    if (!std::isfinite(b) || b == 0)
+    if (!floating_predicates::isfinite(b) || b == 0)
       return false;
     // A nonzero binary64 numerator cannot have a tiny quotient with this divisor.
     if ((std::bit_cast<u64>(b) & 0x7fffffffffffffffull) < 0x3cb0000000000000ull)
@@ -124,17 +125,17 @@ bool binary64_arithmetic_is_tiny(unsigned operation, double a, double b, double 
   }
   Magnitude exact;
   if (operation == 20 || operation == 21) {
-    if (!std::isfinite(b))
+    if (!floating_predicates::isfinite(b))
       return false;
     const auto bv = decode(operation == 20 ? -b : b);
     exact = signed_sum(single_value(av), av.negative, single_value(bv), bv.negative);
   } else {
-    if (!std::isfinite(c))
+    if (!floating_predicates::isfinite(c))
       return false;
     const auto cv = decode(c);
     exact = product(av, cv);
     if (operation >= 28 && operation <= 31) {
-      if (!std::isfinite(b))
+      if (!floating_predicates::isfinite(b))
         return false;
       const auto bv = decode(operation == 28 || operation == 30 ? -b : b);
       exact = signed_sum(exact, av.negative != cv.negative, single_value(bv), bv.negative);
@@ -152,8 +153,9 @@ double single_fused_intermediate(double a, double c, double b, bool subtract) {
   const double addend = subtract ? -b : b;
   const double rounded = std::fma(a, c, addend);
   const u64 bits = std::bit_cast<u64>(rounded);
-  if (!std::isfinite(rounded) || (bits & 0x1fffffff) != 0x10000000 || !std::isfinite(a) ||
-      !std::isfinite(c) || !std::isfinite(b))
+  if (!floating_predicates::isfinite(rounded) || (bits & 0x1fffffff) != 0x10000000 ||
+      !floating_predicates::isfinite(a) || !floating_predicates::isfinite(c) ||
+      !floating_predicates::isfinite(b))
     return rounded;
   const auto av = decode(a), cv = decode(c), bv = decode(addend), rv = decode(rounded);
   auto exact = product(av, cv);

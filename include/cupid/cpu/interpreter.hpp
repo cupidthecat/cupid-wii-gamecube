@@ -76,10 +76,7 @@ public:
     if ((state_.pc & 3) || (state_.spr[spr::hid0] & 0xa000) != 0x8000)
       return false;
     const unsigned minimum = backend_ == ExecutionBackend::NativeInteger ? 4 : 2;
-    return instruction_cache_.recent_integer_count(state_.pc) >= minimum ||
-           instruction_cache_.recent_cache_flush_run(state_.pc) ||
-           instruction_cache_.register_branch_run_hint(state_.pc) ||
-           instruction_cache_.scalar_run_hint(state_.pc);
+    return instruction_cache_.ordinary_run_hint(state_.pc, minimum);
   }
 
   void set_execution_backend(ExecutionBackend backend);

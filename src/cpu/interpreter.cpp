@@ -783,7 +783,9 @@ IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cy
       state_.spr[spr::mmcr0] || state_.spr[spr::mmcr1] ||
       ((state_.msr & msr::ee) && (external_interrupt_ || decrementer_pending_ || monitor_pending_)))
     return {};
-  unsigned limit = std::min({maximum_instructions, maximum_cycles, 8u});
+  unsigned limit = maximum_instructions;
+  limit = std::min(limit, maximum_cycles);
+  limit = std::min(limit, 8u);
   u32 cycle_budget = maximum_cycles;
   if (state_.instructions > std::numeric_limits<u64>::max() - limit)
     return {};
@@ -845,11 +847,12 @@ IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cy
       // The coherent DCBF policy has no address-dependent effects. After the
       // first taken iteration, ADDI and the counter alone determine this loop.
       // Repeated hits in its one resident line preserve cache replacement state.
-      const u64 iterations =
-          std::min({u64{maximum_instructions} / 3,
-                    u64{std::min(cycle_budget, std::numeric_limits<u32>::max() - 11)} / 7,
-                    (std::numeric_limits<u64>::max() - state_.instructions) / 3,
-                    u64{state_.spr[spr::ctr]} + 1});
+      u64 iterations = u64{maximum_instructions} / 3;
+      iterations = std::min(iterations,
+                            u64{std::min(cycle_budget, std::numeric_limits<u32>::max() - 11)} / 7);
+      iterations =
+          std::min(iterations, (std::numeric_limits<u64>::max() - state_.instructions) / 3);
+      iterations = std::min(iterations, u64{state_.spr[spr::ctr]} + 1);
       if (iterations > 1) {
         const u32 repeats = static_cast<u32>(iterations - 1);
         state_.gpr[destination] += signed_immediate(words[1]) * repeats;
@@ -917,9 +920,10 @@ IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cy
     u32 second_key = 0;
     const unsigned first_size = static_cast<unsigned>(first_line.words.size());
     const auto packet_count = [](const InstructionCache::Resident &line, unsigned available) {
-      unsigned count = std::min({available, static_cast<unsigned>(line.words.size()),
-                                 static_cast<unsigned>(std::countr_one(
-                                     line.integer_mask | line.scalar_mask | line.branch_mask))});
+      unsigned count = available;
+      count = std::min(count, static_cast<unsigned>(line.words.size()));
+      count = std::min(count, static_cast<unsigned>(std::countr_one(
+                                  line.integer_mask | line.scalar_mask | line.branch_mask)));
       unsigned branches = line.branch_mask & ((1u << count) - 1);
       while (branches) {
         const unsigned position = std::countr_zero(branches);
@@ -1016,9 +1020,11 @@ IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cy
             ((words[1] >> 16) & 31) == ((words[0] >> 21) & 31) && (words[2] >> 26) == 16 &&
             (words[2] & (4u << 21)) &&
             (((words[0] >> 16) & 31) == 0 || ((words[0] >> 16) & 31) != ((words[0] >> 21) & 31))) {
-          const u64 available = std::min<u64>(
-              std::min({maximum_instructions, cycle_budget, std::numeric_limits<u32>::max() - 11}),
-              std::numeric_limits<u64>::max() - state_.instructions);
+          u32 count_budget = maximum_instructions;
+          count_budget = std::min(count_budget, cycle_budget);
+          count_budget = std::min(count_budget, std::numeric_limits<u32>::max() - 11);
+          const u64 available =
+              std::min<u64>(count_budget, std::numeric_limits<u64>::max() - state_.instructions);
           const u32 iterations = static_cast<u32>(available / 3);
           if (iterations > 1) {
             if (backend_ == ExecutionBackend::NativeInteger) {
@@ -1034,8 +1040,9 @@ IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cy
       }
     }
   }
-  const unsigned count = std::min({limit, static_cast<unsigned>(resident.size()),
-                                   instruction_cache_.recent_integer_count(physical)});
+  unsigned count = limit;
+  count = std::min(count, static_cast<unsigned>(resident.size()));
+  count = std::min(count, instruction_cache_.recent_integer_count(physical));
   const unsigned minimum = backend_ == ExecutionBackend::NativeInteger ? 4 : 2;
   if (count < minimum)
     return {};

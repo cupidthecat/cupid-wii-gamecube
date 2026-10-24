@@ -333,17 +333,20 @@ template <bool Grouped> void Machine::step_internal() {
   if constexpr (Grouped) {
     if (!trace_.is_open() && cpu_.integer_run_possible()) {
       constexpr u64 maximum = std::numeric_limits<u64>::max();
-      u64 instructions =
-          std::min({u64{4096}, maximum - state.instructions, maximum - step_attempts_,
-                    u64{4096} - (step_attempts_ - last_poll_)});
+      u64 instructions = 4096;
+      instructions = std::min(instructions, maximum - state.instructions);
+      instructions = std::min(instructions, maximum - step_attempts_);
+      instructions = std::min(instructions, u64{4096} - (step_attempts_ - last_poll_));
       if (limits_.instructions)
         instructions = std::min(instructions, limits_.instructions - step_attempts_);
       if (input_replay_)
         instructions = std::min(instructions, input_replay_->event_free_instructions(
                                                   state.instructions, devices_.field_count()));
-      const u64 cycles =
-          std::min({u64{4096}, graphics_.event_free_cycles(), dsp_.event_free_cycles(),
-                    ios_.event_free_cycles(), devices_.event_free_cycles()});
+      u64 cycles = 4096;
+      cycles = std::min(cycles, graphics_.event_free_cycles());
+      cycles = std::min(cycles, dsp_.event_free_cycles());
+      cycles = std::min(cycles, ios_.event_free_cycles());
+      cycles = std::min(cycles, devices_.event_free_cycles());
       if (instructions >= 2 && cycles >= 2) {
         cpu_.set_external_interrupt(devices_.external_interrupt_pending());
         const auto grouped =

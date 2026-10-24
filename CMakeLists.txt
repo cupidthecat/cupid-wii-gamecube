@@ -119,7 +119,7 @@ include(cmake/DeveloperChecks.cmake)
 
 if(CUPID_BUILD_TESTS)
   enable_testing()
-  foreach(suite IN ITEMS cpu native_integer cpu_integer_run core disc disc_stream device event_budget remote remote_speaker host_mixer extension_cipher sdp sdp_transport runtime runtime_group elf fonts dsp handheld ios network sysconf gfx fifo_environment vertex texture fragment rasterizer efb_copy xfb_copy efb_access guest_video input_replay input_replay_follow input_replay_follow_guest audio_stats pointer)
+  foreach(suite IN ITEMS cpu native_integer cpu_integer_run floating_binary instruction_cache_hint core disc disc_stream device event_budget remote remote_speaker host_mixer extension_cipher sdp sdp_transport runtime runtime_group elf fonts dsp handheld ios network sysconf gfx fifo_environment vertex texture fragment rasterizer efb_copy xfb_copy efb_access guest_video input_replay input_replay_follow input_replay_follow_guest audio_stats pointer)
     add_executable(cupid_${suite}_tests tests/${suite}_tests.cpp)
     target_include_directories(cupid_${suite}_tests PRIVATE tests)
     target_link_libraries(cupid_${suite}_tests PRIVATE cupid_core)
@@ -127,6 +127,17 @@ if(CUPID_BUILD_TESTS)
     set_tests_properties(${suite} PROPERTIES TIMEOUT 60 LABELS "public;unit")
   endforeach()
   set_tests_properties(native_integer PROPERTIES SKIP_RETURN_CODE 77)
+  # Full raw-lane and host-control matrices need headroom under instrumentation.
+  set_tests_properties(floating_binary instruction_cache_hint PROPERTIES TIMEOUT 300 LABELS "public;unit;cpu")
+  if(MSVC AND CMAKE_CXX_COMPILER_ARCHITECTURE_ID STREQUAL "x64")
+    enable_language(ASM_MASM)
+    # Keep C++ interface warning and floating-point options away from the assembler.
+    add_library(cupid_floating_binary_x87 OBJECT tests/floating_binary_x87.asm)
+    set_target_properties(cupid_floating_binary_x87 PROPERTIES
+      INTERPROCEDURAL_OPTIMIZATION FALSE
+      INTERPROCEDURAL_OPTIMIZATION_RELEASE FALSE)
+    target_sources(cupid_floating_binary_tests PRIVATE $<TARGET_OBJECTS:cupid_floating_binary_x87>)
+  endif()
   # The complete state and ordered-bus fixture needs headroom on a shared host.
   set_tests_properties(cpu_integer_run PROPERTIES TIMEOUT 300 LABELS "public;unit;cpu")
   set_tests_properties(runtime_group PROPERTIES LABELS "public;guest;integration;cpu")
@@ -139,7 +150,8 @@ if(CUPID_BUILD_TESTS)
   endif()
   set_tests_properties(guest_video PROPERTIES TIMEOUT 180 LABELS "public;guest;integration")
   # The 756-case run/step scope retains full RAM and ordered event comparisons.
-  set_tests_properties(runtime_group PROPERTIES TIMEOUT 300)
+  # Complete shared-host Windows runs can exceed five minutes.
+  set_tests_properties(runtime_group PROPERTIES TIMEOUT 900)
   set_tests_properties(input_replay PROPERTIES LABELS "public;guest;input")
   set_tests_properties(input_replay_follow PROPERTIES LABELS "public;unit;input")
   set_tests_properties(input_replay_follow_guest PROPERTIES TIMEOUT 180 LABELS "public;guest;integration;usb;input")

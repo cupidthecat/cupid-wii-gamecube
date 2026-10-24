@@ -110,6 +110,51 @@ public:
     return false;
   }
 
+  // Equivalent to the ordinary integer, flush, conditional and scalar hint OR.
+  // This remains an opportunity query; callers still validate fetch identity.
+  bool ordinary_run_hint(u32 offset, unsigned minimum) const noexcept {
+    if (recent_way_ >= 8)
+      return false;
+    const auto &line = sets_[(recent_address_ >> 5) & 127][recent_way_];
+    if (!line.valid)
+      return false;
+    const unsigned shift = (offset >> 2) & 7;
+    const unsigned bit = 1u << shift;
+    const unsigned prefix = std::countr_one(static_cast<unsigned>(line.integer_mask) >> shift);
+    if (prefix >= minimum || ((line.cache_flush_mask | line.scalar_start_mask) & bit))
+      return true;
+    const auto matches = [&](const Resident &first, unsigned count, u32 address) {
+      if (!count)
+        return false;
+      if (count < first.words.size())
+        return (first.branch_mask & (1u << count)) && (first.words[count] >> 26) == 16;
+      if (count == 8)
+        return false;
+      const auto following = inspect(address + 32, address + 32);
+      const unsigned next = std::countr_one(following.integer_mask);
+      return count + next < 8 && next < following.words.size() &&
+             (following.branch_mask & (1u << next)) && (following.words[next] >> 26) == 16;
+    };
+    const Resident first{std::span<const u32>(line.words).subspan(shift),
+                         static_cast<unsigned>(line.integer_mask) >> shift, 0,
+                         static_cast<unsigned>(line.scalar_branch_mask) >> shift, 0};
+    if (matches(first, prefix, recent_address_))
+      return true;
+    if (shift < 6 || !line.scalar_branch_mask)
+      return false;
+    // Both remaining hints inspect this same previous tag. Keep its full masks
+    // for the scalar check, then form the identical shifted conditional view.
+    const u32 previous_address = recent_address_ - 32;
+    const auto previous = inspect(previous_address, previous_address);
+    if (previous.scalar_start_mask & bit)
+      return true;
+    if (previous.words.empty())
+      return false;
+    const Resident suffix{previous.words.subspan(shift), previous.integer_mask >> shift, 0,
+                          previous.branch_mask >> shift, 0};
+    return matches(suffix, std::countr_one(suffix.integer_mask), previous_address);
+  }
+
 private:
   struct Line {
     std::array<u32, 8> words{};

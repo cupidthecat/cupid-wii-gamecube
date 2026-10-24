@@ -835,3 +835,65 @@ nor full-speed gameplay. Sources, every cold/warm/process cost, fixed plans
 and exact comparisons remain under `.cache/integer-gpu-quotient-clean-20261024/`,
 `.cache/integer-gpu-quotient-clean-stages-20261024/` and
 `.cache/projected-guard-clean-quotient-run-20261024/`.
+
+## CPU dispatch and host-control comparison
+
+A frozen seven-file CPU change combines recent-cache hint queries, ordered
+scalar budget minima, raw floating-register dispatch and MSVC x64 boolean
+classification. The baseline is `05175df7e0d6f777c7a4ac17b5df963be3a437b7`.
+Both images retain the same graphics implementation.
+
+Strict native MSVC Release/LTO builds use the same static dependencies; matched
+GCC Release builds use the same system dependencies under WSL. Fresh full-core
+compilation, compiler commands, link inputs, ABI/layout checks and source hashes
+were reconciled before execution. Independent correctness checks include full
+component phase boundaries and continuation, raw register/host-control matrices,
+classification controls and subsequent instruction-cache fetches.
+
+The fixed timing schedule contains 1,920 child processes: 624 component and 336
+floating-point processes per host. Four alternating comparison rounds have
+baseline/baseline controls before and after them. CPU affinity is fixed.
+All cold, setup, warm, hot, inclusive and process costs remain recorded. Every
+complete State/RAM result matches; native component counters also match.
+Component hot phases execute six million instructions. Their preceding phases
+add 69,632 retirements. Floating-point profiles execute three eight-million-word
+hot blocks, plus 1,024 warmup and eight cold words.
+
+| Workload | Native MSVC hot candidate/baseline ratios | GCC hot candidate/baseline ratios |
+| --- | ---: | ---: |
+| Raw scalar signs | 0.651-0.711 | 0.820-0.877 |
+| Raw paired signs and merges | 0.645-0.680 | 0.845-0.936 |
+| Mixed floating operations | 0.746-0.787 | 0.859-0.923 |
+| Arithmetic control | 0.823-0.855 | 1.050-1.070 |
+
+These ranges span per-console/backend medians, not every individual sample.
+The GCC arithmetic regression
+remains part of the result. Integer controls are near parity; shorter cold and
+inclusive samples include regressions. In particular, the Wii interpreter
+polling profile has a 1.375 inclusive ratio despite a shorter hot interval.
+Its compressed polling interval is below one millisecond, so startup and final
+work dominate that inclusive sample. No uniform improvement is claimed.
+
+Thirty-two native Windows commercial startup prefixes cover both games and CPU
+backends, with AB/BA order and baseline/baseline controls before and after.
+Sunshine reaches 320 VI fields within three billion attempts; Galaxy reaches 76
+within one billion. All 60 reported values, final frames and stored files match.
+Sunshine candidate/baseline wall ratios are 0.793-0.827 and Galaxy ratios are
+0.736-0.792. A separate fixed 32-run GCC/WSL comparison uses software graphics
+with the same bounds and comparison orders. All 60 values, final frames and
+stored files match. Its Sunshine wall ratios are 0.912-0.990 and Galaxy ratios
+are 0.934-0.980; every baseline control remains recorded.
+
+These bounds describe startup prefixes, not sustained gameplay,
+completed levels, endpoint audio or physical Linux performance.
+
+A further fixed Sunshine replay reaches 8,000 fields in both images. All sixty
+reported values, final raw frame bytes and stored files match. An identical
+private Output-only observer records the existing hash of every presentation;
+all 8,000 recorded 64-bit frame hashes match, with contiguous counts and terminal
+hashes checked. This does not compare raw intermediate image bytes. These runs
+share the host with correctness work and have no isolated speed interpretation.
+
+The receipts, fixed schedules and all control costs remain in
+`.cache/cpu-bundle-05175df-20261024/` and
+`.cache/integrated-progress-20261024/cpu-bundle-*/`.

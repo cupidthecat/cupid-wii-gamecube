@@ -16,6 +16,12 @@ u32 signed_immediate(u32 opcode) {
   return static_cast<u32>(static_cast<s32>(static_cast<s16>(opcode)));
 }
 
+// Indexed scalar transfers use the same type/update ordering as their immediate
+// forms. Admission only calls this for the corresponding indexed load/store set.
+unsigned scalar_primary(u32 opcode) {
+  return (opcode >> 26) == 31 ? 32 + ((opcode >> 6) & 31) : opcode >> 26;
+}
+
 u32 swap32(u32 v) {
   return ((v & 0xff) << 24) | ((v & 0xff00) << 8) | ((v >> 8) & 0xff00) | (v >> 24);
 }
@@ -629,8 +635,9 @@ void Interpreter::tick(u32 cycles) {
   }
 }
 
-std::span<u8> Interpreter::scalar_ram(u32 opcode, u32 &effective, const BatMap *map) {
-  const unsigned primary = opcode >> 26, address = (opcode >> 16) & 31;
+std::span<u8> Interpreter::scalar_ram(u32 opcode, unsigned primary, u32 &effective,
+                                      const BatMap *map) {
+  const unsigned address = (opcode >> 16) & 31;
   const bool floating = primary >= 48;
   if (floating && !(state_.msr & msr::fp))
     return {};
@@ -639,7 +646,8 @@ std::span<u8> Interpreter::scalar_ram(u32 opcode, u32 &effective, const BatMap *
                          : primary < 40                                   ? 1
                                                                           : 2;
   const u32 base = (primary & 1) || address ? state_.gpr[address] : 0;
-  effective = base + signed_immediate(opcode);
+  effective =
+      base + ((opcode >> 26) == 31 ? state_.gpr[(opcode >> 11) & 31] : signed_immediate(opcode));
   // Both single and double FP transfers require four-byte alignment. Faulting
   // and split-page transfers remain stepped so exceptions retain their order.
   if ((floating && (effective & 3)) || (effective & 4095) + width > 4096)
@@ -657,8 +665,9 @@ std::span<u8> Interpreter::scalar_ram(u32 opcode, u32 &effective, const BatMap *
   return bytes.size() == width ? bytes : std::span<u8>{};
 }
 
-void Interpreter::execute_scalar_ram(u32 opcode, u32 effective, std::span<u8> bytes) {
-  const unsigned primary = opcode >> 26, destination = (opcode >> 21) & 31;
+void Interpreter::execute_scalar_ram(u32 opcode, unsigned primary, u32 effective,
+                                     std::span<u8> bytes) {
+  const unsigned destination = (opcode >> 21) & 31;
   const unsigned address = (opcode >> 16) & 31;
   if (primary >= 48) {
     const bool write = primary >= 52;
@@ -959,21 +968,25 @@ IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cy
       // Establish bus admission before executing a register prefix. An observable
       // bus or unavailable mapping keeps the ordinary integer-only path intact.
       u32 effective = 0;
-      auto bytes = first_memory < words.size() ? scalar_ram(words[first_memory], effective, map)
-                                               : std::span<u8>{};
+      unsigned primary = first_memory < words.size() ? scalar_primary(words[first_memory]) : 0;
+      auto bytes = first_memory < words.size()
+                       ? scalar_ram(words[first_memory], primary, effective, map)
+                       : std::span<u8>{};
       if (!bytes.empty()) {
         const u32 start = state_.pc;
         unsigned retired = 0;
         bool branched = false;
         for (u32 opcode : words) {
           if (memory_mask & (1u << retired)) {
-            if (retired != 0)
-              bytes = scalar_ram(opcode, effective, map);
+            if (retired != 0) {
+              primary = scalar_primary(opcode);
+              bytes = scalar_ram(opcode, primary, effective, map);
+            }
             if (bytes.empty())
               break;
             if (retired == 0 || retired == first_size)
               instruction_cache_.commit_hit(retired == 0 ? key : second_key);
-            execute_scalar_ram(opcode, effective, bytes);
+            execute_scalar_ram(opcode, primary, effective, bytes);
             if (backend_ == ExecutionBackend::NativeInteger)
               native_integer_->record_fallback(1);
           } else {

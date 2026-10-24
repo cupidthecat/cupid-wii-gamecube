@@ -206,7 +206,8 @@ private:
   std::array<u16, 0x1e> dsp_{};
   std::vector<u8> aram_;
   u64 aram_remaining_ = 0;
-  u64 audio_remainder_ = 0, audio_start_interrupt_ = 0;
+  u64 audio_remainder_ = 0, audio_period_ = 0;
+  std::vector<u64> audio_start_interrupts_;
   u32 audio_address_ = 0;
   u16 audio_blocks_ = 0;
 

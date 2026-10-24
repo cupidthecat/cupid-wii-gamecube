@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "../src/gfx/hardware_program.hpp"
 #include "cupid/gfx/command_processor.hpp"
+#include "cupid/gfx/efb_copy.hpp"
 #include "cupid/gfx/xfb_copy.hpp"
 #include "test_support.hpp"
 #include <algorithm>
@@ -2247,6 +2248,154 @@ void xfb_checks(bool measure) {
   }
 }
 
+void buffer_fragment_fallback_checks() {
+  const std::array<std::array<float, 3>, 4> quad{
+      {{-1, -1, -0.5f}, {1, -1, -0.5f}, {1, 1, -0.5f}, {-1, 1, -0.5f}}};
+  const std::array<u32, 1> first{0x316593b7}, second{0xd37b2951};
+  Fixture software, hardware;
+  hardware.graphics.set_hardware_rendering(true);
+  for (unsigned mask = 0; mask < 4; ++mask) {
+    const auto before = hardware.graphics.hardware_stats();
+    for (auto *fixture : {&software, &hardware}) {
+      fixture->bp(0x43, 1);
+      fixture->bp(0x10, 0);
+      fixture->bp(0x41, 24);
+      fixture->draw(0x80, quad, first);
+      // A retained indirect accumulator requires CPU fragments. The preceding
+      // GPU draw remains queued until this fallback restores its destination.
+      fixture->bp(0x10, 1 << 20);
+      fixture->bp(0x41, 1 | (4 << 8) | (5 << 5) | ((mask & 1) ? 8 : 0) | ((mask & 2) ? 16 : 0));
+      fixture->draw(0x80, quad, second);
+    }
+    equal(software, hardware);
+    const auto after = hardware.graphics.hardware_stats();
+    CHECK(after.dispatches > before.dispatches);
+    CHECK(after.fallback_rectangles > before.fallback_rectangles);
+    CHECK(after.efb_readbacks == before.efb_readbacks + 1);
+    CHECK(!hardware.graphics.hardware_fallback_reason().empty());
+  }
+  std::cout << "Verified queued GPU destinations through CPU blending and all color/alpha masks\n";
+}
+
+void efb_texture_copy_checks() {
+  const std::array<std::array<float, 3>, 4> quad{
+      {{-1, -1, -0.5f}, {1, -1, -0.5f}, {1, 1, -0.5f}, {-1, 1, -0.5f}}};
+  const std::array<u32, 4> colors{0x124878d2, 0xf0d0b090, 0x3456ef78, 0x9abcedff};
+  Fixture software, hardware;
+  Memory expected(Console::GameCube);
+  hardware.graphics.set_hardware_rendering(true);
+  unsigned cases = 0;
+  for (unsigned source_format = 0; source_format < 4; ++source_format)
+    for (unsigned copy_format : {6u, 8u, 11u}) {
+      if (copy_format == 11 && source_format != 3)
+        continue;
+      for (bool half : {false, true})
+        for (unsigned mask = 0; mask < 8; ++mask) {
+          std::array<u32, 256> bp{};
+          bp[0x43] = source_format;
+          bp[0x49] = 7 | (9 << 10);
+          bp[0x4a] = 12 | (6 << 10);
+          bp[0x4b] = 0x20000 >> 5;
+          bp[0x4d] = 12;
+          bp[0x52] = ((((copy_format << 1) & 15) | (copy_format >> 3)) << 3) | (half ? 1 << 9 : 0) |
+                     (1 << 11);
+          const auto before = hardware.graphics.hardware_stats();
+          for (auto *fixture : {&software, &hardware}) {
+            fixture->bp(0x43, source_format);
+            fixture->bp(0x40, 1 | 14 | 16);
+            fixture->bp(0x41, 24);
+            fixture->draw(0x80, quad, colors);
+            fixture->bp(0x40, mask & 4 ? 16 : 0);
+            fixture->bp(0x41, ((mask & 1) ? 8 : 0) | ((mask & 2) ? 16 : 0));
+            for (u8 reg : std::array<u8, 4>{0x49, 0x4a, 0x4b, 0x4d})
+              fixture->bp(reg, bp[reg]);
+            fixture->bp(0x4f, 0x71f4);
+            fixture->bp(0x50, 0x38d2);
+            fixture->bp(0x51, 0x815392);
+            auto bytes = fixture->memory.range(0x20000, 1024);
+            std::fill(bytes.begin(), bytes.end(), 0xa5);
+          }
+          auto expected_bytes = expected.range(0x20000, 1024);
+          std::fill(expected_bytes.begin(), expected_bytes.end(), 0xa5);
+          // Encode from the pre-clear software image independently of the command
+          // processor copy path. Odd extents exercise padded source sampling.
+          gfx::copy_efb_texture(
+              expected, bp,
+              {[&](unsigned x, unsigned y) { return software.graphics.color(x, y); },
+               [&](unsigned x, unsigned y) { return software.graphics.depth(x, y); }});
+          for (auto *fixture : {&software, &hardware}) {
+            fixture->bp(0x52, bp[0x52]);
+            const auto bytes = fixture->memory.range(0x20000, 1024);
+            CHECK(std::equal(bytes.begin(), bytes.end(), expected_bytes.begin()));
+          }
+          const auto after = hardware.graphics.hardware_stats();
+          CHECK(after.dispatches > before.dispatches);
+          CHECK(after.efb_readbacks == before.efb_readbacks + 1);
+          CHECK(after.fallback_rectangles == before.fallback_rectangles);
+          // Include a one-pixel guard around the clear rectangle. Masked clear
+          // must preserve the other channels and every pixel beyond its extent.
+          for (unsigned y = 8; y <= 16; ++y)
+            for (unsigned x = 6; x <= 20; ++x) {
+              CHECK(software.graphics.color(x, y) == hardware.graphics.color(x, y));
+              CHECK(software.graphics.depth(x, y) == hardware.graphics.depth(x, y));
+            }
+          ++cases;
+        }
+    }
+  std::cout << "Verified " << cases
+            << " queued GPU color/depth texture copies with padding, half scale, stride guards "
+               "and masked copy-before-clear ordering\n";
+}
+
+void efb_texture_copy_benchmark() {
+  Fixture fixture;
+  fixture.graphics.set_hardware_rendering(true);
+  fixture.bp(0x40, 16);
+  fixture.bp(0x41, 24);
+  fixture.bp(0x49, 0);
+  fixture.bp(0x4a, 639 | (527 << 10));
+  fixture.bp(0x4f, 0x71f4);
+  fixture.bp(0x50, 0x38d2);
+  fixture.bp(0x51, 0x815392);
+  fixture.bp(0x52, 1 << 11);
+  fixture.bp(0x4b, 0x20000 >> 5);
+  Memory expected(Console::GameCube);
+  for (unsigned source_format : {1u, 3u})
+    for (bool half : {false, true}) {
+      std::array<u32, 256> bp{};
+      bp[0x43] = source_format;
+      bp[0x4a] = 639 | (527 << 10);
+      bp[0x4b] = 0x20000 >> 5;
+      bp[0x4d] = (half ? 5120 : 10240) >> 5;
+      bp[0x52] = 12 << 3 | (half ? 1 << 9 : 0);
+      fixture.bp(0x43, source_format);
+      fixture.bp(0x4d, bp[0x4d]);
+      const auto color = fixture.graphics.color(0, 0), depth = fixture.graphics.depth(0, 0);
+      const auto layout = gfx::copy_efb_texture(
+          expected, bp,
+          {[&](unsigned, unsigned) { return color; }, [&](unsigned, unsigned) { return depth; }});
+      const auto extent = std::size_t(layout.block_rows - 1) * layout.stride + layout.row_bytes;
+      const auto expected_bytes = expected.range(0x20000, extent);
+      fixture.bp(0x52, bp[0x52]);
+      const auto bytes = fixture.memory.range(0x20000, extent);
+      CHECK(std::equal(bytes.begin(), bytes.end(), expected_bytes.begin()));
+      for (unsigned repetition = 0; repetition < 3; ++repetition) {
+        const auto started = std::chrono::steady_clock::now();
+        for (unsigned copy = 0; copy < 32; ++copy)
+          fixture.bp(0x52, bp[0x52]);
+        const auto elapsed =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+        CHECK(std::equal(bytes.begin(), bytes.end(), expected_bytes.begin()));
+        u64 hash = 14695981039346656037ull;
+        for (const auto byte : bytes)
+          hash = (hash ^ byte) * 1099511628211ull;
+        std::cout << "EFB texture copy source_format=" << source_format << " half=" << half
+                  << " repetition=" << repetition + 1 << " copies=32 seconds=" << elapsed
+                  << " bytes=" << extent << " hash=" << hash << '\n';
+      }
+    }
+}
+
 void xfb_clear_checks() {
   const std::array<std::array<float, 3>, 4> quad{
       {{-1, -1, -0.5f}, {1, -1, -0.5f}, {1, 1, -0.5f}, {-1, 1, -0.5f}}};
@@ -3303,10 +3452,11 @@ int main(int argc, char **argv) {
   std::cout << "[renderer] returned fixture construction\n";
   renderer_stage_returned("fixture construction", fixture_started);
   bool required = false, measure = false, fog_only = false, texture_cache_only = false,
-       xfb_only = false, projection_only = false, state_only = false, fixed_lod_only = false,
-       counter_only = false, counter_benchmark_only = false, empty_coverage_only = false,
-       division_identities_exhaustive = false, division_rounding_only = false,
-       program_cache_only = false, skip_program_cache_checks = false;
+       xfb_only = false, efb_copy_only = false, projection_only = false, state_only = false,
+       fixed_lod_only = false, counter_only = false, counter_benchmark_only = false,
+       empty_coverage_only = false, division_identities_exhaustive = false,
+       division_rounding_only = false, program_cache_only = false,
+       skip_program_cache_checks = false;
   for (int i = 1; i < argc; ++i) {
     program_cache_only |= std::strcmp(argv[i], "--program-cache-only") == 0;
     skip_program_cache_checks |= std::strcmp(argv[i], "--skip-program-cache-checks") == 0;
@@ -3315,6 +3465,7 @@ int main(int argc, char **argv) {
     fog_only |= std::strcmp(argv[i], "--fog-only") == 0;
     texture_cache_only |= std::strcmp(argv[i], "--texture-cache-only") == 0;
     xfb_only |= std::strcmp(argv[i], "--xfb-only") == 0;
+    efb_copy_only |= std::strcmp(argv[i], "--efb-copy-only") == 0;
     projection_only |= std::strcmp(argv[i], "--projection-only") == 0;
     state_only |= std::strcmp(argv[i], "--state-only") == 0;
     fixed_lod_only |= std::strcmp(argv[i], "--fixed-lod-only") == 0;
@@ -3336,6 +3487,13 @@ int main(int argc, char **argv) {
     return 1;
   }
   return run_tests([&] {
+    if (efb_copy_only) {
+      renderer_stage("buffer_fragment_fallback_checks", [&] { buffer_fragment_fallback_checks(); });
+      renderer_stage("efb_texture_copy_checks", [&] { efb_texture_copy_checks(); });
+      if (measure)
+        renderer_stage("efb_texture_copy_benchmark", [&] { efb_texture_copy_benchmark(); });
+      return;
+    }
     if (division_rounding_only) {
       renderer_stage("division_rounding_checks", [&] { division_rounding_checks(); });
       return;
@@ -3424,6 +3582,8 @@ int main(int argc, char **argv) {
       renderer_stage("texture_cache_bank_checks", [&] { texture_cache_bank_checks(); });
       renderer_stage("texture_partial_upload_checks", [&] { texture_partial_upload_checks(); });
       renderer_stage("xfb_checks", [&] { xfb_checks(false); });
+      renderer_stage("buffer_fragment_fallback_checks", [&] { buffer_fragment_fallback_checks(); });
+      renderer_stage("efb_texture_copy_checks", [&] { efb_texture_copy_checks(); });
       renderer_stage("xfb_clear_checks", [&] { xfb_clear_checks(); });
     }
     renderer_stage("division_fragment_checks", [&] { division_fragment_checks(!fog_only, true); });

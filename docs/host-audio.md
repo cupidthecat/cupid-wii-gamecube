@@ -20,6 +20,13 @@ The AI streaming sample counter has its own clock and enable bit. Disabling
 main DMA therefore inserts timed silence into its host queue rather than
 leaving the mixer to fill a missing source interval.
 
+The first main DAC tick is queued at the 32 kHz period. A rate write leaves
+that tick, or any later queued tick, at its existing deadline. After delivering
+the packet, the callback reads the current rate and schedules its next tick.
+This includes a rate write made by the sample callback itself. Each DMA enable
+transition also queues its own completion-status interrupt after 200 cycles;
+stopping or resetting DMA does not cancel those pending interrupts.
+
 Each queue stores overlapping, windowed 256-frame granules with a 128-frame
 stride. A six-point cubic Hermite interpolator produces output samples.
 The configured 80 ms buffer adjusts the bounded queue; excess backlog is

@@ -108,6 +108,8 @@ private:
   void fragment(unsigned x, unsigned y, u32 depth, const FragmentInputs &inputs);
   void copy_efb(u32 control);
   void update_interrupts();
+  u32 color_from_buffer(unsigned x, unsigned y) const;
+  u32 depth_from_buffer(unsigned x, unsigned y) const;
   void write_color(unsigned x, unsigned y, u32 color);
   void synchronize_hardware() const;
   void upload_hardware();

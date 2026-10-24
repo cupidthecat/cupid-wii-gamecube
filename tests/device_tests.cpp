@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -586,19 +587,243 @@ void video_timing_register_updates() {
   }
 }
 
+namespace audio_scheduler_checks {
+constexpr u32 ai = 0x0c006c00, dsp = 0x0c005000;
+
+struct Rates {
+  Console console;
+  u64 slow, fast;
+  u32 slow_label, fast_label;
+};
+
+constexpr std::array rates{Rates{Console::GameCube, 121392, 80928, 32028, 48042},
+                           Rates{Console::Wii, 182250, 121500, 32000, 48000}};
+enum class Advance { Bulk, Single, Budget };
+
+struct Calendar {
+  Rates rate;
+  bool slow = true;
+  u64 next;
+  std::vector<u32> labels;
+  std::function<void(Calendar &)> after_sample;
+
+  explicit Calendar(Rates r) : rate(r), next(r.slow) {
+  }
+
+  void advance(u64 target) {
+    while (next <= target) {
+      labels.push_back(slow ? rate.slow_label : rate.fast_label);
+      if (after_sample)
+        after_sample(*this);
+      next += slow ? rate.slow : rate.fast;
+    }
+  }
+};
+
+struct Fixture {
+  hw::Devices device;
+  Rates rate;
+  std::vector<u32> labels;
+  std::function<void(Fixture &)> after_sample;
+  unsigned reads = 0;
+
+  explicit Fixture(Rates r) : device(r.console), rate(r) {
+    device.dma_read = [this](u32, std::span<u8> data) {
+      ++reads;
+      std::fill(data.begin(), data.end(), u8(0));
+    };
+    device.audio_samples = [this](std::span<const s16> values, u32 label) {
+      CHECK(values.size() == 16);
+      CHECK(std::all_of(values.begin(), values.end(), [](s16 value) { return value == 0; }));
+      labels.push_back(label);
+      if (after_sample)
+        after_sample(*this);
+    };
+  }
+
+  void control(bool slow) {
+    device.write(ai, slow ? 64 : 0, 4);
+  }
+
+  void advance(u64 target, Advance mode) {
+    CHECK(device.cycles() <= target);
+    while (device.cycles() < target) {
+      u64 part = target - device.cycles();
+      if (mode == Advance::Single)
+        part = 1;
+      else if (mode == Advance::Budget) {
+        const u64 budget = device.event_free_cycles();
+        part = std::min(part, budget ? budget : 1);
+      }
+      device.advance(part);
+    }
+  }
+
+  std::vector<u64> snapshot() {
+    return {device.cycles(),
+            device.read(ai, 4),
+            device.read(ai + 8, 4),
+            device.read(dsp + 10, 2),
+            device.read(dsp + 0x36, 2),
+            device.read(dsp + 0x3a, 2),
+            device.interrupt_causes(0xffffffff),
+            device.event_free_cycles()};
+  }
+
+  bool irq() {
+    return (device.read(dsp + 10, 2) & 8) != 0;
+  }
+
+  void start() {
+    device.write(dsp + 0x36, 0x8001, 2);
+  }
+
+  void stop() {
+    device.write(dsp + 0x36, 1, 2);
+  }
+
+  void clear() {
+    device.write(dsp + 10, 12, 2);
+  }
+};
+
+void pending_periods() {
+  for (Rates rate : rates) {
+    Fixture bulk(rate), single(rate), budget(rate);
+    Calendar oracle(rate);
+    const auto compare = [&](u64 target) {
+      oracle.advance(target);
+      bulk.advance(target, Advance::Bulk);
+      single.advance(target, Advance::Single);
+      budget.advance(target, Advance::Budget);
+      CHECK(bulk.labels == oracle.labels);
+      CHECK(single.labels == oracle.labels);
+      CHECK(budget.labels == oracle.labels);
+      CHECK(bulk.snapshot() == single.snapshot());
+      CHECK(bulk.snapshot() == budget.snapshot());
+      CHECK(bulk.reads == 0 && single.reads == 0 && budget.reads == 0);
+    };
+    const auto write = [&](bool slow) {
+      bulk.control(slow);
+      single.control(slow);
+      budget.control(slow);
+      oracle.slow = slow;
+    };
+    write(false); // The constructor's first 32 kHz deadline survives a write at tick 0.
+    compare(rate.fast);
+    CHECK(oracle.labels.empty());
+    write(true);
+    write(false); // Several writes cannot replace the one already queued tick.
+    compare(rate.slow - 1);
+    compare(rate.slow);
+    CHECK(oracle.labels == (std::vector<u32>{rate.fast_label}));
+    write(true); // The second tick was already scheduled with the previous fast rate.
+    compare(rate.slow + rate.fast - 1);
+    compare(rate.slow + rate.fast);
+    CHECK(oracle.labels == (std::vector<u32>{rate.fast_label, rate.slow_label}));
+    write(false);
+    compare(rate.slow * 2 + rate.fast);
+    compare(rate.slow * 3 + rate.fast * 4 + 123);
+    write(true);
+    compare(rate.slow * 7 + rate.fast * 5 + 321);
+  }
+}
+
+void queued_start_interrupts() {
+  for (Rates rate : rates) {
+    for (Advance mode : {Advance::Bulk, Advance::Single, Advance::Budget}) {
+      Fixture f(rate);
+      f.start();
+      CHECK(f.device.event_free_cycles() == 199);
+      f.advance(50, mode);
+      f.stop();
+      f.start();
+      CHECK(f.device.event_free_cycles() == 149);
+      f.advance(199, mode);
+      CHECK(!f.irq());
+      f.advance(200, mode);
+      CHECK(f.irq());
+      f.clear();
+      CHECK(f.device.event_free_cycles() == 49);
+      f.advance(249, mode);
+      CHECK(!f.irq());
+      f.advance(250, mode);
+      CHECK(f.irq());
+      f.clear();
+      f.advance(251, mode);
+      CHECK(!f.irq());
+      CHECK(f.reads == 0);
+
+      Fixture burst(rate);
+      burst.start();
+      for (u64 tick : {u64(1), u64(2)}) {
+        burst.advance(tick, mode);
+        burst.stop();
+        burst.start();
+      }
+      // Reset disables DMA but does not cancel already scheduled start events.
+      burst.device.write(dsp + 10, 5, 2);
+      CHECK(burst.device.read(dsp + 0x36, 2) == 0);
+      for (u64 tick : {u64(200), u64(201), u64(202)}) {
+        burst.advance(tick - 1, mode);
+        CHECK(!burst.irq());
+        burst.advance(tick, mode);
+        CHECK(burst.irq());
+        burst.clear();
+      }
+      burst.advance(203, mode);
+      CHECK(!burst.irq());
+      CHECK(burst.reads == 0);
+    }
+  }
+}
+
+void reentrant_rate_writes() {
+  for (Rates rate : rates) {
+    Fixture bulk(rate), single(rate), budget(rate);
+    Calendar oracle(rate);
+    for (Fixture *f : {&bulk, &single, &budget}) {
+      f->control(false);
+      f->after_sample = [](Fixture &recipient) {
+        if (recipient.labels.size() <= 5)
+          recipient.control(recipient.labels.size() % 2 == 1);
+      };
+    }
+    oracle.slow = false;
+    oracle.after_sample = [](Calendar &calendar) {
+      if (calendar.labels.size() <= 5)
+        calendar.slow = calendar.labels.size() % 2 == 1;
+    };
+    for (u64 target :
+         {rate.slow - 1, rate.slow, rate.slow * 2, rate.slow * 4 + rate.fast * 5 + 333}) {
+      oracle.advance(target);
+      bulk.advance(target, Advance::Bulk);
+      single.advance(target, Advance::Single);
+      budget.advance(target, Advance::Budget);
+      CHECK(bulk.labels == oracle.labels);
+      CHECK(single.labels == oracle.labels);
+      CHECK(budget.labels == oracle.labels);
+      CHECK(bulk.snapshot() == single.snapshot());
+      CHECK(bulk.snapshot() == budget.snapshot());
+      CHECK(bulk.reads == 0 && single.reads == 0 && budget.reads == 0);
+    }
+  }
+}
+} // namespace audio_scheduler_checks
+
 namespace audio_dma_clock_checks {
 struct Rate {
   Console console;
   u32 control, label;
-  u64 period;
+  u64 period, initial_period;
 };
 
 // Independent integer CPU-tick calendar for eight stereo DAC frames.
 constexpr std::array rates{
-    Rate{Console::GameCube, 0, 48042, 80928},
-    Rate{Console::GameCube, 64, 32028, 121392},
-    Rate{Console::Wii, 0, 48000, 121500},
-    Rate{Console::Wii, 64, 32000, 182250},
+    Rate{Console::GameCube, 0, 48042, 80928, 121392},
+    Rate{Console::GameCube, 64, 32028, 121392, 121392},
+    Rate{Console::Wii, 0, 48000, 121500, 182250},
+    Rate{Console::Wii, 64, 32000, 182250, 182250},
 };
 
 struct Packet {
@@ -660,7 +885,7 @@ void enabled_controls() {
     Fixture f(rate, true);
     f.start(3);
     for (unsigned block = 0; block != 3; ++block) {
-      f.device.advance(rate.period);
+      f.device.advance(f.packets.empty() ? rate.initial_period : rate.period);
       CHECK(f.packets.size() == block + 1);
       f.packet(block, signal(block));
     }
@@ -675,7 +900,7 @@ void enabled_controls() {
 void disabled_tick_calendar() {
   for (const Rate rate : rates) {
     Fixture f(rate, false); // Disabled delivery must need no DMA bus connection.
-    f.device.advance(rate.period - 1);
+    f.device.advance(rate.initial_period - 1);
     CHECK(f.packets.empty());
     f.device.advance(1);
     CHECK(f.packets.size() == 1);
@@ -692,7 +917,7 @@ void disabled_tick_calendar() {
 
     Fixture partitioned(rate, false);
     for (unsigned block = 0; block != 3; ++block) {
-      u64 left = rate.period;
+      u64 left = block == 0 ? rate.initial_period : rate.period;
       while (left) {
         const u64 safe = partitioned.device.event_free_cycles();
         const u64 piece = std::min(left, safe ? safe : 1);
@@ -708,7 +933,7 @@ void stop_restart_descriptor() {
   for (const Rate rate : rates) {
     Fixture f(rate, true);
     f.start(3);
-    f.device.advance(rate.period);
+    f.device.advance(f.packets.empty() ? rate.initial_period : rate.period);
     f.packet(0, signal(0));
     f.device.write(dsp + 10, 12, 2); // Clear the already elapsed start interrupt.
     f.device.write(dsp + 0x36, 3, 2);
@@ -723,15 +948,15 @@ void stop_restart_descriptor() {
     CHECK(f.device.read(dsp + 10, 2) == control);
     CHECK(f.device.read(dsp + 0x36, 2) == 3);
     f.start(3);
-    f.device.advance(rate.period);
+    f.device.advance(f.packets.empty() ? rate.initial_period : rate.period);
     f.packet(3, signal(0));
     f.device.write(dsp + 10, 12, 2);
     // Updating an enabled reload length does not replace the current prefix.
     f.device.write(dsp + 0x36, 0x8001, 2);
-    f.device.advance(rate.period);
+    f.device.advance(f.packets.empty() ? rate.initial_period : rate.period);
     f.packet(4, signal(1));
     CHECK((f.device.read(dsp + 10, 2) & 8) == 0);
-    f.device.advance(rate.period);
+    f.device.advance(f.packets.empty() ? rate.initial_period : rate.period);
     f.packet(5, signal(2));
     CHECK(f.reads == (std::vector<u32>{0x120, 0x120, 0x140, 0x160}));
     CHECK(f.device.read(dsp + 0x3a, 2) == 0);
@@ -745,7 +970,7 @@ void absent_callback() {
     hw::Devices device(rate.console);
     device.write(ai, rate.control, 4);
     // No audio callback and no bus connection are needed for idle DAC clocks.
-    device.advance(rate.period * 3);
+    device.advance(rate.initial_period + rate.period * 2);
     CHECK(device.read(dsp + 0x36, 2) == 0);
     CHECK((device.read(dsp + 10, 2) & 8) == 0);
     unsigned reads = 0;
@@ -1873,6 +2098,9 @@ int main() {
     controller_calibration();
     controller_analog_modes();
     controller_poll_field_boundary();
+    audio_scheduler_checks::pending_periods();
+    audio_scheduler_checks::queued_start_interrupts();
+    audio_scheduler_checks::reentrant_rate_writes();
     audio_dma_clock_checks::enabled_controls();
     audio_dma_clock_checks::disabled_tick_calendar();
     audio_dma_clock_checks::stop_restart_descriptor();

@@ -699,3 +699,59 @@ The complete assessment and 4,034-file seal remain under
 `.cache/continuation-20261022/native-lrctr-timing/continuation-v3/`.
 These mechanism and startup results do not qualify gameplay speed or justify
 changing production CPU admission.
+
+## Bulk EFB buffer reads
+
+Bulk EFB encoders, copy-trigger clear and software fragments use CPU buffer
+reads after their owning path synchronizes queued GPU work. Public EFB peeks
+retain their synchronization. This removes repeated empty synchronization and
+statistics construction from each pixel read.
+
+Matched strict MSVC 19.43 x64 `/O2 /Ob2 /GL /MT /fp:strict` drivers compare
+frozen earlier and current libraries on NVIDIA RTX 2000 Ada. Six processes
+alternate in AB/BA/AB order. Each process first checks four GPU-to-CPU blend
+transitions and 144 copy/clear cases, then runs three samples of 32 copies per
+mode. Every output byte matches a direct encoder, and hashes match between
+variants. Each full frame is 640 by 528 pixels.
+
+| Source and copy size | Earlier median seconds | Current median seconds |
+| --- | ---: | ---: |
+| RGBA6, full | 0.281109 | 0.202601 |
+| RGBA6, half | 0.177889 | 0.087043 |
+| Z24, full | 0.262060 | 0.165293 |
+| Z24, half | 0.145576 | 0.060160 |
+
+The measured ratios range from 1.39 to 2.42. Builds, tests and game runs share
+the host; these are component measurements rather than gameplay FPS. Earlier
+unmatched-driver and overlapping-stride trials remain recorded separately.
+Exact drivers, frozen headers/libraries, commands and all matched samples
+remain in `.cache/efb-bulk-copy-20261023/`.
+
+## Indexed scalar grouping
+
+The resident scalar path also admits indexed RAM transfers. A fixed authored
+matrix executes 16 million guest instructions per child over indexed integer,
+indexed floating, immediate RAM and register-only loops. The initial decoder
+passes 128 timed children per compiler with matching complete CPU/RAM hashes.
+Its indexed paired median elapsed ratios are 0.326 to 0.386 on GCC and 0.296
+to 0.365 on MSVC. The MSVC immediate controls include a 6.15 percent median
+slowdown, which remains recorded.
+
+The shipping variant shares the decoded transfer class between admission and
+retirement. One further fixed MSVC comparison retains 48 children in ordered
+baseline/initial/shared-decoder triplets. All state and RAM hashes match.
+Four GameCube settings compare the final variant with the frozen baseline:
+
+| Loop and backend | Final/baseline median paired elapsed ratio |
+| --- | ---: |
+| Indexed integer, interpreter | 0.344879 |
+| Indexed floating, native integer | 0.300460 |
+| Immediate RAM, interpreter | 1.028100 |
+| Immediate RAM, native integer | 0.990243 |
+
+The immediate interpreter control retains a 2.81 percent median slowdown and
+a single 1.2275 ratio. No sample is removed or repeated based on its result.
+These shared-host component results support the indexed path while retaining
+its measured costs; they do not establish a commercial gameplay gain.
+Source pairs, plans, commands and every sample remain under
+`.cache/continuation-20261022/indexed-scalar-20261023/`.

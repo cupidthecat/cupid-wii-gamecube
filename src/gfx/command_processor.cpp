@@ -422,7 +422,8 @@ void CommandProcessor::fragment(unsigned x, unsigned y, u32 z, const FragmentInp
   pixel_registers_[9] = std::max(pixel_registers_[9], static_cast<u16>(x | 1));
   pixel_registers_[10] = std::min(pixel_registers_[10], static_cast<u16>(y & ~1u));
   pixel_registers_[11] = std::max(pixel_registers_[11], static_cast<u16>(y | 1));
-  const u32 previous = this->color(x, y);
+  // The draw path drains pending GPU work before entering the software rasterizer.
+  const u32 previous = color_from_buffer(x, y);
   Color destination{};
   for (unsigned i = 0; i < 4; ++i)
     destination[i] = static_cast<u8>(previous >> (24 - i * 8));
@@ -491,6 +492,10 @@ void CommandProcessor::fragment(unsigned x, unsigned y, u32 z, const FragmentInp
 
 u32 CommandProcessor::color(unsigned x, unsigned y) const {
   synchronize_hardware();
+  return color_from_buffer(x, y);
+}
+
+u32 CommandProcessor::color_from_buffer(unsigned x, unsigned y) const {
   if (x >= width || y >= height)
     throw std::out_of_range("EFB color coordinates out of range");
   const u32 stored = colors_[y * width + x];
@@ -510,6 +515,10 @@ u32 CommandProcessor::color(unsigned x, unsigned y) const {
 
 u32 CommandProcessor::depth(unsigned x, unsigned y) const {
   synchronize_hardware();
+  return depth_from_buffer(x, y);
+}
+
+u32 CommandProcessor::depth_from_buffer(unsigned x, unsigned y) const {
   if (x >= width || y >= height)
     throw std::out_of_range("EFB depth coordinates out of range");
   return depths_[y * width + x];
@@ -583,6 +592,8 @@ void CommandProcessor::copy_efb(u32 control) {
       unavailable(0x0c008000, true, error.what());
     }
   }
+  // Copy and clear callbacks only access the CPU buffers. Synchronize once;
+  // sampling the same copy cannot submit new GPU work between pixel reads.
   synchronize_hardware();
   unsigned x = bp_state_[0x49] & 1023, y = (bp_state_[0x49] >> 10) & 1023;
   unsigned w = (bp_state_[0x4a] & 1023) + 1, h = ((bp_state_[0x4a] >> 10) & 1023) + 1;
@@ -595,11 +606,11 @@ void CommandProcessor::copy_efb(u32 control) {
     try {
       if (control & (1 << 14))
         copy_efb_xfb(memory_, bp_state_,
-                     [this](unsigned sx, unsigned sy) { return color(sx, sy); });
+                     [this](unsigned sx, unsigned sy) { return color_from_buffer(sx, sy); });
       else
         copy_efb_texture(memory_, bp_state_,
-                         {[this](unsigned sx, unsigned sy) { return color(sx, sy); },
-                          [this](unsigned sx, unsigned sy) { return depth(sx, sy); }});
+                         {[this](unsigned sx, unsigned sy) { return color_from_buffer(sx, sy); },
+                          [this](unsigned sx, unsigned sy) { return depth_from_buffer(sx, sy); }});
     } catch (const std::exception &error) {
       unavailable(0x0c008000, true, error.what());
     }
@@ -609,7 +620,7 @@ void CommandProcessor::copy_efb(u32 control) {
                       ((bp_state_[0x4f] >> 8) & 255);
     for (unsigned row = y; row < y + h; ++row)
       for (unsigned column = x; column < x + w; ++column) {
-        const u32 previous = color(column, row);
+        const u32 previous = color_from_buffer(column, row);
         const u32 color_mask =
             ((bp_state_[0x41] & 8) ? 0xffffff00 : 0) | ((bp_state_[0x41] & 16) ? 255 : 0);
         write_color(column, row, (value & color_mask) | (previous & ~color_mask));

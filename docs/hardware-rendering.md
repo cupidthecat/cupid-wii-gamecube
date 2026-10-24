@@ -772,6 +772,19 @@ retain `59edc60` metadata; source and PE receipts identify the added requests.
 See `gpu-hint-final/` and `windows-gpu-hint-stock-pairs/` under the same private
 artifact root. Adapter choice does not by itself establish a speed gain.
 
+## CPU buffer visibility
+
+Texture copies and software XFB fallback copies synchronize the EFB once before
+encoding. Their pixel callbacks read the synchronized CPU buffers directly.
+Copy-trigger clear uses the same buffers after encoding, preserving color,
+alpha and depth masks. CPU EFB peeks still synchronize before reading.
+
+Software raster fragments also read their destination directly. The draw path
+drains queued GPU work before a software fallback begins, including a fallback
+inside an otherwise eligible draw. No new GPU command is submitted between
+these fragment reads. This avoids repeated synchronization and statistics
+construction for every copied or software-shaded pixel.
+
 ## Behavior mappings
 
 The behavioral checkout is pinned at

@@ -32,7 +32,11 @@ The state dump reports compilation, execution, cache-hit and replacement counts
 for these sequences.
 
 Scalar groups also admit one-cycle byte, halfword and word loads/stores with
-integer neighbors and valid branches. A not-taken conditional branch can
+integer neighbors and valid branches. Indexed integer and floating transfers
+use the same RAM admission and retirement rules as their immediate forms.
+Effective addresses wrap at 32 bits; index/base/destination aliases retain the
+ordinary instruction ordering. Reversed, reservation and string transfers,
+and integer-word floating stores remain stepped. A not-taken conditional branch can
 continue through the remaining admitted words; any taken branch ends the
 group, including a taken branch whose target is its sequential address.
 Per-offset cache hints require RAM in an eligible prefix before the first

@@ -314,6 +314,30 @@ They exercise both consoles/backends, line offsets, instruction/cycle quotas,
 native accounting and a missing second line. The broader complete-state and
 ordered-bus suites retain their existing coverage.
 
+## Indexed resident RAM transfers
+
+Resident scalar groups admit the 22 indexed integer byte, halfword and word
+transfers and floating single/double transfers. The ordinary transfer classes
+also define their update and destination ordering. Admission forms the address
+from the base and index with 32-bit wraparound, then applies the existing BAT,
+plain-RAM, page and floating-alignment checks. Admission and retirement share
+the decoded transfer class rather than decoding it in both helpers.
+
+The behavioral handlers are `Interpreter/Interpreter_LoadStore.cpp`, including
+`lwzx`, `lwzux`, `lbzx`, `lbzux`, `lhzx`, `lhzux`, `lhax`, `lhaux`, their
+indexed stores, and the indexed `lfs`, `lfd`, `stfs` and `stfd` variants.
+`Helper_Get_EA_X` and `Helper_Get_EA_UX` define their effective addresses.
+Reversed, reservation, string and
+integer-word floating stores remain outside resident scalar admission.
+
+Authored complete-state comparisons cover both consoles/backends, all 22
+types, eight register-alias shapes, three instruction-line offsets, integer
+misalignment, floating payload bits, update ordering, wraparound and a later
+access produced by an earlier load. Backing, mapping, page-crossing, alignment
+and FP-enable guards verify passive rejection and prefix retirement before
+ordinary fault handling. The comparison includes RAM and ordered bus records;
+it does not establish complete hardware memory timing or gameplay speed.
+
 ## Unfinished behavior
 
 Little-endian execution, direct-store segments, NaN-to-integer quantization, locked-cache DMA queue timing, additional performance event selectors, and data cache visibility remain unfinished. Those recognized unfinished execution paths report explicit diagnostics. The timebase uses a twelve-cycle divider and the decrementer uses its own write phase. Full device scheduling and edge timing still need differential validation.

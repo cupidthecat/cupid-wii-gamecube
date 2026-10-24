@@ -71,6 +71,7 @@ Devices::Devices(Console console)
     : console_(console), clock_(console == Console::Wii ? 729000000 : 486000000),
       disc_stream_(clock_, console == Console::Wii ? 2250 : 2248),
       aram_(console == Console::GameCube ? 16u * 1024 * 1024 : 0) {
+  audio_period_ = clock_ * 8 * (console_ == Console::Wii ? 3375u : 3372u) / 108000000;
   pi_[0] = 0x10100;
   pi_[10] = 0x1ff;
   pi_[12] = 0x02492492;
@@ -631,7 +632,7 @@ void Devices::write_half(u32 address, u16 value) {
       if ((value & 0x8000) && (dsp_[offset / 2] & 0x8000) == 0) {
         audio_address_ = (u32(dsp_[0x30 / 2]) << 16) | dsp_[0x32 / 2];
         audio_blocks_ = value & 0x7fff;
-        audio_start_interrupt_ = 200;
+        audio_start_interrupts_.push_back(200);
       }
       mask = 0xffff;
       break;
@@ -813,8 +814,8 @@ void Devices::advance_quiet(u64 amount) {
     di_remaining_ -= amount;
   if (aram_remaining_)
     aram_remaining_ -= amount;
-  if (audio_start_interrupt_)
-    audio_start_interrupt_ -= amount;
+  for (u64 &remaining : audio_start_interrupts_)
+    remaining -= amount;
   for (auto &card : cards_) {
     if (card.command_remaining)
       card.command_remaining -= amount;
@@ -830,15 +831,12 @@ void Devices::advance_quiet(u64 amount) {
 }
 
 void Devices::rebuild_deadline() {
-  const u64 dma_divisor =
-      (console_ == Console::Wii ? 2250u : 2248u) * ((ai_[0] & 64) ? 3u : 2u) / 2;
-  const u64 audio_period = clock_ * 8 * dma_divisor / 108000000;
   const u64 vi_period = video_period();
   const auto remaining = [](u64 period, u64 elapsed) {
     return elapsed < period ? period - elapsed : 0;
   };
   next_deadline_ =
-      std::min(remaining(audio_period, audio_remainder_), remaining(vi_period, video_remainder_));
+      std::min(remaining(audio_period_, audio_remainder_), remaining(vi_period, video_remainder_));
   if (ai_[0] & 1) {
     const u64 divisor = (console_ == Console::Wii ? 2250u : 2248u) * ((ai_[0] & 2) ? 2u : 3u) / 2;
     const u64 sample_cycles = clock_ * divisor / 108000000;
@@ -850,7 +848,8 @@ void Devices::rebuild_deadline() {
   };
   countdown(di_remaining_);
   countdown(aram_remaining_);
-  countdown(audio_start_interrupt_);
+  for (u64 interrupt_remaining : audio_start_interrupts_)
+    countdown(interrupt_remaining);
   next_deadline_ = std::min(next_deadline_, disc_stream_.next_event());
   for (const auto &card : cards_) {
     countdown(card.command_remaining);
@@ -874,13 +873,14 @@ void Devices::advance_state(u64 amount) {
     } else
       aram_remaining_ -= amount;
   }
-  if (audio_start_interrupt_ != 0) {
-    if (amount >= audio_start_interrupt_) {
-      audio_start_interrupt_ = 0;
+  for (u64 &remaining : audio_start_interrupts_) {
+    if (amount >= remaining) {
+      remaining = 0;
       dsp_[5] |= 8;
     } else
-      audio_start_interrupt_ -= amount;
+      remaining -= amount;
   }
+  std::erase(audio_start_interrupts_, u64(0));
   for (unsigned slot = 0; slot < cards_.size(); ++slot) {
     auto &card = cards_[slot];
     if (card.command_remaining != 0) {
@@ -900,12 +900,17 @@ void Devices::advance_state(u64 amount) {
     }
     std::erase(card.transfer_remaining, u64(0));
   }
-  const u64 dma_divisor =
-      (console_ == Console::Wii ? 2250u : 2248u) * ((ai_[0] & 64) ? 3u : 2u) / 2;
-  const u64 audio_period = clock_ * 8 * dma_divisor / 108000000;
-  u64 audio_packets = cupid::hw::detail::elapsed_periods(amount, audio_period, audio_remainder_);
-  while (audio_packets-- != 0)
+  // A rate write does not replace an already queued tick. The callback chooses
+  // the period for the next tick after its sample delivery has returned.
+  u64 audio_elapsed = amount;
+  while (audio_elapsed >= audio_period_ - audio_remainder_) {
+    audio_elapsed -= audio_period_ - audio_remainder_;
+    audio_remainder_ = 0;
     audio_dma_block();
+    const u64 divisor = (console_ == Console::Wii ? 2250u : 2248u) * ((ai_[0] & 64) ? 3u : 2u) / 2;
+    audio_period_ = clock_ * 8 * divisor / 108000000;
+  }
+  audio_remainder_ += audio_elapsed;
   disc_stream_.advance(amount, disc_audio_divisor(), (ai_[0] & 1) != 0);
   if (ai_[0] & 1) {
     const u64 divisor = (console_ == Console::Wii ? 2250u : 2248u) * ((ai_[0] & 2) ? 2u : 3u) / 2;

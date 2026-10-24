@@ -1021,6 +1021,124 @@ void floating_ram_bit_tests() {
   });
 }
 
+void indexed_scalar_ram_tests() {
+  constexpr std::array<unsigned, 22> operations{23,  55,  87,  119, 151, 183, 215, 247,
+                                                279, 311, 343, 375, 407, 439, 535, 567,
+                                                599, 631, 663, 695, 727, 759};
+  constexpr std::array<std::array<unsigned, 3>, 8> registers{
+      {{3, 4, 5}, {3, 0, 5}, {4, 4, 5}, {5, 4, 5}, {3, 4, 4}, {0, 0, 0}, {31, 31, 31}, {3, 4, 0}}};
+  each_backend([&](Pair &pair) {
+    for (unsigned operation : operations)
+      for (unsigned offset : {0u, 6u, 7u})
+        for (unsigned alignment : {0u, 1u, 3u, 4u})
+          for (const auto &[destination, address, index] : registers) {
+            pair.reset();
+            const unsigned primary = 32 + (operation >> 5);
+            const bool floating = primary >= 48;
+            if (floating && (alignment & 3))
+              continue;
+            auto state = pair.first.state();
+            state.msr |= msr::fp;
+            state.fpscr = 0xa5f84007;
+            state.gpr[address] = 0x80002000;
+            state.gpr[index] = alignment;
+            if (address == index)
+              state.gpr[index] = 0x40001000 + alignment / 2;
+            if (!address && !(primary & 1))
+              state.gpr[index] = 0x80002000 + alignment;
+            state.fpr[destination].bits = {0x7ff00123456789abull, 0xfff123456789abcdull};
+            const u32 opcode = extended(operation, destination, address, index, false);
+            pair.first.state() = pair.run.state() = state;
+            const std::array<u32, 3> words{opcode, immediate(14, 8, 8, 1), 0x4bfffff8};
+            program(pair, offset, words);
+            state.pc = 0x80001000 + offset * 4;
+            pair.first.state() = pair.run.state() = state;
+            for (unsigned n = 0; n < 8; ++n)
+              pair.install(0x2000 + n * 4, 0x89abcdefu + n * 0x1020304u);
+            pair.attempt(3, 3, 3);
+            pair.step();
+          }
+
+    // Every transfer keeps a declined first access passive, and retires an
+    // earlier integer prefix before a later indexed MMIO/faulting access.
+    for (unsigned operation : operations)
+      for (unsigned offset : {0u, 6u, 7u})
+        for (unsigned guard = 0; guard < 6; ++guard) {
+          pair.reset();
+          auto state = pair.first.state();
+          state.msr |= msr::fp;
+          state.gpr[4] = 0x80002000;
+          state.gpr[5] = 0;
+          const u32 opcode = extended(operation, 3, 4, 5, false);
+          pair.first.state() = pair.run.state() = state;
+          const std::array<u32, 3> words{opcode, immediate(14, 8, 8, 1), 0x4bfffff8};
+          program(pair, offset, words);
+          state.pc = 0x80001000 + offset * 4;
+          if (guard == 0)
+            pair.first_memory.blocked = pair.run_memory.blocked = 0x2000;
+          else if (guard == 1)
+            state.gpr[4] = 0x50000000;
+          else if (guard == 2)
+            state.gpr[5] = 4095;
+          else if (guard == 3)
+            state.msr &= ~msr::fp;
+          else if (guard == 4)
+            state.gpr[5] = 1;
+          else
+            state.gpr[5] = 4092;
+          pair.first.state() = pair.run.state() = state;
+          const unsigned primary = 32 + (operation >> 5);
+          const unsigned width = primary >= 48 ? ((primary & 2) ? 8 : 4)
+                                 : primary < 34 || primary == 36 || primary == 37 ? 4
+                                 : primary < 40                                   ? 1
+                                                                                  : 2;
+          const bool declined = guard < 2 || (guard == 2 && width > 1) ||
+                                (primary >= 48 && (guard == 3 || guard == 4)) ||
+                                (guard == 5 && width == 8);
+          pair.attempt(3, 3, declined ? 0 : 3);
+          pair.step();
+        }
+
+    for (unsigned operation : operations)
+      for (unsigned offset : {0u, 6u, 7u}) {
+        pair.reset();
+        pair.first.state().msr = pair.run.state().msr |= msr::fp;
+        pair.first.state().gpr[4] = pair.run.state().gpr[4] = 0x80002000;
+        pair.install(0x2000, 0x1000);
+        pair.install(0x3000, 0x89abcdef);
+        const std::array<u32, 3> words{extended(23, 5, 4, 6, false),
+                                       extended(operation, 3, 4, 5, false), 0x4bfffff8};
+        program(pair, offset, words);
+        pair.first_memory.blocked = pair.run_memory.blocked = 0x3000;
+        pair.attempt(3, 3, 1);
+        const auto records = pair.run_memory.records.size();
+        pair.step();
+        CHECK(pair.run_memory.records.size() > records);
+        CHECK(pair.run_memory.records[records][1] == 0x3000);
+      }
+
+    // Both indexed operands are captured before an aliased load/update writes
+    // its destination. Their addition wraps at the guest's 32-bit width.
+    for (unsigned operation : operations) {
+      pair.reset();
+      auto state = pair.first.state();
+      state.msr = (state.msr | msr::fp) & ~msr::dr;
+      state.gpr[4] = 0xfffff000;
+      state.gpr[5] = 0x3000;
+      pair.first.state() = pair.run.state() = state;
+      const std::array<u32, 3> words{extended(operation, 5, 4, 5, false), immediate(14, 8, 8, 1),
+                                     0x4bfffff8};
+      program(pair, 0, words);
+      state.pc = 0x80001000;
+      pair.first.state() = pair.run.state() = state;
+      pair.install(0x2000, 0x89abcdef);
+      pair.install(0x2004, 0x76543210);
+      pair.attempt(3, 3, 3);
+      pair.step();
+    }
+  });
+}
+
 void floating_ram_host_tests() {
   const int saved_rounding = std::fegetround();
   const int saved_exceptions = std::fetestexcept(FE_ALL_EXCEPT);
@@ -2361,6 +2479,7 @@ int main() {
     cache_flush_run_tests();
     scalar_run_tests();
     floating_ram_bit_tests();
+    indexed_scalar_ram_tests();
     floating_ram_host_tests();
     floating_ram_guard_tests();
     floating_ram_quota_tests();

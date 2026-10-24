@@ -147,8 +147,8 @@ private:
   }
 
   BatMap &refresh_bat_map(bool instruction, unsigned count);
-  std::span<u8> scalar_ram(u32 opcode, u32 &effective, const BatMap *map);
-  void execute_scalar_ram(u32 opcode, u32 effective, std::span<u8> bytes);
+  std::span<u8> scalar_ram(u32 opcode, unsigned primary, u32 &effective, const BatMap *map);
+  void execute_scalar_ram(u32 opcode, unsigned primary, u32 effective, std::span<u8> bytes);
 
   u64 bat_address(u32 effective, bool instruction, unsigned count) {
     const unsigned base = instruction ? 528 : 536, extended = instruction ? 560 : 568;

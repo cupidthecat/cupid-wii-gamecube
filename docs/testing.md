@@ -1409,3 +1409,48 @@ checks all 672 zero values, zero peak/nonzero count and their literal FNV64
 hash. The focused fixture passes MSVC Release/LTO, GCC Release and Clang
 ASan/UBSan with leak detection. The original hosted failure remains recorded;
 new-head CI must verify the corrected complete suite.
+
+## Queued DAC timing and bulk EFB reads
+
+The main DAC retains queued ticks across rate writes and keeps separate
+200-cycle DMA-start interrupts. Thirty-six authored calendar cases cover both
+consoles, split/bulk advances, initial and subsequent rates, stop/restart,
+reset, enabled data and rate writes during sample callbacks. Strict GCC and
+Clang 18 ASan/UBSan each match the extracted scheduling components over 20
+cases and 158 snapshots. All six inspected external source hashes match the
+current pinned checkout. This is a component comparison rather than complete
+system event-order validation. The stream fixture now expects 656 silent
+values because its first 32 kHz tick retains its queued deadline.
+
+EFB regressions cover 144 queued GPU texture-copy/clear cases and four queued
+GPU-to-CPU blend transitions. They compare every encoded destination byte,
+padding and stride guards, source formats, half scaling and color/alpha/depth
+clear masks. The full Windows hardware renderer suite also passes on NVIDIA
+RTX 2000 Ada. These checks preserve GPU readback, retained fragment state and
+copy-before-clear behavior while bulk operations use synchronized buffers.
+
+Thirteen selected strict MSVC Release/LTO tests pass for the initial indexed
+decoder, bulk EFB and queued audio changes: CPU, native integer, CPU groups,
+device, disc stream, event budget, runtime groups, graphics, FIFO environment,
+EFB copy/access, XFB copy and guest video. The final shared-decoder CPU group
+fixture separately passes strict MSVC Release/LTO and strict GCC with
+1,868,844 complete CPU/RAM/ordered bus comparisons and 59,442,206 grouped
+instructions. Additional sanitizer receipts retain their own source scope.
+
+The initial Windows interpreter/OpenGL combination completes eight fixed-work
+startup children in AB/BA order: Sunshine reaches three billion attempts and
+320 fields, and Galaxy reaches one billion attempts and 76 fields. All sixty
+JSON fields, raw frames and persistent files match within every pair without
+exclusions. Elapsed times vary substantially with concurrent work and do not
+establish gameplay speed. Frozen source/binary hashes and every comparison
+remain under `current-optimization-startup-20261023/` in the continuation cache.
+
+After decoder reuse, one further final-source pair per game retains all sixty
+state fields, raw frames and stored files without exclusions at the same
+bounds. Both final-source children are slower than their paired baselines:
+Sunshine takes 17.807 versus 16.691 seconds, and Galaxy takes 38.785 versus
+37.807 seconds. These shared-host startup samples do not establish an
+integrated speedup. Their exact evidence remains under
+`final-indexed-startup-20261023/` in the continuation cache. A separate normal
+audio gameplay observation uses the frozen initial decoder and retains that
+distinct source scope.

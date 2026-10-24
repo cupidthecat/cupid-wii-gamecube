@@ -3487,6 +3487,11 @@ void benchmark(Fixture &software, Fixture &hardware) {
 }
 } // namespace
 
+#include "hardware_batch_coverage_checks.hpp"
+#include "hardware_batch_gather_checks.hpp"
+#include "hardware_batch_interaction_checks.hpp"
+#include "hardware_batch_support.hpp"
+
 int main(int argc, char **argv) {
   renderer_run_started = std::chrono::steady_clock::now();
   std::cout << std::unitbuf << "[renderer] begin fixture construction\n";
@@ -3499,7 +3504,8 @@ int main(int argc, char **argv) {
        projection_staging_only = false, state_only = false, fixed_lod_only = false,
        counter_only = false, counter_benchmark_only = false, empty_coverage_only = false,
        division_identities_exhaustive = false, division_rounding_only = false,
-       program_cache_only = false, skip_program_cache_checks = false;
+       program_cache_only = false, skip_program_cache_checks = false, gather_only = false,
+       projection_admission_only = false, early_empty_only = false, batch_interaction_only = false;
   for (int i = 1; i < argc; ++i) {
     program_cache_only |= std::strcmp(argv[i], "--program-cache-only") == 0;
     skip_program_cache_checks |= std::strcmp(argv[i], "--skip-program-cache-checks") == 0;
@@ -3511,6 +3517,10 @@ int main(int argc, char **argv) {
     efb_copy_only |= std::strcmp(argv[i], "--efb-copy-only") == 0;
     bbox_only |= std::strcmp(argv[i], "--bbox-only") == 0;
     projection_only |= std::strcmp(argv[i], "--projection-only") == 0;
+    gather_only |= std::strcmp(argv[i], "--gather-only") == 0;
+    projection_admission_only |= std::strcmp(argv[i], "--projection-admission-only") == 0;
+    early_empty_only |= std::strcmp(argv[i], "--early-empty-only") == 0;
+    batch_interaction_only |= std::strcmp(argv[i], "--batch-interaction-only") == 0;
     projection_staging_only |= std::strcmp(argv[i], "--projection-staging-only") == 0;
     state_only |= std::strcmp(argv[i], "--state-only") == 0;
     fixed_lod_only |= std::strcmp(argv[i], "--fixed-lod-only") == 0;
@@ -3532,6 +3542,42 @@ int main(int argc, char **argv) {
     return 1;
   }
   return run_tests([&] {
+    [[maybe_unused]] constexpr bool bounded_projection = false;
+    const auto gather_checks = [&] {
+      renderer_stage("batch_gather_checks", [&] { hardware_batch_test::gather::checks(); });
+    };
+    const auto admission_checks = [&] {
+      renderer_stage("batch_projection_checks", [&] {
+        hardware_batch_test::projection::cp_cpu_controls();
+        hardware_batch_test::projection::direct(bounded_projection);
+        hardware_batch_test::projection::mixed(bounded_projection);
+        hardware_batch_test::projection::cp(bounded_projection);
+        hardware_batch_test::coverage::zero_endpoint_checks(bounded_projection);
+      });
+    };
+    const auto empty_checks = [&] {
+      renderer_stage("early_empty_checks", [&] { hardware_batch_test::coverage::empty_checks(); });
+    };
+    const auto interaction_checks = [&] {
+      renderer_stage("batch_interaction_checks",
+                     [&] { hardware_batch_test::interaction::checks(bounded_projection); });
+    };
+    if (gather_only) {
+      gather_checks();
+      return;
+    }
+    if (projection_admission_only) {
+      admission_checks();
+      return;
+    }
+    if (early_empty_only) {
+      empty_checks();
+      return;
+    }
+    if (batch_interaction_only) {
+      interaction_checks();
+      return;
+    }
     if (projection_staging_only) {
       renderer_stage("projection_staging_checks", [&] { projection_staging_test::checks(); });
       return;
@@ -3592,6 +3638,7 @@ int main(int argc, char **argv) {
     }
     if (projection_only) {
       renderer_stage("projection_staging_checks", [&] { projection_staging_test::checks(); });
+      admission_checks();
       renderer_stage("division_rounding_checks", [&] { division_rounding_checks(); });
       renderer_stage("division_identity_checks", [&] { division_identity_checks(false); });
       renderer_stage("projection_precision_checks", [&] { projection_precision_checks(); });
@@ -3614,6 +3661,10 @@ int main(int argc, char **argv) {
     }
     if (!fog_only) {
       renderer_stage("projection_staging_checks", [&] { projection_staging_test::checks(); });
+      gather_checks();
+      admission_checks();
+      empty_checks();
+      interaction_checks();
       renderer_stage("division_rounding_checks", [&] { division_rounding_checks(); });
       renderer_stage("division_identity_checks", [&] { division_identity_checks(false); });
       renderer_stage("empty_coverage_checks", [&] { empty_coverage_checks(); });

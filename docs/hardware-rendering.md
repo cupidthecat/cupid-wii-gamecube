@@ -846,3 +846,22 @@ scalar/batch and exponent-neighbor cases. Thirty-two remain GPU eligible and
 CPU fallback, retained-texture consumption, later GPU work and all 512 copied
 bytes. These authored cases reproduce and correct native-GPU discrepancies;
 their commercial-game frequency and performance impact remain unqualified.
+
+## Batch handoff and empty coverage
+
+Synchronization gathers counters and the selected retained texture samples into
+one 19-word GPU packet. The gather restores the current program and storage
+binding before returning to drawing. Null-recipient drains reset the counters,
+so a later clear-only handoff preserves the recipient's texture state.
+
+Coverage validation bounds rectangle coordinates, edge steps and the signed
+edge base before arithmetic. A proven outside edge or an exact empty scan of
+at most 256 sample positions can finish before texture projection. Depth, color
+and fog diagnostics retain their earlier checks. Covered work still obeys the
+staged projection guard. These paths have component regression coverage; matched
+gameplay and sustained performance require separate validation.
+
+A fixed 8,000-field GameCube replay matches the preceding build's final CPU/RAM
+and guest-audio hashes, final frame and stored files. Hardware work counters
+change with the batch boundaries. Per-frame equality, endpoint audio, completed
+levels and sustained full-speed gameplay still require separate qualification.

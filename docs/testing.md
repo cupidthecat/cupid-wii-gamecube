@@ -1599,3 +1599,32 @@ and all literals/comments; both complete shader sources remain unchanged.
 All sixteen complete shader blobs in the eight checked executables match.
 Final JUnit reports, raw CTest logs, source/binary hashes and normalization
 proofs remain in `.cache/quotient-public-integration-20261024/`.
+
+## Hardware batch handoff and empty coverage
+
+The existing hardware renderer target checks complete color/depth buffers and
+all 32 retained texture-state bytes through queued draws, CPU fallback, EFB
+copy/clear, bounding-box reset and later state-dependent fragments. The gather
+checks cover first use, scalar/batch dispatch, null-recipient drains, clear-only
+handoffs, alpha/depth rejection, last sequence 4094 and pixel 639,527. They assert
+the required host floating-point environment, current program and binding 7.
+
+The coverage checks retain 124 nonempty staged-projection regressions and 72
+signed-zero endpoint controls. They add 104 unsafe-W/Q empty/budget cases,
+88 covered neighbors, 8192 repeated empty admissions, 104 full-signed edge/bounds
+declines and 24 valid large-origin/base-boundary cases. Depth/color/fog diagnostics
+retain priority. An empty proof must preserve complete EFB/state and queued
+copy results; a covered neighbor must still obey the staged projection guard.
+
+The additional projection cases retain the CPU path for nonempty rational poles
+and staged underflow/overflow ranges. Proven empty coverage can finish before
+projection, with an exact scan capped at 256 positions.
+
+The checks run in the ordinary hardware renderer suite. Focused invocations use
+the same executable with `--require-device` and one of `--gather-only`,
+`--projection-admission-only`, `--early-empty-only` or `--batch-interaction-only`.
+The existing `--projection-staging-only` and program-cache selectors remain
+available, and the separate GPU texture-copy target retains its 3,384 profiles.
+
+These are component assertions. Matched commercial prefixes and gameplay speed
+need separate runs with the selected complete core and identical inputs.

@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string_view>
 #if CUPID_HAVE_SDL
@@ -43,6 +44,9 @@ constexpr const char *texture_copy_source =
     ;
 constexpr const char *clear_source =
 #include "hardware_clear_shader.inc"
+    ;
+constexpr const char *sync_source =
+#include "hardware_sync_shader.inc"
     ;
 
 constexpr std::string_view fog_math_source(std::string_view shader) {
@@ -174,6 +178,8 @@ struct HardwareRenderer::Impl {
   // Family zero is generic; family one has no indirect prefetch stages.
   std::array<detail::FragmentPrograms, 2> fragment_programs{};
   GLuint xfb_program = 0, clear_program = 0, texture_copy_program = 0;
+  GLuint sync_program = 0, sync_buffer = 0;
+  bool sync_initialized = false;
   std::array<GLuint, 8> buffers{};
 #define CUPID_GL_FUNCTION(type, name) type name = load_gl<type>("gl" #name)
   CUPID_GL_FUNCTION(PFNGLCREATESHADERPROC, CreateShader);
@@ -201,6 +207,8 @@ struct HardwareRenderer::Impl {
 #undef CUPID_GL_FUNCTION
   using GetStringType = const GLubyte *(APIENTRY *)(GLenum);
   GetStringType GetString = load_gl<GetStringType>("glGetString");
+  using GetIntegerType = void(APIENTRY *)(GLenum, GLint *);
+  GetIntegerType GetIntegerv = load_gl<GetIntegerType>("glGetIntegerv");
 
   // Construct only after a context is current: the entry-point initializers need it.
   Impl(SDL_Window *host_window, SDL_GLContext host_context, Memory &guest_memory,
@@ -227,6 +235,26 @@ struct HardwareRenderer::Impl {
 
   GLuint compile_program(const char *source, const char *kind) {
     return detail::compile_compute_program(*this, source, kind);
+  }
+
+  void gather_sync_packet() {
+    if (!sync_program)
+      sync_program = compile_program(sync_source, "state synchronization");
+    if (!sync_buffer) {
+      GenBuffers(1, &sync_buffer);
+      if (!sync_buffer)
+        throw std::runtime_error("Hardware state synchronization buffer creation failed");
+      BindBuffer(GL_SHADER_STORAGE_BUFFER, sync_buffer);
+      BufferData(GL_SHADER_STORAGE_BUFFER, 19 * sizeof(u32), nullptr, GL_DYNAMIC_DRAW);
+    }
+    GLint previous_program = 0;
+    GetIntegerv(GL_CURRENT_PROGRAM, &previous_program);
+    BindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, sync_buffer);
+    UseProgram(sync_program);
+    DispatchCompute(1, 1, 1);
+    MemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+    BindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, buffers[7]);
+    UseProgram(GLuint(previous_program));
   }
 
   static std::string zero_source(std::string_view source) {
@@ -464,6 +492,8 @@ struct HardwareRenderer::Impl {
     SDL_GL_MakeCurrent(window, context);
     if (buffers[0])
       DeleteBuffers(GLsizei(buffers.size()), buffers.data());
+    if (sync_buffer)
+      DeleteBuffers(1, &sync_buffer);
     for (const auto &family : fragment_programs) {
       if (family.scalar)
         DeleteProgram(family.scalar);
@@ -476,6 +506,8 @@ struct HardwareRenderer::Impl {
       DeleteProgram(clear_program);
     if (texture_copy_program)
       DeleteProgram(texture_copy_program);
+    if (sync_program)
+      DeleteProgram(sync_program);
     SDL_GL_DeleteContext(context);
     SDL_DestroyWindow(window);
     if (initialized)
@@ -616,6 +648,14 @@ bool HardwareRenderer::draw(const RasterWork &work) {
     ++impl_->fallbacks;
     return false;
   }
+  // Rasterizer scissors produce nonempty rectangles inside the EFB. Check
+  // direct backend inputs before coordinate subtraction or edge products.
+  if (work.left < 0 || work.top < 0 || work.right > 640 || work.bottom > 528 ||
+      work.left >= work.right || work.top >= work.bottom) {
+    ++impl_->fallbacks;
+    impl_->fallback = "Raster rectangle bounds require CPU validation";
+    return false;
+  }
   if (impl_->pending_rectangles == 4094) {
     ++impl_->fallbacks;
     impl_->fallback = "Hardware texture-state synchronization batch is full";
@@ -684,6 +724,70 @@ bool HardwareRenderer::draw(const RasterWork &work) {
       return false;
     }
   }
+  std::array<u32, 16 + 34 * 7> data{};
+  data[0] = work.left;
+  data[1] = work.top;
+  data[2] = work.right;
+  data[3] = work.bottom;
+  std::array<s64, 3> coverage_base{}, coverage_dx{}, coverage_dy{};
+  bool outside_edge = false;
+  constexpr s64 edge_limit = std::numeric_limits<s32>::max();
+  constexpr s64 coefficient_limit = edge_limit / 16;
+  for (unsigned i = 0; i < 3; ++i) {
+    const auto &edge = work.edges[i];
+    // Bound the steps before multiplication. Bounded EFB coordinates then
+    // keep the origin and extent products inside signed 64-bit arithmetic.
+    if (edge.dx < -coefficient_limit || edge.dx > coefficient_limit ||
+        edge.dy < -coefficient_limit || edge.dy > coefficient_limit) {
+      ++impl_->fallbacks;
+      impl_->fallback = "Triangle edge range exceeds 32-bit hardware coverage";
+      return false;
+    }
+    const s64 origin = edge.dx * s64(work.top) * 16 - edge.dy * s64(work.left) * 16;
+    // Preserve cancellation from a large constant into a valid 32-bit base.
+    // This comparison precedes both addition and abs, including INT64_MIN.
+    if (edge.constant < -edge_limit - origin || edge.constant > edge_limit - origin) {
+      ++impl_->fallbacks;
+      impl_->fallback = "Triangle edge range exceeds 32-bit hardware coverage";
+      return false;
+    }
+    const s64 base = edge.constant + origin;
+    const s64 horizontal = -edge.dy * (work.right - work.left - 1) * 16;
+    const s64 vertical = edge.dx * (work.bottom - work.top - 1) * 16;
+    const s64 magnitude = std::abs(base) + std::abs(horizontal) + std::abs(vertical);
+    if (magnitude > edge_limit) {
+      ++impl_->fallbacks;
+      impl_->fallback = "Triangle edge range exceeds 32-bit hardware coverage";
+      return false;
+    }
+    data[4 + i * 3] = static_cast<u32>(edge.dx);
+    data[5 + i * 3] = static_cast<u32>(edge.dy);
+    data[6 + i * 3] = static_cast<u32>(base);
+    coverage_base[i] = base;
+    coverage_dx[i] = -edge.dy * 16;
+    coverage_dy[i] = edge.dx * 16;
+    outside_edge |= base + std::max(horizontal, s64(0)) + std::max(vertical, s64(0)) <= 0;
+  }
+  // Empty coverage cannot modify the EFB, counters or retained texture state.
+  if (outside_edge)
+    return true;
+  const int width = work.right - work.left, height = work.bottom - work.top;
+  if (width > 0 && width <= 256 && height > 0 && height <= 256 && width * height <= 256) {
+    bool covered = false;
+    auto row = coverage_base;
+    for (int y = 0; y < height && !covered; ++y) {
+      auto sample = row;
+      for (int x = 0; x < width && !covered; ++x) {
+        covered = sample[0] > 0 && sample[1] > 0 && sample[2] > 0;
+        for (unsigned i = 0; i < 3; ++i)
+          sample[i] += coverage_dx[i];
+      }
+      for (unsigned i = 0; i < 3; ++i)
+        row[i] += coverage_dy[i];
+    }
+    if (!covered)
+      return true;
+  }
   if (impl_->texture_count) {
     // Rational interpolation can have a pole between corner samples. Retain CPU
     // diagnostics for those rectangles and for coordinates beyond integer range.
@@ -727,54 +831,6 @@ bool HardwareRenderer::draw(const RasterWork &work) {
       impl_->fallback = "Projected texture coordinate range requires the CPU fragment path";
       return false;
     }
-  }
-  std::array<u32, 16 + 34 * 7> data{};
-  data[0] = work.left;
-  data[1] = work.top;
-  data[2] = work.right;
-  data[3] = work.bottom;
-  std::array<s64, 3> coverage_base{}, coverage_dx{}, coverage_dy{};
-  bool outside_edge = false;
-  for (unsigned i = 0; i < 3; ++i) {
-    const auto &edge = work.edges[i];
-    const s64 base = edge.constant + edge.dx * work.top * 16 - edge.dy * work.left * 16;
-    const s64 horizontal = -edge.dy * (work.right - work.left - 1) * 16;
-    const s64 vertical = edge.dx * (work.bottom - work.top - 1) * 16;
-    const s64 magnitude = std::abs(base) + std::abs(horizontal) + std::abs(vertical);
-    if (magnitude > std::numeric_limits<s32>::max() ||
-        std::abs(edge.dx * 16) > std::numeric_limits<s32>::max() ||
-        std::abs(edge.dy * 16) > std::numeric_limits<s32>::max()) {
-      ++impl_->fallbacks;
-      impl_->fallback = "Triangle edge range exceeds 32-bit hardware coverage";
-      return false;
-    }
-    data[4 + i * 3] = static_cast<u32>(edge.dx);
-    data[5 + i * 3] = static_cast<u32>(edge.dy);
-    data[6 + i * 3] = static_cast<u32>(base);
-    coverage_base[i] = base;
-    coverage_dx[i] = -edge.dy * 16;
-    coverage_dy[i] = edge.dx * 16;
-    outside_edge |= base + std::max(horizontal, s64(0)) + std::max(vertical, s64(0)) <= 0;
-  }
-  // Empty coverage cannot modify the EFB, counters or retained texture state.
-  if (outside_edge)
-    return true;
-  const int width = work.right - work.left, height = work.bottom - work.top;
-  if (width > 0 && width <= 64 && height > 0 && height <= 64 && width * height <= 64) {
-    bool covered = false;
-    auto row = coverage_base;
-    for (int y = 0; y < height && !covered; ++y) {
-      auto sample = row;
-      for (int x = 0; x < width && !covered; ++x) {
-        covered = sample[0] > 0 && sample[1] > 0 && sample[2] > 0;
-        for (unsigned i = 0; i < 3; ++i)
-          sample[i] += coverage_dx[i];
-      }
-      for (unsigned i = 0; i < 3; ++i)
-        row[i] += coverage_dy[i];
-    }
-    if (!covered)
-      return true;
   }
   unsigned index = 13;
   const auto append = [&](const RasterPlane &plane) {
@@ -1006,6 +1062,13 @@ HardwareStats HardwareRenderer::synchronize(std::span<u32> colors, std::span<u32
   impl_->current();
   impl_->flush_batch();
   result.dispatches = impl_->dispatches;
+  const bool gather_state = shader && impl_->pending_rectangles != 0;
+  // Deferred driver compilation can extend through the first completed read.
+  std::optional<HostFloatEnvironment> initialization_environment;
+  if (shader && !impl_->sync_initialized)
+    initialization_environment.emplace();
+  if (gather_state)
+    impl_->gather_sync_packet();
   impl_->BindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->buffers[0]);
   impl_->GetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, GLsizeiptr(colors.size_bytes()),
                           colors.data());
@@ -1014,56 +1077,33 @@ HardwareStats HardwareRenderer::synchronize(std::span<u32> colors, std::span<u32
   result.efb_readbacks = ++impl_->efb_readbacks;
   impl_->efb_readback_bytes += colors.size_bytes() + depths.size_bytes();
   result.efb_readback_bytes = impl_->efb_readback_bytes;
-  std::array<u32, 11> counters{};
-  impl_->BindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->buffers[2]);
-  impl_->GetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(counters), counters.data());
+  std::array<u32, 19> counters{};
+  impl_->BindBuffer(GL_SHADER_STORAGE_BUFFER,
+                    gather_state ? impl_->sync_buffer : impl_->buffers[2]);
+  impl_->GetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
+                          GLsizeiptr(gather_state ? sizeof(counters) : 11 * sizeof(u32)),
+                          counters.data());
+  if (gather_state)
+    impl_->sync_initialized = true;
   result.fragments = counters[0];
   result.left = counters[1];
   result.right = counters[2];
   result.top = counters[3];
   result.bottom = counters[4];
 
-  struct StateReadback {
-    u32 pixel;
-    std::array<u32, 8> values;
-  };
-
-  // The six restoration slots may select one pixel with different sequence prefixes.
-  // No latch writes occur between these reads; reuse only within this synchronization.
-  std::array<StateReadback, 6> state_readbacks{};
-  std::size_t state_readback_count = 0;
-  const auto read_state = [&](u32 key) {
-    const u32 pixel_order = key & 1048575;
-    const u32 block = pixel_order / 4;
-    const u32 x = (block % 320) * 2 + (pixel_order & 1);
-    const u32 y = (block / 320) * 2 + ((pixel_order >> 1) & 1);
-    const u32 pixel = y * 640 + x;
-    for (std::size_t i = 0; i < state_readback_count; ++i)
-      if (state_readbacks[i].pixel == pixel)
-        return state_readbacks[i].values;
-    std::array<u32, 8> values{};
-    impl_->BindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->buffers[5]);
-    impl_->GetBufferSubData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(pixel * 8 * sizeof(u32)),
-                            sizeof(values), values.data());
-    state_readbacks[state_readback_count++] = {pixel, values};
-    return values;
-  };
   const auto unpack = [](u32 value) {
     return Color{u8(value >> 24), u8(value >> 16), u8(value >> 8), u8(value)};
   };
-  if (counters[5] && shader) {
-    const auto texture_values = read_state(counters[5]);
-    shader->restore_texture_state(unpack(texture_values[0]), unpack(texture_values[1]));
+  if (counters[5] && gather_state) {
+    shader->restore_texture_state(unpack(counters[11]), unpack(counters[12]));
   }
-  if (counters[6] && shader) {
-    const auto values = read_state(counters[6]);
+  if (counters[6] && gather_state) {
     shader->restore_indirect_coordinates(
-        {static_cast<s32>(values[2]), static_cast<s32>(values[3])});
+        {static_cast<s32>(counters[13]), static_cast<s32>(counters[14])});
   }
   for (unsigned stage = 0; stage < 4; ++stage)
-    if (counters[7 + stage] && shader) {
-      const auto values = read_state(counters[7 + stage]);
-      shader->restore_indirect_texture(stage, unpack(values[4 + stage]));
+    if (counters[7 + stage] && gather_state) {
+      shader->restore_indirect_texture(stage, unpack(counters[15 + stage]));
     }
   impl_->reset_counters();
   impl_->dirty = false;

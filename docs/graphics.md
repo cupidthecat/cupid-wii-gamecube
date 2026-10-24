@@ -14,6 +14,14 @@ Vertices can use direct or indexed attributes. The vertex stage applies transfor
 
 The texture stage decodes I4, I8, IA4, IA8, RGB565, RGB5A3, RGBA8, C4, C8, C14X2, and CMPR. Paletted formats use uploaded TLUT data. RAM textures support mip layouts and point or bilinear sampling; manual TMEM supports base-level sampling and split RGBA8 banks. Manual mip chains remain unsupported.
 
+Prepared CMPR textures decode each complete 8 by 8 tile through four local
+color tables. Each 4 by 4 subblock expands its two RGB565 endpoints once and
+selects among four packed colors. The interpolation keeps the format's 5:3
+weights and averaged RGB in transparent texels. Incomplete tiles, short source
+ranges and overlapping source/destination storage retain scalar fetch and write
+order, including the written prefix when a fetch fails. RAM mips and manual
+TMEM use the same tile decoder after their own bounds checks.
+
 TEV supports regular and comparison color/alpha operations, register destinations, konst selectors, swizzle tables, indirect coordinates and matrices, alpha tests, depth textures, and fog. The pixel stage applies early or late depth tests, blend factors, subtraction, logic operations, update masks, constant alpha, and RGBA6 dithering.
 
 ## EFB and copies

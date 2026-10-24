@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "../src/gfx/hardware_program.hpp"
+#include "cupid/core/host_float_environment.hpp"
 #include "cupid/gfx/command_processor.hpp"
 #include "cupid/gfx/efb_copy.hpp"
 #include "cupid/gfx/xfb_copy.hpp"
@@ -285,6 +286,8 @@ struct Fixture {
     graphics.submit(bytes);
   }
 };
+
+#include "projection_staging_checks.hpp"
 
 void equal(Fixture &software, Fixture &hardware) {
   CHECK(software.graphics.fragment_count() == hardware.graphics.fragment_count());
@@ -3493,8 +3496,8 @@ int main(int argc, char **argv) {
   renderer_stage_returned("fixture construction", fixture_started);
   bool required = false, measure = false, fog_only = false, texture_cache_only = false,
        xfb_only = false, efb_copy_only = false, bbox_only = false, projection_only = false,
-       state_only = false, fixed_lod_only = false, counter_only = false,
-       counter_benchmark_only = false, empty_coverage_only = false,
+       projection_staging_only = false, state_only = false, fixed_lod_only = false,
+       counter_only = false, counter_benchmark_only = false, empty_coverage_only = false,
        division_identities_exhaustive = false, division_rounding_only = false,
        program_cache_only = false, skip_program_cache_checks = false;
   for (int i = 1; i < argc; ++i) {
@@ -3508,6 +3511,7 @@ int main(int argc, char **argv) {
     efb_copy_only |= std::strcmp(argv[i], "--efb-copy-only") == 0;
     bbox_only |= std::strcmp(argv[i], "--bbox-only") == 0;
     projection_only |= std::strcmp(argv[i], "--projection-only") == 0;
+    projection_staging_only |= std::strcmp(argv[i], "--projection-staging-only") == 0;
     state_only |= std::strcmp(argv[i], "--state-only") == 0;
     fixed_lod_only |= std::strcmp(argv[i], "--fixed-lod-only") == 0;
     counter_only |= std::strcmp(argv[i], "--counter-only") == 0;
@@ -3528,6 +3532,10 @@ int main(int argc, char **argv) {
     return 1;
   }
   return run_tests([&] {
+    if (projection_staging_only) {
+      renderer_stage("projection_staging_checks", [&] { projection_staging_test::checks(); });
+      return;
+    }
     if (bbox_only) {
       renderer_stage("bounding_box_reset_checks", [&] { bounding_box_reset_checks(); });
       return;
@@ -3583,6 +3591,7 @@ int main(int argc, char **argv) {
       return;
     }
     if (projection_only) {
+      renderer_stage("projection_staging_checks", [&] { projection_staging_test::checks(); });
       renderer_stage("division_rounding_checks", [&] { division_rounding_checks(); });
       renderer_stage("division_identity_checks", [&] { division_identity_checks(false); });
       renderer_stage("projection_precision_checks", [&] { projection_precision_checks(); });
@@ -3604,6 +3613,7 @@ int main(int argc, char **argv) {
       return;
     }
     if (!fog_only) {
+      renderer_stage("projection_staging_checks", [&] { projection_staging_test::checks(); });
       renderer_stage("division_rounding_checks", [&] { division_rounding_checks(); });
       renderer_stage("division_identity_checks", [&] { division_identity_checks(false); });
       renderer_stage("empty_coverage_checks", [&] { empty_coverage_checks(); });

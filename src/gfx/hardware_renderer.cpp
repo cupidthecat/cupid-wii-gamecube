@@ -697,11 +697,23 @@ bool HardwareRenderer::draw(const RasterWork &work) {
     };
     const auto w_range = range(work.reciprocal_w);
     bool safe = finite_plane(work.reciprocal_w) && w_range.first * w_range.second > 0;
+    // Projection evaluates 1/W, Q*(1/W), and then (1/W)/(Q*(1/W)).
+    // A small final coordinate does not rule out a subnormal intermediate.
+    // Leave extreme staged ranges on the CPU, with a normal-value margin;
+    // integer exponent comparisons do not create another underflowing product.
+    const auto exponent = [](float value) { return (std::bit_cast<u32>(value) >> 23) & 255u; };
+    const unsigned w_exponent = std::max(exponent(w_range.first), exponent(w_range.second));
+    safe &= w_exponent < 252;
     for (unsigned i = 0; i < impl_->texture_count; ++i) {
       const auto q_range = range(work.textures[i][2]);
       const auto denominator = q_range.first == 0 && q_range.second == 0 ? w_range : q_range;
       const float minimum = std::min(std::abs(denominator.first), std::abs(denominator.second));
       safe &= denominator.first * denominator.second > 0;
+      if (q_range.first != 0 || q_range.second != 0) {
+        const unsigned q_min = std::min(exponent(q_range.first), exponent(q_range.second));
+        const unsigned q_max = std::max(exponent(q_range.first), exponent(q_range.second));
+        safe &= q_max < 252 && q_min + 124 >= w_exponent;
+      }
       for (unsigned c = 0; c < 3; ++c)
         safe &= finite_plane(work.textures[i][c]);
       for (unsigned c = 0; c < 2; ++c) {

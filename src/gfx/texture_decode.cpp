@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cupid/gfx/texture.hpp"
 #include <algorithm>
+#include <array>
+#include <cstdint>
 
 namespace cupid::gfx {
 namespace {
@@ -46,6 +48,39 @@ Color rgb5a3(u16 value) {
             255};
   return {expand((value >> 8) & 15, 4), expand((value >> 4) & 15, 4), expand(value & 15, 4),
           expand((value >> 12) & 7, 3)};
+}
+
+bool overlaps(std::span<const u8> source, std::span<u32> destination) {
+  if (source.empty() || destination.empty())
+    return false;
+  const auto a = reinterpret_cast<std::uintptr_t>(source.data());
+  const auto b = reinterpret_cast<std::uintptr_t>(destination.data());
+  return a <= b ? b - a < source.size_bytes() : a - b < destination.size_bytes();
+}
+
+void decode_cmpr_tile(std::span<const u8> source, std::span<u32> destination, unsigned pitch) {
+  for (unsigned sub = 0; sub < 4; ++sub) {
+    const auto bytes = source.subspan(sub * 8, 8);
+    const u16 a = static_cast<u16>((u16(bytes[0]) << 8) | bytes[1]);
+    const u16 b = static_cast<u16>((u16(bytes[2]) << 8) | bytes[3]);
+    std::array<Color, 4> colors{rgb565(a), rgb565(b), {}, {}};
+    for (unsigned channel = 0; channel < 3; ++channel) {
+      const unsigned ca = colors[0][channel], cb = colors[1][channel];
+      colors[2][channel] = static_cast<u8>(a > b ? (ca * 5 + cb * 3) >> 3 : (ca + cb) >> 1);
+      colors[3][channel] = static_cast<u8>(a > b ? (ca * 3 + cb * 5) >> 3 : (ca + cb) >> 1);
+    }
+    colors[2][3] = 255;
+    colors[3][3] = a > b ? 255 : 0;
+    std::array<u32, 4> packed{};
+    for (unsigned select = 0; select < 4; ++select)
+      for (u8 component : colors[select])
+        packed[select] = (packed[select] << 8) | component;
+    const unsigned left = (sub & 1) * 4, top = (sub >> 1) * 4;
+    for (unsigned y = 0; y < 4; ++y)
+      for (unsigned x = 0; x < 4; ++x)
+        destination[std::size_t(top + y) * pitch + left + x] =
+            packed[(bytes[4 + y] >> (6 - x * 2)) & 3];
+  }
 }
 
 } // namespace
@@ -99,6 +134,36 @@ void TextureSampler::decode(unsigned unit, unsigned mip, std::span<const u8> sou
     throw VertexError("Texture decode destination has the wrong extent");
   if (image.manual && mip)
     throw VertexError("Manually managed mip textures are not implemented");
+  if (image.format == 14 && !overlaps(source, destination) && !overlaps(tmem_, destination)) {
+    const auto &tile = image.tile;
+    u64 block = 0;
+    for (unsigned by = 0; by < height; by += tile.height)
+      for (unsigned bx = 0; bx < width; bx += tile.width, block += tile.bytes) {
+        if (width - bx >= 8 && height - by >= 8) {
+          const auto bytes = image.manual ? tmem_ : source;
+          const u64 first = (image.manual ? image.base : image.mip_offset) + block;
+          const u64 address = image.base + block;
+          if ((image.manual || address <= 0xffffffffu - 31u) && first <= bytes.size() &&
+              bytes.size() - first >= 32) {
+            // Every fetch in this complete tile is valid before changing store
+            // order. Short and clipped tiles retain the scalar error/write order.
+            decode_cmpr_tile(bytes.subspan(static_cast<std::size_t>(first), 32),
+                             destination.subspan(std::size_t(by) * width + bx), width);
+            continue;
+          }
+        }
+        for (unsigned y = 0; y < std::min(tile.height, height - by); ++y)
+          for (unsigned x = 0; x < std::min(tile.width, width - bx); ++x) {
+            const auto color =
+                decode_texel(image, block, y * tile.width + x, bx + x, by + y, source);
+            u32 value = 0;
+            for (u8 component : color)
+              value = (value << 8) | component;
+            destination[std::size_t(by + y) * width + bx + x] = value;
+          }
+      }
+    return;
+  }
   const auto &tile = image.tile;
   u64 block = 0;
   for (unsigned by = 0; by < height; by += tile.height)

@@ -822,7 +822,7 @@ validated graphics modules and an independently written compute shader.
 | GPU TEV combiner, alpha and depth textures | `VideoBackends/Software/Tev.cpp`, `Draw`, `DrawColorRegular`, `DrawColorCompare`, `DrawAlphaRegular`, `DrawAlphaCompare` | Stage sequencing, integer arithmetic, retained texture samples, comparisons and depth-texture ordering. |
 | GPU indirect maps, matrices, bump alpha and retained state | `VideoBackends/Software/Tev.cpp`, `Indirect`, `Draw`, `WrapIndirectCoord`; `VideoBackends/Software/Rasterizer.cpp`, `CalculateLOD`, `Draw`; `VideoCommon/PixelShaderGen.cpp`, `WriteStage` | Map order and scale, signed matrix arithmetic, 24-bit coordinate wrapping, per-stage bump alpha, traversal latches and documented differences between behavioral paths. |
 | GPU fog, quantized curve tables and viewport-width transfer | `VideoBackends/Software/Tev.cpp`, `Draw`; `VideoCommon/BPMemory.h`, `FogParams`, `FogRangeKElement`; `VideoCommon/PixelShaderGen.cpp`, `WriteFog`; `VideoCommon/PixelShaderManager.cpp`, `SetConstants`, `SetFogParamChanged` | Perspective/orthographic depth, all curve selectors, center and coefficient interpolation, paired infinities, and final integer color weighting. The compute path follows the validated CPU factor truncation and 24-bit depth scale; the generated reference shader rounds the factor and uses a 2^24 depth scale. |
-| GPU projective texture-coordinate precision | `VideoBackends/Software/Rasterizer.cpp`, `Slope::GetValue`, `BuildBlock`, `Draw`, `CalculateLOD`; `VideoBackends/Software/Tev.cpp`, `Draw`; `VideoBackends/Software/TextureSampler.cpp`, `Sample`, `SampleMip` | Preserve separately rounded float reciprocal, Q product, quotient and S/T products before signed 17.7 conversion and derivative LOD. Double division rounded to float avoids a native driver's approximate quotients. |
+| GPU projective texture-coordinate precision | `VideoBackends/Software/Rasterizer.cpp`, `Slope::GetValue`, `BuildBlock`, `Draw`, `CalculateLOD`; `VideoBackends/Software/Tev.cpp`, `Draw`; `VideoBackends/Software/TextureSampler.cpp`, `Sample`, `SampleMip` | Preserve separately rounded float reciprocal, Q product, quotient and S/T products before signed 17.7 conversion and derivative LOD. Integer quotient/remainder rounding avoids approximate native division. Extreme staged intermediates retain CPU execution. |
 | Decoded texture cache and GPU sampling | `VideoBackends/Software/TextureSampler.cpp`, `Sample`, `SampleMip`; `VideoCommon/TextureCacheBase.cpp`, `LoadImpl`, `GetTexture`, `GetSamplerState`, `BindTextures`; `VideoCommon/TextureInfo.cpp`, `FromStage`; `VideoCommon/TextureDecoder_Common.cpp`, `TexDecoder_GetPaletteSize`; `VideoCommon/VertexManagerBase.cpp`, `Flush` | Texture decoding, reachable source/palette extents, independent sampler state, wraps, fixed filtering weights, mip selection and exact content invalidation. |
 | Raw EFB storage, GPU blending and CPU access | `VideoBackends/Software/SWEfbInterface.cpp`, `BlendTev`, `SetColor`, `SetDepth`, `ZCompare`; `VideoCommon/EFBInterface.cpp`, `HardwareEFBInterface::PokeColor`, `PokeDepth`; `VideoCommon/FramebufferManager.cpp`, `PokeEFBColor`, `PokeEFBDepth`; `Core/PowerPC/MMU.cpp`, `EFB_Write` | Pixel packing, blend/logic masks, depth ordering, ARGB pokes, bounds and unconditional poke stores. |
 | GPU XFB encoding, packed readback and copy-trigger clear | `VideoBackends/Software/SWEfbInterface.cpp`, `EncodeXFB`, `SetColor`, `SetDepth`; `VideoBackends/Software/EfbCopy.cpp`, `ClearEfb`; `VideoCommon/TextureCacheBase.cpp`, `GetRAMCopyFilterCoefficients`, `CopyRenderTargetToTexture`; `VideoCommon/TextureConversionShader.cpp`, `WriteXFBEncoder`; `VideoCommon/FramebufferManager.cpp`, `FlushEFBPokes`, `InvalidatePeekCache` | Filter coefficients, gamma quantization, YUYV packing, scaled staging rows, RAM visibility and clear ordering. The compute path retains the validated software chroma weights where the generated encoder differs. |
@@ -832,3 +832,17 @@ validated graphics modules and an independently written compute shader.
 See [graphics behavior mappings](graphics-reference.md) for the independent
 CPU differential tests that establish the reused decoding, rasterization,
 fragment and copy behavior.
+
+## Extreme projected coordinates
+
+Projected texture admission leaves extreme staged reciprocals, Q products and
+projection factors on the CPU. Integer exponent checks retain a normal-value
+margin without adding floating-point products. A small final coordinate alone
+cannot establish that every intermediate stays normal on the host GPU.
+
+The patterned regression covers 124 signed, used/unused-coordinate,
+scalar/batch and exponent-neighbor cases. Thirty-two remain GPU eligible and
+92 decline. A serialized four-draw sequence checks queued GPU work, large-Q
+CPU fallback, retained-texture consumption, later GPU work and all 512 copied
+bytes. These authored cases reproduce and correct native-GPU discrepancies;
+their commercial-game frequency and performance impact remain unqualified.

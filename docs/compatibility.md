@@ -415,3 +415,51 @@ None establishes full-speed commercial gameplay.
 Record the source revision and worktree status, platform/compiler, graphics and audio backend, console, input, storage seed, run bounds, final state and visible behavior. Preserve exact source and executable hashes when configured revision metadata predates compilation.
 
 Use separate milestones: apploader completed, title reached, gameplay reached, and playable. Playable requires rendered gameplay, usable controls, audio and demonstrated save/load. Unit tests, a title frame and a successful bounded exit establish only their named observations.
+
+## Independent airstrip replay through 16,000 fields
+
+The native conditional-branch and runtime-budget snapshot
+`aa5c9b146c3b0571966ff6e1cb51507a92e4196b` completes an independent ordinary-CLI
+replay of the captured airstrip route. It uses OpenGL, headless output, disabled
+host audio, empty copied cards and the reconstructed ordinary controller stream.
+The run exits normally after 16,000 fields and 127,918,546,202 retired
+instructions, with zero instruction-backing or page-table-write errors.
+
+The final reported CPU/RAM hashes, raw frame bytes and all four persisted files
+match the earlier captured route. The final image shows Mario airborne at the
+goop boundary after the recorded A pulse. Its PPM SHA-256 is
+`3e69cbab0d48ef63f8a9974f36bfb10f7ebd2956c0f9bab48677658eb48e2dce`.
+This compares the final endpoint; intermediate raw frames were not captured in
+the independent CLI run. Binary metadata predates the source snapshot, so the
+frozen source, binary and terminal receipts identify the actual run.
+
+The replay preserves its source, input bytes, seeds, final state, frame and
+stored files under
+`.cache/native-game-observer-20261025/route-sunshine-native-integrated-001/`.
+It takes 1,959.87 seconds alongside other work and provides no isolated speed
+measurement. The later PC-dispatch and medium-batch changes are separate source
+snapshots. FLUDD acquisition, completed levels, clean endpoint audio, restoration
+of saved level progress and full speed remain unqualified by this replay.
+
+## Galaxy file creation and 3D arrival through 16,000 fields
+
+The PC-dispatch snapshot `efb69bc5ac3f2493da4854a67c865b878764b10a` completes a
+separate native/OpenGL observer route on Windows. Ordinary Remote pointing and
+buttons select slot 5, create the file, choose Mario, confirm the icon, start
+Play and advance the opening storybook. The final image shows Mario arriving
+in the festival scene. This letterboxed endpoint does not establish subsequent
+controllable gameplay.
+
+The run exits normally at 16,000 fields and 190,169,446,277 retired instructions.
+All 26 complete input versions are accepted, with zero rejections, capture
+failures or reported memory errors. All 27 completed captures preserve the
+checked CPU members, RAM hash and guest video counters across observation.
+Normal persistence writes the 48,640-byte `GameData.bin` and 29,344-byte
+`banner.bin`, alongside system files. This establishes startup-file creation
+and persistence; saved level restoration needs a later independent restart.
+
+Source, binary, input versions, final state/frame, stored files and terminal
+verification remain under
+`.cache/native-game-observer-20261025/route-galaxy-pc-005-001/`. The observer uses
+a frozen core and disabled host audio. It does not qualify the subsequent
+medium-batch change, endpoint audio, completed levels or gameplay speed.

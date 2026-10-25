@@ -852,7 +852,7 @@ bool HardwareRenderer::draw(const RasterWork &work) {
   data[index++] = impl_->samples_texture ? 1 : 0;
   data[index] = std::bit_cast<u32>(work.viewport_width);
   const u64 area = u64(work.right - work.left) * u64(work.bottom - work.top);
-  if (area > 256) {
+  if (area > 4096) {
     impl_->flush_batch();
     impl_->dispatch_fragment(impl_->active_family, false, [&] {
       impl_->BindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->buffers[3]);

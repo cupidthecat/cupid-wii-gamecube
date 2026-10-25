@@ -984,3 +984,22 @@ same branch-capable core. CPU/RAM hashes, raw frames, stored files and every
 native counter match. The same Sunshine and Galaxy startup bounds apply.
 The longer Sunshine route runs separately against the preceding integrated
 core; its outcome is not evidence for the PC-hint change.
+
+## Ordered medium rectangles
+
+Rectangles of 257 through 4,096 pixels can share the existing ordered GPU
+batch. The sixteen-packet limit, 4,096-pixel union bound, occupancy check and all
+state/texture/copy boundaries remain in force. A 64-square quad now uses one
+dispatch instead of two while preserving the complete CPU reference image.
+This reduces submission calls in that fixture; it does not establish a
+commercial-game speedup.
+
+Required-device tests pass on Windows/NVIDIA and GCC/Mesa. The eight matched
+startup children preserve guest state, frame bytes, stored files and native
+counters. A further Windows pair reaches 2,400 Galaxy fields with exact CPU/RAM
+hashes, every native counter, raw frame bytes and stored files. Hardware
+dispatches fall from 1,759,712 to 1,629,306. Hardware fragments remain
+3,340,681,497 and fallback rectangles remain 895. The pair takes 404.07 and
+391.36 seconds on a shared host; it is not an isolated FPS measurement or a
+completed-level result. Exact commands, source snapshots and retained controls
+remain under `.cache/gpu-mid-batch-20261025-v1/`.

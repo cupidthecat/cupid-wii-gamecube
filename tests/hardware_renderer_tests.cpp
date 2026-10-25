@@ -318,7 +318,8 @@ void wide_depth_origin_checks() {
   for (unsigned axis = 0; axis < 2; ++axis)
     for (float sign : {-1.0f, 1.0f})
       for (unsigned family = 0; family < 2; ++family)
-        for (const bool batch : {false, true}) {
+        for (const int rectangle_extent : {4, 17, 65}) {
+          const bool batch = rectangle_extent <= 64;
           std::array<u32, 256> bp{};
           std::array<u32, 0x1058> xf{};
           const auto put = [&](unsigned address, float value) {
@@ -375,7 +376,7 @@ void wide_depth_origin_checks() {
           put(0x101d, 374);
           put(0x101e, 374);
           xf[0x103f] = 1;
-          const int extent = batch ? 4 : 17;
+          const int extent = rectangle_extent == 65 ? 17 : rectangle_extent;
           const auto vertex = [](float x, float y) {
             gfx::TransformedVertex result;
             result.clip_position = {(x - 32) / 32, (y - 32) / 32, -0.9f, 1};
@@ -409,7 +410,9 @@ void wide_depth_origin_checks() {
             CHECK(work.depth.x_origin == (axis ? 0 : static_cast<int>(distance)));
             CHECK(work.depth.y_origin == (axis ? static_cast<int>(distance) : 0));
             CHECK(work.depth.x_offset == 0.495f && work.depth.y_offset == 0.495f);
-            CHECK(renderer.draw(work));
+            auto packet = work;
+            packet.right = packet.bottom = rectangle_extent;
+            CHECK(renderer.draw(packet));
             return true;
           };
           rasterizer.draw(0x90, visible);
@@ -443,7 +446,7 @@ void wide_depth_origin_checks() {
   for (unsigned i = 0; i < ids.size(); ++i)
     for (unsigned j = i + 1; j < ids.size(); ++j)
       CHECK(ids[i] != ids[j]);
-  CHECK(cases == 16);
+  CHECK(cases == 24);
   std::cout << "Verified authored wide depth origins through CPU and four GPU raster programs\n";
 }
 
@@ -496,15 +499,18 @@ void projection_precision_checks() {
         "Projected division boundary software color=" + std::to_string(0x272727) +
         " hardware color=" + std::to_string(efb[0]) + " device=" + hardware.device());
   CHECK(std::all_of(efb.begin() + 1, efb.end(), [](u32 value) { return value == 0; }));
-  // Exercise the individual dispatch as well as the queued batch shader.
-  work.right = work.bottom = 17;
-  CHECK(hardware.draw(work));
-  const auto individual_statistics = hardware.synchronize(efb, depths);
-  CHECK(individual_statistics.fragments == 17 * 17);
-  CHECK(individual_statistics.fallback_rectangles == 0);
-  for (unsigned y = 0; y < 17; ++y)
-    for (unsigned x = 0; x < 17; ++x)
-      CHECK(efb[y * 640 + x] == 0x272727);
+  // Keep the original 17-square boundary and exercise the individual dispatch
+  // with a separate 65-square control, as well as the queued batch shader.
+  for (const unsigned extent : {17u, 65u}) {
+    work.right = work.bottom = int(extent);
+    CHECK(hardware.draw(work));
+    const auto individual_statistics = hardware.synchronize(efb, depths);
+    CHECK(individual_statistics.fragments == extent * extent);
+    CHECK(individual_statistics.fallback_rectangles == 0);
+    for (unsigned y = 0; y < extent; ++y)
+      for (unsigned x = 0; x < extent; ++x)
+        CHECK(efb[y * 640 + x] == 0x272727);
+  }
   work.right = work.bottom = 1;
   std::mt19937 generator(0x338e1cb);
   for (unsigned profile = 0; profile < 512; ++profile) {
@@ -559,8 +565,9 @@ void division_fragment_checks(bool projection, bool fog) {
     if ((scenario == 0 && !projection) || (scenario != 0 && !fog))
       continue;
     for (unsigned family = 0; family < 2; ++family)
-      for (const bool batch : {false, true})
+      for (const int extent : {1, 17, 65})
         for (unsigned member = 0; member < 2; ++member) {
+          const bool batch = extent <= 64;
           std::array<u32, 256> bp{};
           gfx::TevRegisters colors{}, konst{};
           // An unused indirect prefetch selects the generic family. Its map is
@@ -585,8 +592,8 @@ void division_fragment_checks(bool projection, bool fog) {
           gfx::RasterWork work{};
           work.left = 13;
           work.top = 11;
-          work.right = work.left + (batch ? 1 : 17);
-          work.bottom = work.top + (batch ? 1 : 17);
+          work.right = work.left + extent;
+          work.bottom = work.top + extent;
           work.edges.fill({0, 0, 1});
           const u32 depth = scenario == 1 ? 8388607 + member : 100;
           work.depth.value = float(depth);
@@ -618,7 +625,7 @@ void division_fragment_checks(bool projection, bool fog) {
           gfx::FragmentShader retained(memory, bp, colors, konst, tmem);
           const auto stats = renderer.synchronize(pixels, depths, &retained);
           CHECK(stats.dispatches == ++dispatches);
-          CHECK(stats.fragments == (batch ? 1u : 17u * 17u));
+          CHECK(stats.fragments == u64(extent * extent));
           CHECK(stats.fallback_rectangles == 0);
           CHECK(renderer.fallback_reason().empty());
           CHECK(pixels == expected_pixels);
@@ -647,7 +654,7 @@ void division_fragment_checks(bool projection, bool fog) {
   for (unsigned i = 0; i < ids.size(); ++i)
     for (unsigned j = i + 1; j < ids.size(); ++j)
       CHECK(ids[i] != ids[j]);
-  CHECK(cases == 8 * ((projection ? 1u : 0u) + (fog ? 2u : 0u)));
+  CHECK(cases == 12 * ((projection ? 1u : 0u) + (fog ? 2u : 0u)));
   std::cout << "Verified " << cases
             << " analytic unequal-division projection/fog draws across four raster programs\n";
 }
@@ -912,7 +919,8 @@ void checks(Fixture &software, Fixture &hardware) {
     equal(software, hardware);
   };
   draw(0x80, quad);
-  CHECK(hardware.graphics.hardware_stats().dispatches >= 2);
+  // The two triangles share one 64-square union and preserve their packet order.
+  CHECK(hardware.graphics.hardware_stats().dispatches == 1);
   CHECK(hardware.graphics.hardware_stats().fragments == 4096);
   bp(0x22, 18 | (24 << 8));
   draw(0xa8, quad);
@@ -1509,7 +1517,7 @@ void latch_state_readback_checks() {
   bp[0xc0] = 0xfffa | (1 << 19);
   bp[0xc1] = (7 << 13) | (7 << 10) | (7 << 7) | (5 << 4) | (1 << 19) | 4;
   u64 completed_draws = 0, completed_readbacks = 0;
-  for (bool scalar : {false, true}) {
+  for (const int rectangle_extent : {1, 17, 65}) {
     std::vector<u32> expected_colors(640 * 528, 0x13579b);
     std::vector<u32> expected_depths(expected_colors.size(), 0x2468ac);
     auto gpu_colors = expected_colors, gpu_depths = expected_depths;
@@ -1522,8 +1530,8 @@ void latch_state_readback_checks() {
       gfx::RasterWork work{};
       work.left = x;
       work.top = y;
-      work.right = x + (scalar ? 17 : 1);
-      work.bottom = y + (scalar ? 17 : 1);
+      work.right = x + rectangle_extent;
+      work.bottom = y + rectangle_extent;
       // Integer samples satisfying x>=X, y>=Y and x+y<=X+Y select only (X,Y).
       work.edges = {{{0, -1, 1 - 16 * x}, {1, 0, 1 - 16 * y}, {-1, 1, 1 + 16 * (x + y)}}};
       unsigned covered = 0;
@@ -2708,8 +2716,8 @@ void zero_first_use_environment_checks() {
       unsigned expected_dispatches = 0;
       std::array<bool, 2> scalar_used{};
       for (unsigned maps : {0u, 1u, 0u, 1u})
-        for (const bool batch : {true, false}) {
-          const unsigned extent = batch ? 7 : 17;
+        for (const unsigned extent : {7u, 17u, 65u}) {
+          const bool batch = extent <= 64;
           work.right = work.left + extent;
           work.bottom = work.top + extent;
           if (batch) {
@@ -2718,8 +2726,9 @@ void zero_first_use_environment_checks() {
             const TestFloatEnvironment oracle_environment;
             CHECK(std::fesetenv(FE_DFL_ENV) == 0);
             gfx::copy_efb_xfb(cpu_memory, copy, [&](unsigned x, unsigned y) {
-              const u32 color =
-                  x >= 13 && x < 20 && y >= 11 && y < 18 ? 0xd36941 : pixels[y * 640 + x];
+              const u32 color = x >= 13 && x < 13 + extent && y >= 11 && y < 11 + extent
+                                    ? 0xd36941
+                                    : pixels[y * 640 + x];
               return (color << 8) | 255;
             });
           }
@@ -2909,9 +2918,10 @@ void zero_family_lifetime_checks() {
     if (!programs[0][0] && !programs[1][0])
       CHECK(current_program() == 0);
     const unsigned family = maps == 0 ? 1 : 0;
-    for (unsigned batch = 0; batch < 2; ++batch) {
-      work.right = work.left + (batch ? 7 : 17);
-      work.bottom = work.top + (batch ? 7 : 17);
+    for (const unsigned extent : {7u, 17u, 65u}) {
+      const bool batch = extent <= 64;
+      work.right = work.left + extent;
+      work.bottom = work.top + extent;
       CHECK(renderer.draw(work));
       renderer.synchronize(pixels, depths);
       const GLuint id = current_program();
@@ -3054,7 +3064,7 @@ void zero_family_transitions() {
             }
       work.textures[0][0].value += 2.5f;
     }
-    expected_raster_calls += (work.right - work.left) * (work.bottom - work.top) <= 256 ? 1 : 2;
+    expected_raster_calls += (work.right - work.left) * (work.bottom - work.top) <= 4096 ? 1 : 2;
     if (profile == 49 || profile == 79) {
       auto rejected = bp;
       rejected[0] &= ~(7u << 16);
@@ -3193,7 +3203,7 @@ void counter_checks() {
       work.textures[0][0].value += 2.5f;
     }
     const auto actual = renderer.synchronize(gpu_colors, gpu_depths, &hardware);
-    expected_raster_calls += width * height <= 256 ? 1 : 2;
+    expected_raster_calls += width * height <= 4096 ? 1 : 2;
     CHECK(actual.dispatches == expected_raster_calls);
     CHECK(actual.fallback_rectangles == 0);
     CHECK(actual.fragments == expected.fragments);
@@ -3492,6 +3502,7 @@ void benchmark(Fixture &software, Fixture &hardware) {
 #include "hardware_batch_gather_checks.hpp"
 #include "hardware_batch_interaction_checks.hpp"
 #include "hardware_batch_support.hpp"
+#include "hardware_mid_batch_checks.hpp"
 
 int main(int argc, char **argv) {
   renderer_run_started = std::chrono::steady_clock::now();
@@ -3500,6 +3511,7 @@ int main(int argc, char **argv) {
   Fixture software, hardware;
   std::cout << "[renderer] returned fixture construction\n";
   renderer_stage_returned("fixture construction", fixture_started);
+  bool mid_batch_only = false;
   bool required = false, measure = false, fog_only = false, texture_cache_only = false,
        xfb_only = false, efb_copy_only = false, bbox_only = false, projection_only = false,
        projection_staging_only = false, state_only = false, fixed_lod_only = false,
@@ -3508,6 +3520,7 @@ int main(int argc, char **argv) {
        program_cache_only = false, skip_program_cache_checks = false, gather_only = false,
        projection_admission_only = false, early_empty_only = false, batch_interaction_only = false;
   for (int i = 1; i < argc; ++i) {
+    mid_batch_only |= std::strcmp(argv[i], "--mid-batch-only") == 0;
     program_cache_only |= std::strcmp(argv[i], "--program-cache-only") == 0;
     skip_program_cache_checks |= std::strcmp(argv[i], "--skip-program-cache-checks") == 0;
     required |= std::strcmp(argv[i], "--require-device") == 0;
@@ -3564,6 +3577,10 @@ int main(int argc, char **argv) {
       renderer_stage("batch_interaction_checks",
                      [&] { hardware_batch_test::interaction::checks(bounded_projection); });
     };
+    if (mid_batch_only) {
+      hardware_mid_batch_test::checks();
+      return;
+    }
     if (gather_only) {
       gather_checks();
       return;

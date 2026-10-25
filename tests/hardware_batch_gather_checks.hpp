@@ -75,7 +75,7 @@ void copy_latch_state_checks() {
   bp[0xc0] = 0xfffa | (1 << 19);
   bp[0xc1] = (7 << 13) | (7 << 10) | (7 << 7) | (5 << 4) | (1 << 19) | 4;
   u64 completed_draws = 0, completed_readbacks = 0;
-  for (bool scalar : {false, true}) {
+  for (const int rectangle_extent : {1, 17, 65}) {
     std::vector<u32> expected_colors(640 * 528, 0x13579b);
     std::vector<u32> expected_depths(expected_colors.size(), 0x2468ac);
     auto gpu_colors = expected_colors, gpu_depths = expected_depths;
@@ -88,8 +88,8 @@ void copy_latch_state_checks() {
       gfx::RasterWork work{};
       work.left = x;
       work.top = y;
-      work.right = x + (scalar ? 17 : 1);
-      work.bottom = y + (scalar ? 17 : 1);
+      work.right = x + rectangle_extent;
+      work.bottom = y + rectangle_extent;
       // Integer samples satisfying x>=X, y>=Y and x+y<=X+Y select only (X,Y).
       work.edges = {{{0, -1, 1 - 16 * x}, {1, 0, 1 - 16 * y}, {-1, 1, 1 + 16 * (x + y)}}};
       unsigned covered = 0;
@@ -444,7 +444,8 @@ void gather_first_read_environment_checks(bool require_first_read_flags) {
   unsigned rows = 0;
   for (unsigned mode = 0; mode < modes.size(); ++mode)
     for (unsigned denormal = 0; denormal < 4; ++denormal)
-      for (bool batch : {false, true}) {
+      for (const unsigned extent : {7u, 17u, 65u}) {
+        const bool batch = extent <= 64;
         CHECK(std::fesetenv(FE_DFL_ENV) == 0);
         Memory memory{Console::GameCube};
         std::vector<u8> tmem(1024 * 1024);
@@ -468,7 +469,6 @@ void gather_first_read_environment_checks(bool require_first_read_flags) {
         gfx::RasterWork work{};
         work.left = 13;
         work.top = 11;
-        const unsigned extent = batch ? 7 : 17;
         work.right = work.left + int(extent);
         work.bottom = work.top + int(extent);
         work.edges.fill({0, 0, 1});

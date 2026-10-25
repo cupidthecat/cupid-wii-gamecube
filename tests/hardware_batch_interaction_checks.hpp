@@ -211,7 +211,8 @@ void run(bool additional) {
   CHECK(std::equal(xa.begin(), xa.end(), xb.begin()));
   ram_equal();
   renderer.reset_bounding_box(false);
-  submit(scalar_work(), true, {}); // 289pixels selects scalar; dispatch is counted separately.
+  // Preserve the 289-pixel rectangle after the bounding reset ended its earlier batch.
+  submit(scalar_work(), true, {});
   const auto b = sync(additional ? Expected{3, 297, 0, 2} : Expected{3, 293, 2, 2});
   CHECK(b.left == 20 && b.right == 37 && b.top == 0 && b.bottom == 37);
   bp[0x10] = 1u << 20;

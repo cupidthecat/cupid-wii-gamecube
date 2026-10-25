@@ -1714,3 +1714,37 @@ gameplay FPS. Commands and terminal receipts remain under
 `.cache/native-integration-20261025/`,
 `.cache/native-integration-20261025-linux-v2/` and
 `.cache/native-integration-faults-20261025-v1/`.
+
+## Medium rectangle batches
+
+The renderer queues rectangles of up to 4,096 pixels in its existing ordered
+batch shader. A batch still holds at most sixteen rectangles, spans at most
+4,096 pixels and obeys the existing union-to-summed-area bound. State, texture,
+copy, clear, upload, bounding-box and synchronization boundaries still flush
+queued work. Larger rectangles use the individual dispatch path.
+
+MSVC Release/LTO on the NVIDIA device and pinned GCC Release on Mesa pass eight
+selected graphics and guest-video suites. The new `hardware_renderer_batch`
+suite checks 44 direct sequences and sixteen mixed command streams. It compares
+complete color/depth buffers, retained fragment state and authored RAM across
+area, union and packet boundaries, overlapping draws, blending, logic, depth,
+texture revisions, copies, clears and CPU handoffs. The 256/257/4096/4097-area
+controls and sixteen/seventeen-packet cases retain their distinct expectations.
+Existing 17-square fixtures remain covered, with 65-square controls preserving
+individual-shader execution. Formatting and changed-renderer static analysis
+pass. A headless configure explicitly registers and skips the GPU batch suite.
+
+Eight matched Windows startup children preserve CPU/RAM hashes, every native
+counter, final raw frames and stored files against the preceding core. Declared
+hardware-work counters retain their separate scope. These checks do not
+establish sustained gameplay speed. Component and startup receipts remain in
+`.cache/gpu-mid-batch-20261025-v1/` and
+`.cache/gpu-mid-batch-integration-20261025-linux-v1/`.
+
+A further normal Windows CLI pair reaches the requested 2,400 Galaxy fields.
+CPU/RAM hashes, all native counters, raw frame bytes and persisted files match.
+Hardware fragments and fallback rectangles also match; only submission counts
+change. Both exit normally at the frame limit. This is a bounded menu comparison
+with disabled host audio, not completed gameplay or sustained FPS qualification.
+The final receipt is
+`.cache/gpu-mid-batch-20261025-v1/integrated-galaxy-fields-v1/receipt.json`.

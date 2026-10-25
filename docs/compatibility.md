@@ -479,10 +479,14 @@ the field-12,407 image places Mario on the grass beside the wall. A later
 ordinary reverse-stick input returns him to the flower bed. These captures
 demonstrate bounded controllable 3D movement on this source snapshot.
 
-Every accepted capture through this observation preserves the checked CPU
-members, RAM hash and video counters, with no replay rejection or reported
-memory error. The input versions and inspected raw frames remain under
+All 36 captures preserve the checked CPU members, RAM hash and video counters,
+with no replay rejection or reported memory error. Input versions and inspected
+raw frames remain under
 `.cache/native-game-observer-20261025/route-galaxy-cf-restart-001/`.
-This is a live-route observation with disabled host audio, not a completed
-route replay, completed level or speed measurement. It precedes the ordered
-fragment backend and does not qualify that later source for festival gameplay.
+The child exits normally at its configured 7,200-second time bound after 25,102
+fields and 300,318,224,248 retired instructions. All eight copied storage files
+remain unchanged. Terminal verification preserves the source, input versions,
+endpoint state/frame and storage. This observer route uses disabled host audio
+and does not establish an independent replay, completed level or speed
+measurement. It precedes the ordered fragment backend and does not qualify
+that later source for festival gameplay.

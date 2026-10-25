@@ -1795,3 +1795,40 @@ cover 1,365 classifier queues, 112 real-context resource/FPU cases and 208
 synthetic-error constructor cases. No physical driver exhaustion or reset is
 induced. Their sealed source and instrumentation remain in
 `.cache/gpu-ordered-auto-20261025-v3/`.
+
+## Native RAM packet execution
+
+The `native_ram` suite requires emitted execution for admitted packets and
+compares complete CPU State and RAM against ordinary interpreter steps.
+It covers address dependencies, aliases, byte order, wraparound, later guard
+exits and unsupported opcodes. Runtime cases also compare quotas, clocks,
+ordered bus observations, BAT-key changes, missing mappings and denied backing.
+Positive controls require actual native activation with both relocation settings.
+Dynamic contexts and exact-PC revisits check that compiled bodies retain no
+prior RAM or BAT pointer.
+
+The frozen candidate passes 3,522 direct State/RAM cases, 1,975 runtime cases,
+8,196 dynamic-context/PC checks, sixteen rejections and 96 floating-environment
+cases under MSVC, GCC and Clang sanitizers. Activation checks include 161 actual
+eight-word native activations. Five full-core CPU/runtime suites pass on both
+MSVC and GCC. Linux mapping/protection fault injection covers all three typed
+caches, with retired arenas inaccessible during revisits and no writable and
+executable mapping requests. Windows resource-failure injection remains
+untested; emitted code itself has no compiler sanitizer instrumentation.
+
+Eight frozen normal-CLI startup children preserve guest diagnostics, raw final
+frames and stored files for both games, with native-counter changes reported
+separately. Host audio is disabled. Receipts and failed attempts remain under
+`.cache/native-mixed-ram-20261025-v1/`; combined renderer/CPU integration has
+separate build and validation records.
+
+The combined ordered-renderer/CPU build passes 31 selected CPU, runtime,
+floating-environment and CLI checks, plus four existing hardware-renderer
+suites under strict MSVC Release/LTO. Two further normal-CLI startup children
+match all 44 non-native guest/hardware fields, raw frames and stored files
+against the renderer-only snapshot. All fifteen published native counters
+match the separately qualified CPU candidate exactly, with no compilation
+failure or arena replacement. The combined source, generated build closure,
+binary hashes and terminal comparisons are sealed under
+`.cache/native-mixed-ram-20261025-v1/combined-integration-prefix-v1/`; parent
+build/test logs remain under `.cache/native-mixed-root-20261025-v1/`.

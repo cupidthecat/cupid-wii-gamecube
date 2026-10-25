@@ -36,6 +36,7 @@ public:
   void write_cpu_data(u32 physical, u32 value, unsigned byte_count) override;
   bool try_clear_cpu_ram_line(u32 physical) override;
   std::span<u8> plain_cpu_ram(u32 physical, unsigned byte_count) override;
+  PlainCpuRamView plain_cpu_ram_view() override;
   bool write_page_table32(u32 physical, u32 value) override;
   u64 page_table_write_errors() const;
   u64 instruction_backing_read_errors() const;

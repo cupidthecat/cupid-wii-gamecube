@@ -338,6 +338,34 @@ and FP-enable guards verify passive rejection and prefix retirement before
 ordinary fault handling. The comparison includes RAM and ordered bus records;
 it does not establish complete hardware memory timing or gameplay speed.
 
+## Native resident word transfers
+
+The native backend compiles complete eight-word resident packets containing
+aligned immediate `lwz` and `stw` transfers plus supported integer operations.
+Packets containing branches keep scalar execution and polling-loop folding.
+Shorter packets keep the existing path after measurements showed that native
+admission costs could outweigh their dispatch savings.
+
+The bus grants a separate complete plain-RAM view; a transaction span alone
+does not grant surrounding bytes. The default view is empty, and ordinary
+memory exposes only canonical MEM1. Each invocation supplies fresh backing and
+the current validated BAT context. Emitted accesses check alignment, the selected
+mapping entry, cache policy and unsigned physical bounds before touching bytes.
+Transfers preserve big-endian word order. A later guard exit returns the exact
+completed prefix for ordinary clock, cache-hit and instruction diagnostics.
+
+RAM bodies have typed entries and exact-content PC hints in the shared code
+arena. Reset, arena exhaustion and resource failures clear all three sequence
+types together. Emitted code embeds no RAM or BAT pointer. Other transfer forms,
+devices, mirrors and MEM2 retain their existing paths. These checks preserve the
+current interpreter contract; they do not establish physical memory timing.
+
+The behavioral source handlers are `Helper_Get_EA`, `lwz` and `stw` in
+`Source/Core/Core/PowerPC/Interpreter/Interpreter_LoadStore.cpp`. They define
+zero-base and signed-immediate addressing, fault-dependent load retirement and
+the ordinary word-store operation. Rejected native accesses return to those
+existing product transfer and exception rules.
+
 ## Unfinished behavior
 
 Little-endian execution, direct-store segments, NaN-to-integer quantization, locked-cache DMA queue timing, additional performance event selectors, and data cache visibility remain unfinished. Those recognized unfinished execution paths report explicit diagnostics. The timebase uses a twelve-cycle divider and the decrementer uses its own write phase. Full device scheduling and edge timing still need differential validation.

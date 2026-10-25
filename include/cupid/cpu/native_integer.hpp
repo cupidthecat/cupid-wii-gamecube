@@ -15,6 +15,15 @@ struct NativeControlRun {
   bool taken = false;
 };
 
+// Fresh per-invocation backing. A null BAT table means relocation is disabled;
+// otherwise the caller has validated the table register key. Each memory access
+// checks its selected table entry before using the physical address.
+struct NativeRamContext {
+  u8 *data = nullptr;
+  const u32 *bat_entries = nullptr;
+  u32 physical_base = 0, bytes = 0;
+};
+
 enum class ExecutionBackend { Interpreter, NativeInteger };
 
 struct NativeIntegerStatistics {
@@ -102,6 +111,12 @@ public:
   bool execute_control_sequence(State &state, std::span<const u32> opcodes,
                                 NativeControlRun &result);
 
+  // Integer operations plus aligned immediate LWZ/STW. Every runtime guard
+  // precedes its word's effects; completed earlier words are not rolled back.
+  // False leaves guest state and result unchanged before invoking any word.
+  bool execute_ram_sequence(State &state, std::span<const u32> opcodes,
+                            const NativeRamContext &context, u32 &retired);
+
   void reset();
   NativeIntegerStatistics statistics() const noexcept;
 
@@ -122,6 +137,15 @@ private:
   static u32
   invoke_control(State &state, u32 (*operation)(State *)) {
     return operation(&state);
+  }
+
+#if defined(__clang__)
+  __attribute__((no_sanitize("function")))
+#endif
+  static u32
+  invoke_ram(State &state, const NativeRamContext &context,
+             u32 (*operation)(State *, const NativeRamContext *)) {
+    return operation(&state, &context);
   }
 
   struct Hint {

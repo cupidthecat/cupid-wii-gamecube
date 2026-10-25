@@ -1034,3 +1034,22 @@ its raster arithmetic and submission policy are unchanged by the guard.
 Raw samples and their exact source/binary identities remain in
 `.cache/gpu-ordered-auto-20261025-v2/balanced-v1/`; the earlier 2,400-field
 comparison is in `.cache/gpu-native-raster-galaxy2400-20261025-v1/`.
+
+## Native word-transfer packets
+
+A frozen MSVC eight-word component comparison records candidate/baseline hot
+ratios of 0.523-0.530 for one key and 0.682-0.714 for 257 keys, across relocation
+disabled and enabled. Complete State and RAM match. The translated unaligned
+decline control retains a 1.058 ratio. Earlier two- and four-word prototypes
+retain regressions of roughly 1.10-1.26; runtime admission therefore requires
+eight words. These shared-host samples do not establish whole-game speed.
+
+Eight ordinary Windows CLI startup children compare the frozen CPU candidate
+against `cf383f2` in A/B/B/A order for each game. Sunshine reaches 320 fields at
+three billion attempts and Galaxy reaches 76 fields at one billion. Guest-state
+diagnostics, hardware counters, raw frames and stored files match. Native CPU
+diagnostics report the newly emitted transfers separately. Source, controls and
+terminal comparisons remain under
+`.cache/native-mixed-ram-20261025-v1/qualification-v4/` and
+`commercial-gate-v1/`. These startup bounds precede integration with the ordered
+fragment renderer and do not qualify gameplay FPS.

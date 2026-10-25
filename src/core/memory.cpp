@@ -278,6 +278,12 @@ std::span<u8> Memory::plain_cpu_ram(u32 physical, unsigned byte_count) {
   return cpu_range(physical, byte_count);
 }
 
+PlainCpuRamView Memory::plain_cpu_ram_view() {
+  // Only canonical MEM1 participates initially. CPU mirrors, MEM2, locked
+  // cache and device transactions retain their existing transaction paths.
+  return {0, mem1_};
+}
+
 bool Memory::write_page_table32(u32 physical, u32 value) {
   try {
     auto bytes = range(physical & 0x3fffffff, 4);

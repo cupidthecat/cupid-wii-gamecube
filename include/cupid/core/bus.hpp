@@ -9,6 +9,13 @@
 #include <string>
 
 namespace cupid {
+// Explicit complete read/write backing; the provider owns physical range and
+// observation policy. The descriptor and its bytes stay valid for one group.
+struct PlainCpuRamView {
+  u32 physical_base = 0;
+  std::span<u8> bytes;
+};
+
 class BusFault : public std::runtime_error {
 public:
   BusFault(u32 address, bool write, const std::string &reason, bool unsupported_reason = false)
@@ -128,6 +135,12 @@ public:
   virtual std::span<u8> plain_cpu_ram(u32 physical, unsigned byte_count) {
     (void)physical;
     (void)byte_count;
+    return {};
+  }
+
+  // A transaction span does not imply surrounding backing. Opt in separately
+  // only when this entire physical interval has no CPU bus observations.
+  virtual PlainCpuRamView plain_cpu_ram_view() {
     return {};
   }
 

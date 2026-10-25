@@ -996,6 +996,42 @@ IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cy
                        : std::span<u8>{};
       if (!bytes.empty()) {
         const u32 start = state_.pc;
+        // Inspect the whole selected packet: truncating a packet at a branch
+        // would bypass the existing invariant polling-loop folding below.
+        // Use full packets to amortize one-entry dispatch and per-access
+        // guards. Short packets retain the existing scalar loop.
+        if (backend_ == ExecutionBackend::NativeInteger && scalar_count == 8 && !(effective & 3)) {
+          const auto view = bus_.plain_cpu_ram_view();
+          u32 physical_data = effective;
+          if (state_.msr & msr::dr)
+            physical_data = (map->entries[effective >> 17] & 0xfffe0000) | (effective & 0x1ffff);
+          // This preflight preserves zero-retirement rejection, including
+          // noncanonical aliases or backing excluded from the new capability.
+          if (!view.bytes.empty() && view.bytes.size() >= 4 &&
+              view.bytes.size() <= std::numeric_limits<u32>::max() &&
+              physical_data >= view.physical_base &&
+              physical_data - view.physical_base <= view.bytes.size() - 4 &&
+              std::all_of(words.begin(), words.end(), [](u32 opcode) {
+                return (opcode >> 26) == 32 || (opcode >> 26) == 36 ||
+                       NativeInteger::can_group(opcode);
+              })) {
+            const NativeRamContext context{view.bytes.data(), map ? map->entries.data() : nullptr,
+                                           view.physical_base, static_cast<u32>(view.bytes.size())};
+            u32 retired = 0;
+            if (native_integer_->execute_ram_sequence(state_, words, context, retired) && retired) {
+              instruction_cache_.commit_hit(key);
+              if (retired > first_size)
+                instruction_cache_.commit_hit(second_key);
+              state_.last_pc = start + (retired - 1) * 4;
+              state_.last_opcode = current_opcode_ = words[retired - 1];
+              state_.pc = next_pc_ = start + retired * 4;
+              last_step_fetched_ = true;
+              state_.instructions += retired;
+              tick(retired);
+              return {retired, retired};
+            }
+          }
+        }
         unsigned retired = 0;
         bool branched = false;
         for (u32 opcode : words) {

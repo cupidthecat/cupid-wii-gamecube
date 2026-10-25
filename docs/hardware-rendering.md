@@ -75,6 +75,13 @@ flags. This covers drivers that defer compilation until dispatch. Cached
 draws avoid saving the environment. Copy commands restore only an already-used
 scalar program, or program zero until the next draw binds its program.
 
+Dirty EFB synchronization also uses the default host floating-point environment,
+including when the caller supplies no fragment-shader recipient. The scope covers
+context selection, pending draws, driver queries and readback, then restores the
+caller's controls and sticky flags. A clean EFB returns before entering the scope.
+The hardware tests check cold null-recipient synchronization across all sixteen
+rounding and denormal profiles, alongside the existing preflushed controls.
+
 Projected texture coordinates keep the CPU path's float rounding at each step:
 the reciprocal of interpolated W, the Q product, the projected quotient, and
 the S/T products before conversion to signed 17.7 coordinates. Both divisions

@@ -287,8 +287,9 @@ void cold_null_then_first_gather_environment(bool require_gather_flags) {
       CHECK(after_null.control == before_null.control);
       CHECK((after_null.simd & ~0x3fu) == (before_null.simd & ~0x3fu));
 #endif
-      // Cold null completion's flag equality is retained as a baseline/union observation.
-      // It is not silently promoted into a new flag guarantee for the existing null path.
+      // Full synchronization preserves caller controls and sticky flags even
+      // when no fragment-shader recipient is supplied.
+      CHECK(after_null == before_null);
       CHECK(null_stats.fragments == 4 && null_stats.dispatches == 1 &&
             null_stats.efb_readbacks == 1);
       CHECK(pixels == expected && depths == expected_depths);

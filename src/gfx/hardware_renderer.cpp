@@ -1059,6 +1059,7 @@ HardwareStats HardwareRenderer::synchronize(std::span<u32> colors, std::span<u32
   result.efb_readback_bytes = impl_->efb_readback_bytes;
   if (!impl_->dirty)
     return result;
+  const HostFloatEnvironment synchronization_environment;
   impl_->current();
   impl_->flush_batch();
   result.dispatches = impl_->dispatches;

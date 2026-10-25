@@ -111,6 +111,14 @@ set(cupid_sources
   src/platform/input_replay.cpp
   src/platform/input_replay_follow.cpp)
 add_library(cupid_core STATIC ${cupid_sources})
+if(MSVC AND CMAKE_CXX_COMPILER_ARCHITECTURE_ID STREQUAL "x64")
+  enable_language(ASM_MASM)
+  add_library(cupid_host_float_environment_x64 OBJECT src/core/host_float_environment_x64.asm)
+  set_target_properties(cupid_host_float_environment_x64 PROPERTIES
+    INTERPROCEDURAL_OPTIMIZATION FALSE
+    INTERPROCEDURAL_OPTIMIZATION_RELEASE FALSE)
+  target_sources(cupid_core PRIVATE $<TARGET_OBJECTS:cupid_host_float_environment_x64>)
+endif()
 target_include_directories(cupid_core PUBLIC include "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_link_libraries(cupid_core PUBLIC cupid_options cupid_dependencies)
 add_executable(cupid-wii-gamecube src/main.cpp)
@@ -137,6 +145,25 @@ if(CUPID_BUILD_TESTS)
       INTERPROCEDURAL_OPTIMIZATION FALSE
       INTERPROCEDURAL_OPTIMIZATION_RELEASE FALSE)
     target_sources(cupid_floating_binary_tests PRIVATE $<TARGET_OBJECTS:cupid_floating_binary_x87>)
+  endif()
+  # Exact split x87/SSE controls and flags, normal/nested/C++ unwind paths.
+  if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND
+      ((MSVC AND CMAKE_CXX_COMPILER_ARCHITECTURE_ID STREQUAL "x64") OR
+       (NOT MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")))
+    add_executable(cupid_host_float_environment_tests tests/host_float_environment_tests.cpp)
+    target_include_directories(cupid_host_float_environment_tests PRIVATE tests)
+    target_link_libraries(cupid_host_float_environment_tests PRIVATE cupid_core)
+    if(MSVC)
+      target_sources(cupid_host_float_environment_tests PRIVATE $<TARGET_OBJECTS:cupid_floating_binary_x87>)
+    endif()
+    add_test(NAME host_float_environment_masked COMMAND cupid_host_float_environment_tests)
+    set_tests_properties(host_float_environment_masked PROPERTIES TIMEOUT 300 LABELS "public;unit;cpu")
+    foreach(index RANGE 0 15)
+      add_test(NAME host_float_environment_unmasked_${index}
+        COMMAND cupid_host_float_environment_tests --unmasked ${index})
+      set_tests_properties(host_float_environment_unmasked_${index} PROPERTIES
+        TIMEOUT 30 LABELS "public;unit;cpu")
+    endforeach()
   endif()
   # The complete state and ordered-bus fixture needs headroom on a shared host.
   set_tests_properties(cpu_integer_run PROPERTIES TIMEOUT 300 LABELS "public;unit;cpu")

@@ -33,6 +33,15 @@ success and error. It also checks empty submissions and a full disabled FIFO
 burst. Portable rounding and depth checks run on every architecture; x86-64
 builds additionally check MXCSR and retained flush modes.
 
+On Windows x86-64, the host scope saves the x87 environment and MXCSR separately.
+It enters with default controls and clear status, then restores both units on
+normal return and C++ exception unwinding. This preserves independent x87 and
+SIMD rounding and sticky flags that the runtime's combined environment API does
+not retain. The `host_float_environment` tests compare direct register reads
+with FXSAVE across 32,000 masked cases and sixteen unmasked cases of five rows
+each, including nested scopes and exception paths. Each test run retains its
+raw observations in a fresh build-relative directory.
+
 The shipping MSVC and GCC builds passed these checks and the existing graphics,
 guest-video, and hardware-renderer suites. Clang 18 ASan/UBSan also passed the
 FIFO, graphics, vertex, and rasterizer tests. These authored checks do not

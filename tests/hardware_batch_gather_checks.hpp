@@ -445,7 +445,7 @@ void gather_first_read_environment_checks(bool require_first_read_flags) {
   for (unsigned mode = 0; mode < modes.size(); ++mode)
     for (unsigned denormal = 0; denormal < 4; ++denormal)
       for (const unsigned extent : {7u, 17u, 65u}) {
-        const bool batch = extent <= 64;
+        const bool batch = native_ordered_raster_active() || extent <= 64;
         CHECK(std::fesetenv(FE_DFL_ENV) == 0);
         Memory memory{Console::GameCube};
         std::vector<u8> tmem(1024 * 1024);
@@ -673,7 +673,9 @@ void gather_boundary_key_checks() {
       {160, -288}};
   CHECK(shader.texture_state() == expected);
   CHECK(pixels == expected_pixels && depths == expected_depths);
-  CHECK(stats.fragments == 4094 && stats.dispatches == 256 && stats.fallback_rectangles == 0);
+  CHECK(stats.fragments == 4094 &&
+        stats.dispatches == (native_ordered_raster_active() ? 16u : 256u) &&
+        stats.fallback_rectangles == 0);
   CHECK(stats.left == 638 && stats.right == 639 && stats.top == 526 && stats.bottom == 527);
   std::cout << "Verified six nonzero golden latch fields at last retained pixel639,527 and "
                "sequence4094\n";

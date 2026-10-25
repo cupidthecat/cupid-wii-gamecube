@@ -191,7 +191,7 @@ Usage: cupid-wii-gamecube --game PATH [options]
   --validate-bios             Check --bios without running software
   --ipl-fonts PATH            Load separately validated IPL font blocks
   --validate-fonts            Check --ipl-fonts without running software
-  --graphics software|opengl  CPU rendering or OpenGL compute rendering
+  --graphics software|opengl  CPU rendering or OpenGL rendering
   --display-aspect MODE       standard (VI), widescreen or pixels; default standard
   --audio none|sdl             Select guest PCM output (default none)
   --remote-speakers on|off     Mix decoded Remote speakers (default off; requires SDL audio)

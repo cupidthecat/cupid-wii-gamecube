@@ -7,12 +7,15 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string_view>
 #if CUPID_HAVE_SDL
+#include "hardware_ordered_raster.hpp"
 #include "hardware_program.hpp"
 #include <SDL.h>
 #include <SDL_opengl.h>
@@ -99,6 +102,20 @@ template <typename T> T load_gl(const char *name) {
   return function;
 }
 
+enum class OrderedInitializationErrors { None, Recoverable, Fatal };
+
+template <typename GetError>
+OrderedInitializationErrors ordered_initialization_errors(GetError get_error) {
+  auto result = OrderedInitializationErrors::None;
+  for (GLenum error = get_error(); error != GL_NO_ERROR; error = get_error()) {
+    if (error == GL_OUT_OF_MEMORY || error == GL_CONTEXT_LOST)
+      result = OrderedInitializationErrors::Fatal;
+    else if (result == OrderedInitializationErrors::None)
+      result = OrderedInitializationErrors::Recoverable;
+  }
+  return result;
+}
+
 float fog_parameter(u32 value) {
   return std::bit_cast<float>(((value & 0x80000) << 12) | (((value >> 11) & 255) << 23) |
                               ((value & 2047) << 12));
@@ -178,6 +195,41 @@ struct HardwareRenderer::Impl {
 
   // Family zero is generic; family one has no indirect prefetch stages.
   std::array<detail::FragmentPrograms, 2> fragment_programs{};
+  bool ordered_raster = false;
+  std::string ordered_extension, ordered_suffix;
+  std::array<GLuint, 2> ordered_programs{};
+  std::array<bool, 2> ordered_initialized{};
+  GLuint ordered_framebuffer = 0, ordered_color = 0, ordered_vao = 0;
+  u64 ordered_draws = 0, ordered_rectangles = 0, ordered_queued_area = 0;
+  static constexpr std::size_t ordered_packet_capacity = 256;
+  // Bound expensive ordered fragment work independently of packet bytes. The
+  // full EFB fits individually; larger streams split without changing coverage.
+  static constexpr u64 ordered_area_capacity = 1024u * 1024u;
+  PFNGLGETSTRINGIPROC GetStringi = nullptr;
+  PFNGLGENVERTEXARRAYSPROC GenVertexArrays = nullptr;
+  PFNGLBINDVERTEXARRAYPROC BindVertexArray = nullptr;
+  PFNGLDELETEVERTEXARRAYSPROC DeleteVertexArrays = nullptr;
+  PFNGLDRAWARRAYSINSTANCEDPROC DrawArraysInstanced = nullptr;
+  PFNGLGENFRAMEBUFFERSPROC GenFramebuffers = nullptr;
+  PFNGLBINDFRAMEBUFFERPROC BindFramebuffer = nullptr;
+  PFNGLFRAMEBUFFERTEXTURE2DPROC FramebufferTexture2D = nullptr;
+  PFNGLCHECKFRAMEBUFFERSTATUSPROC CheckFramebufferStatus = nullptr;
+  PFNGLDELETEFRAMEBUFFERSPROC DeleteFramebuffers = nullptr;
+  PFNGLTEXSTORAGE2DPROC TexStorage2D = nullptr;
+  using TextureNameFunction = void(APIENTRY *)(GLsizei, GLuint *);
+  using DeleteTextureFunction = void(APIENTRY *)(GLsizei, const GLuint *);
+  using BindTextureFunction = void(APIENTRY *)(GLenum, GLuint);
+  using ViewportFunction = void(APIENTRY *)(GLint, GLint, GLsizei, GLsizei);
+  using DisableFunction = void(APIENTRY *)(GLenum);
+  using ColorMaskFunction = void(APIENTRY *)(GLboolean, GLboolean, GLboolean, GLboolean);
+  using PolygonModeFunction = void(APIENTRY *)(GLenum, GLenum);
+  TextureNameFunction GenTextures = nullptr;
+  DeleteTextureFunction DeleteTextures = nullptr;
+  BindTextureFunction BindTexture = nullptr;
+  ViewportFunction Viewport = nullptr;
+  DisableFunction Disable = nullptr;
+  ColorMaskFunction ColorMask = nullptr;
+  PolygonModeFunction PolygonMode = nullptr;
   GLuint xfb_program = 0, clear_program = 0, texture_copy_program = 0;
   GLuint sync_program = 0, sync_buffer = 0;
   bool sync_initialized = false;
@@ -210,6 +262,8 @@ struct HardwareRenderer::Impl {
   GetStringType GetString = load_gl<GetStringType>("glGetString");
   using GetIntegerType = void(APIENTRY *)(GLenum, GLint *);
   GetIntegerType GetIntegerv = load_gl<GetIntegerType>("glGetIntegerv");
+  using GetErrorType = GLenum(APIENTRY *)();
+  GetErrorType GetError = load_gl<GetErrorType>("glGetError");
 
   // Construct only after a context is current: the entry-point initializers need it.
   Impl(SDL_Window *host_window, SDL_GLContext host_context, Memory &guest_memory,
@@ -232,6 +286,173 @@ struct HardwareRenderer::Impl {
     const auto &thresholds = fog_thresholds();
     BufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(thresholds), thresholds.data());
     reset_counters();
+    configure_ordered_raster();
+  }
+
+  void release_ordered_resources() {
+    for (auto &program : ordered_programs) {
+      if (program)
+        DeleteProgram(program);
+      program = 0;
+    }
+    if (ordered_framebuffer) {
+      BindFramebuffer(GL_FRAMEBUFFER, 0);
+      DeleteFramebuffers(1, &ordered_framebuffer);
+      ordered_framebuffer = 0;
+    }
+    if (ordered_color) {
+      DeleteTextures(1, &ordered_color);
+      ordered_color = 0;
+    }
+    if (ordered_vao) {
+      DeleteVertexArrays(1, &ordered_vao);
+      ordered_vao = 0;
+    }
+    ordered_raster = false;
+  }
+
+  void ensure_ordered_program(unsigned family) {
+    if (ordered_programs[family])
+      return;
+    auto source =
+        detail::ordered_raster_fragment_source(batch_source, ordered_extension, ordered_suffix);
+    if (family)
+      source = zero_source(source);
+    ordered_programs[family] = detail::compile_ordered_raster_program(
+        *this, detail::ordered_raster_vertex_source, source.c_str());
+  }
+
+  void configure_ordered_raster() {
+    const HostFloatEnvironment environment;
+    const char *value = SDL_getenv("CUPID_GX_ORDERED_RASTER");
+    const std::string_view selection = value ? value : "auto";
+    if (selection == "0")
+      return;
+    if (selection != "auto" && selection != "1")
+      throw HardwareUnavailable("Ordered raster mode requires auto, 1 or 0");
+    const auto preflight = ordered_initialization_errors(GetError);
+    if (preflight == OrderedInitializationErrors::Fatal)
+      throw HardwareUnavailable("Fatal OpenGL error before ordered raster initialization");
+    bool fatal_error = false;
+    const auto recover_initialization = [&](const std::exception &error) {
+      fatal_error |= ordered_initialization_errors(GetError) == OrderedInitializationErrors::Fatal;
+      // OOM or context loss makes continued GL operation unreliable. Let the
+      // outer constructor destroy its context instead of selecting compute.
+      if (fatal_error)
+        throw HardwareUnavailable("Fatal OpenGL error during ordered raster initialization");
+      release_ordered_resources();
+      if (ordered_initialization_errors(GetError) == OrderedInitializationErrors::Fatal)
+        throw HardwareUnavailable("Fatal OpenGL error during ordered raster cleanup");
+      if (selection == "1")
+        throw;
+      std::clog << "Ordered raster unavailable; using compute: " << error.what() << '\n';
+    };
+    try {
+      if (preflight != OrderedInitializationErrors::None)
+        throw HardwareUnavailable("OpenGL error before ordered raster initialization");
+      initialize_ordered_raster();
+      // Validate both shader families before guest work is queued. Automatic
+      // selection can then fall back without replaying a partially drawn batch.
+      for (unsigned family = 0; family < ordered_programs.size(); ++family)
+        ensure_ordered_program(family);
+      const auto initialization_status = ordered_initialization_errors(GetError);
+      fatal_error = initialization_status == OrderedInitializationErrors::Fatal;
+      if (initialization_status != OrderedInitializationErrors::None)
+        throw HardwareUnavailable("OpenGL error after ordered raster initialization");
+    } catch (const std::runtime_error &error) {
+      recover_initialization(error);
+      return;
+    } catch (const std::bad_alloc &error) {
+      recover_initialization(error);
+      return;
+    }
+    std::clog << "Ordered raster active: " << ordered_suffix << ", device=" << device
+              << ", packet_capacity=" << ordered_packet_capacity
+              << ", area_capacity=" << ordered_area_capacity << '\n';
+  }
+
+  void initialize_ordered_raster() {
+    const HostFloatEnvironment environment;
+    GetStringi = load_gl<PFNGLGETSTRINGIPROC>("glGetStringi");
+    GLint count = 0;
+    GetIntegerv(GL_NUM_EXTENSIONS, &count);
+    bool arb = false, nv = false;
+    for (GLint n = 0; n < count; ++n) {
+      const std::string_view extension(
+          reinterpret_cast<const char *>(GetStringi(GL_EXTENSIONS, GLuint(n))));
+      arb |= extension == "GL_ARB_fragment_shader_interlock";
+      nv |= extension == "GL_NV_fragment_shader_interlock";
+    }
+    if (!arb && !nv)
+      throw HardwareUnavailable("Requested ordered raster mode lacks fragment interlock");
+    GLint vertex_blocks = 0;
+    GetIntegerv(GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS, &vertex_blocks);
+    if (vertex_blocks < 1)
+      throw HardwareUnavailable("Requested ordered raster mode lacks a vertex SSBO");
+    GLint fragment_blocks = 0, combined_blocks = 0;
+    GetIntegerv(GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS, &fragment_blocks);
+    GetIntegerv(GL_MAX_COMBINED_SHADER_STORAGE_BLOCKS, &combined_blocks);
+    if (fragment_blocks < 7 || combined_blocks < 8)
+      throw HardwareUnavailable("Requested ordered raster mode lacks fragment SSBO capacity");
+    GLint maximum_bytes = 0;
+    GetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &maximum_bytes);
+    if (maximum_bytes < GLint((5 + ordered_packet_capacity * 254) * sizeof(u32)))
+      throw HardwareUnavailable("Requested ordered raster mode lacks packet SSBO capacity");
+    ordered_extension =
+        arb ? "GL_ARB_fragment_shader_interlock" : "GL_NV_fragment_shader_interlock";
+    ordered_suffix = arb ? "ARB" : "NV";
+    GenVertexArrays = load_gl<PFNGLGENVERTEXARRAYSPROC>("glGenVertexArrays");
+    BindVertexArray = load_gl<PFNGLBINDVERTEXARRAYPROC>("glBindVertexArray");
+    DeleteVertexArrays = load_gl<PFNGLDELETEVERTEXARRAYSPROC>("glDeleteVertexArrays");
+    DrawArraysInstanced = load_gl<PFNGLDRAWARRAYSINSTANCEDPROC>("glDrawArraysInstanced");
+    GenFramebuffers = load_gl<PFNGLGENFRAMEBUFFERSPROC>("glGenFramebuffers");
+    BindFramebuffer = load_gl<PFNGLBINDFRAMEBUFFERPROC>("glBindFramebuffer");
+    FramebufferTexture2D = load_gl<PFNGLFRAMEBUFFERTEXTURE2DPROC>("glFramebufferTexture2D");
+    CheckFramebufferStatus = load_gl<PFNGLCHECKFRAMEBUFFERSTATUSPROC>("glCheckFramebufferStatus");
+    DeleteFramebuffers = load_gl<PFNGLDELETEFRAMEBUFFERSPROC>("glDeleteFramebuffers");
+    TexStorage2D = load_gl<PFNGLTEXSTORAGE2DPROC>("glTexStorage2D");
+    GenTextures = load_gl<TextureNameFunction>("glGenTextures");
+    DeleteTextures = load_gl<DeleteTextureFunction>("glDeleteTextures");
+    BindTexture = load_gl<BindTextureFunction>("glBindTexture");
+    Viewport = load_gl<ViewportFunction>("glViewport");
+    Disable = load_gl<DisableFunction>("glDisable");
+    ColorMask = load_gl<ColorMaskFunction>("glColorMask");
+    PolygonMode = load_gl<PolygonModeFunction>("glPolygonMode");
+    GenVertexArrays(1, &ordered_vao);
+    GenTextures(1, &ordered_color);
+    BindTexture(GL_TEXTURE_2D, ordered_color);
+    TexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 640, 528);
+    GenFramebuffers(1, &ordered_framebuffer);
+    BindFramebuffer(GL_FRAMEBUFFER, ordered_framebuffer);
+    FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ordered_color, 0);
+    if (!ordered_vao || !ordered_color || !ordered_framebuffer ||
+        CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+      throw HardwareUnavailable("Requested ordered raster framebuffer allocation failed");
+    ordered_raster = true;
+  }
+
+  void dispatch_ordered_raster(unsigned family, GLsizei rectangles) {
+    ensure_ordered_program(family);
+    std::optional<HostFloatEnvironment> initialization_environment;
+    if (!ordered_initialized[family])
+      initialization_environment.emplace();
+    BindFramebuffer(GL_FRAMEBUFFER, ordered_framebuffer);
+    BindVertexArray(ordered_vao);
+    Viewport(0, 0, 640, 528);
+    for (GLenum capability :
+         {GL_DEPTH_TEST, GL_STENCIL_TEST, GL_BLEND, GL_CULL_FACE, GL_SCISSOR_TEST, GL_MULTISAMPLE,
+          GL_RASTERIZER_DISCARD, GL_SAMPLE_ALPHA_TO_COVERAGE, GL_SAMPLE_ALPHA_TO_ONE,
+          GL_SAMPLE_COVERAGE, GL_SAMPLE_MASK, GL_POLYGON_OFFSET_FILL, GL_DITHER,
+          GL_FRAMEBUFFER_SRGB})
+      Disable(capability);
+    ColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    PolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    UseProgram(ordered_programs[family]);
+    DrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, rectangles);
+    MemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+    ordered_initialized[family] = true;
+    ++ordered_draws;
+    ordered_rectangles += static_cast<u64>(rectangles);
   }
 
   GLuint compile_program(const char *source, const char *kind) {
@@ -477,38 +698,57 @@ struct HardwareRenderer::Impl {
     data[4] = u32(bottom);
     for (std::size_t i = 0; i < queued.size(); ++i)
       std::copy(queued[i].begin(), queued[i].end(), data.begin() + 5 + i * 254);
-    dispatch_fragment(queued_family, true, [&] {
+    const auto upload = [&] {
       BindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[3]);
       BufferData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(data.size() * sizeof(u32)), data.data(),
                  GL_DYNAMIC_DRAW);
-      DispatchCompute((right - left + 7) / 8, (bottom - top + 7) / 8, 1);
-      MemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
-    });
+    };
+    if (ordered_raster) {
+      std::optional<HostFloatEnvironment> initialization_environment;
+      if (!ordered_initialized[queued_family])
+        initialization_environment.emplace();
+      upload();
+      dispatch_ordered_raster(queued_family, GLsizei(queued.size()));
+    } else {
+      dispatch_fragment(queued_family, true, [&] {
+        upload();
+        DispatchCompute((right - left + 7) / 8, (bottom - top + 7) / 8, 1);
+        MemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+      });
+    }
     ++dispatches;
     queued.clear();
     queued_extent = {};
+    ordered_queued_area = 0;
   }
 
   ~Impl() {
-    SDL_GL_MakeCurrent(window, context);
-    if (buffers[0])
-      DeleteBuffers(GLsizei(buffers.size()), buffers.data());
-    if (sync_buffer)
-      DeleteBuffers(1, &sync_buffer);
-    for (const auto &family : fragment_programs) {
-      if (family.scalar)
-        DeleteProgram(family.scalar);
-      if (family.batch)
-        DeleteProgram(family.batch);
+    // A failed activation can leave another context current. Its object names
+    // must never be interpreted as resources belonging to this renderer.
+    if (SDL_GL_MakeCurrent(window, context) == 0) {
+      if (ordered_raster)
+        std::clog << "Ordered raster summary: vertex_draws=" << ordered_draws
+                  << ", rectangles=" << ordered_rectangles << ", fragment_compute_submissions=0\n";
+      release_ordered_resources();
+      if (buffers[0])
+        DeleteBuffers(GLsizei(buffers.size()), buffers.data());
+      if (sync_buffer)
+        DeleteBuffers(1, &sync_buffer);
+      for (const auto &family : fragment_programs) {
+        if (family.scalar)
+          DeleteProgram(family.scalar);
+        if (family.batch)
+          DeleteProgram(family.batch);
+      }
+      if (xfb_program)
+        DeleteProgram(xfb_program);
+      if (clear_program)
+        DeleteProgram(clear_program);
+      if (texture_copy_program)
+        DeleteProgram(texture_copy_program);
+      if (sync_program)
+        DeleteProgram(sync_program);
     }
-    if (xfb_program)
-      DeleteProgram(xfb_program);
-    if (clear_program)
-      DeleteProgram(clear_program);
-    if (texture_copy_program)
-      DeleteProgram(texture_copy_program);
-    if (sync_program)
-      DeleteProgram(sync_program);
     SDL_GL_DeleteContext(context);
     SDL_DestroyWindow(window);
     if (initialized)
@@ -528,6 +768,7 @@ struct HardwareRenderer::Impl {
 };
 
 HardwareRenderer::HardwareRenderer(Memory &memory, std::span<const u8> texture_memory) {
+  const HostFloatEnvironment construction_environment;
   if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0)
     throw HardwareUnavailable(std::string("Hardware video initialization failed: ") +
                               SDL_GetError());
@@ -852,7 +1093,16 @@ bool HardwareRenderer::draw(const RasterWork &work) {
   data[index++] = impl_->samples_texture ? 1 : 0;
   data[index] = std::bit_cast<u32>(work.viewport_width);
   const u64 area = u64(work.right - work.left) * u64(work.bottom - work.top);
-  if (area > 4096) {
+  if (impl_->ordered_raster) {
+    if (!impl_->queued.empty() && area > Impl::ordered_area_capacity - impl_->ordered_queued_area)
+      impl_->flush_batch();
+    if (impl_->queued.empty())
+      impl_->queued_family = impl_->active_family;
+    impl_->queued.push_back(data);
+    impl_->ordered_queued_area += area;
+    if (impl_->queued.size() == Impl::ordered_packet_capacity)
+      impl_->flush_batch();
+  } else if (area > 4096) {
     impl_->flush_batch();
     impl_->dispatch_fragment(impl_->active_family, false, [&] {
       impl_->BindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->buffers[3]);
@@ -1117,6 +1367,10 @@ const std::string &HardwareRenderer::device() const {
   return impl_->device;
 }
 
+bool HardwareRenderer::uses_ordered_raster() const noexcept {
+  return impl_->ordered_raster;
+}
+
 const std::string &HardwareRenderer::fallback_reason() const {
   return impl_->fallback;
 }
@@ -1159,6 +1413,10 @@ HardwareStats HardwareRenderer::synchronize(std::span<u32>, std::span<u32>, Frag
 
 const std::string &HardwareRenderer::device() const {
   return impl_->device;
+}
+
+bool HardwareRenderer::uses_ordered_raster() const noexcept {
+  return false;
 }
 
 const std::string &HardwareRenderer::fallback_reason() const {

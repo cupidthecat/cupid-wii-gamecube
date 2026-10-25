@@ -1003,3 +1003,34 @@ dispatches fall from 1,759,712 to 1,629,306. Hardware fragments remain
 391.36 seconds on a shared host; it is not an isolated FPS measurement or a
 completed-level result. Exact commands, source snapshots and retained controls
 remain under `.cache/gpu-mid-batch-20261025-v1/`.
+
+## Ordered fragment rasterization
+
+The OpenGL backend can submit sparse and large rectangles through instanced
+bounding quads and fragment interlock. The shared shader still performs the
+guest coverage, depth, TEV, blend and retained-state operations. Native batches
+hold at most 256 rectangles and 1,048,576 summed bounding pixels.
+
+A frozen native CLI reaches 2,400 Galaxy fields with CPU/RAM hashes, every native
+CPU counter, fragments, fallbacks, raw frame bytes and persisted files matching
+the preceding compute snapshot. Fragment submissions fall from 1,629,306 to
+74,840; other copy and synchronization compute programs remain in use.
+Its 351.94-second run and the earlier 391.36-second capture have different
+concurrent workloads. Their difference does not isolate this change's cost.
+
+A later four-child A/B/B/A comparison uses the corrected automatic-selection
+runtime, 1,200 Galaxy fields, fresh copies of the same seed and ordinary replay,
+and disabled host audio. All four guest-state, native-counter, frame and storage
+comparisons pass. Times in execution order are 97.4213 seconds for compute,
+100.0329 and 93.1655 for ordered rasterization, then 104.8860 for compute.
+The candidate/baseline median ratio is 0.955. The first pair is 2.68 percent
+slower, and the reverse pair is faster. Other CPU work and the separate gameplay
+observer remain active; these are shared-host menu samples, not sustained
+gameplay FPS or an isolated speedup.
+
+That timing snapshot precedes the initialization error-classification guard;
+its raster arithmetic and submission policy are unchanged by the guard.
+
+Raw samples and their exact source/binary identities remain in
+`.cache/gpu-ordered-auto-20261025-v2/balanced-v1/`; the earlier 2,400-field
+comparison is in `.cache/gpu-native-raster-galaxy2400-20261025-v1/`.

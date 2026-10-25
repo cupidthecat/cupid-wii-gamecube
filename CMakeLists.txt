@@ -210,14 +210,16 @@ if(CUPID_BUILD_TESTS)
       add_test(NAME hardware_renderer COMMAND cupid_hardware_renderer_tests --require-device --skip-program-cache-checks)
       add_test(NAME hardware_renderer_program_cache COMMAND cupid_hardware_renderer_tests --require-device --program-cache-only)
       add_test(NAME hardware_renderer_batch COMMAND cupid_hardware_renderer_tests --require-device --mid-batch-only)
+      add_test(NAME hardware_renderer_ordered COMMAND cupid_hardware_renderer_tests --require-device --native-raster-only)
     else()
       add_test(NAME hardware_renderer COMMAND cupid_hardware_renderer_tests --skip-program-cache-checks)
       add_test(NAME hardware_renderer_program_cache COMMAND cupid_hardware_renderer_tests --program-cache-only)
       add_test(NAME hardware_renderer_batch COMMAND cupid_hardware_renderer_tests --mid-batch-only)
+      add_test(NAME hardware_renderer_ordered COMMAND cupid_hardware_renderer_tests --native-raster-only)
     endif()
     # Keep every check, with program-cache compilation in its own bounded process.
     # Direct invocation without selectors also includes program-cache checks.
-    set_tests_properties(hardware_renderer hardware_renderer_program_cache hardware_renderer_batch PROPERTIES TIMEOUT 600 LABELS "public;backend;graphics"
+    set_tests_properties(hardware_renderer hardware_renderer_program_cache hardware_renderer_batch hardware_renderer_ordered PROPERTIES TIMEOUT 600 LABELS "public;backend;graphics"
       SKIP_RETURN_CODE 77)
     add_executable(cupid_gpu_texture_copy_tests tests/gpu_texture_copy_tests.cpp)
     target_include_directories(cupid_gpu_texture_copy_tests PRIVATE tests)
@@ -270,6 +272,10 @@ if(CUPID_BUILD_TESTS)
     add_test(NAME hardware_renderer_batch COMMAND "${CMAKE_COMMAND}" -E echo
       "SKIP: hardware batch rendering is excluded from this headless build")
     set_tests_properties(hardware_renderer_batch PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP:"
+      LABELS "public;backend;graphics")
+    add_test(NAME hardware_renderer_ordered COMMAND "${CMAKE_COMMAND}" -E echo
+      "SKIP: ordered hardware rendering is excluded from this headless build")
+    set_tests_properties(hardware_renderer_ordered PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP:"
       LABELS "public;backend;graphics")
     add_test(NAME guest_video_hardware COMMAND "${CMAKE_COMMAND}" -E echo
       "SKIP: hardware guest video is excluded from this headless build")

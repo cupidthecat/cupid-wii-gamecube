@@ -39,6 +39,7 @@ public:
   void write_efb(u32 address, u32 value);
   void set_hardware_rendering(bool enabled);
   std::string hardware_device() const;
+  bool hardware_uses_ordered_raster() const noexcept;
   HardwareStats hardware_stats() const;
   std::string hardware_fallback_reason() const;
   void write(u32 address, u32 value, unsigned width);

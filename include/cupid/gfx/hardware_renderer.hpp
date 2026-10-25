@@ -40,6 +40,7 @@ public:
   HardwareStats synchronize(std::span<u32> colors, std::span<u32> depths,
                             FragmentShader *shader = nullptr);
   const std::string &device() const;
+  bool uses_ordered_raster() const noexcept;
   const std::string &fallback_reason() const;
 
 private:

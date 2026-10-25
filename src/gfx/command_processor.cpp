@@ -80,6 +80,10 @@ std::string CommandProcessor::hardware_device() const {
   return hardware_ ? hardware_->device() : std::string{};
 }
 
+bool CommandProcessor::hardware_uses_ordered_raster() const noexcept {
+  return hardware_ && hardware_->uses_ordered_raster();
+}
+
 HardwareStats CommandProcessor::hardware_stats() const {
   synchronize_hardware();
   auto result = hardware_ ? hardware_->synchronize(colors_, depths_) : HardwareStats{};

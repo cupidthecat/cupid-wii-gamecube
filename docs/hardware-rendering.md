@@ -1,6 +1,6 @@
 # Hardware rendering
 
-`--graphics opengl` selects the OpenGL 4.3 compute renderer. The default
+`--graphics opengl` selects the OpenGL 4.3 renderer. The default
 `--graphics software` uses the validated CPU renderer. Both choices render the
 guest's GX commands into the same 640 by 528 EFB. The hardware backend uses a
 hidden SDL OpenGL context, so it also works with `--headless` when the host has a
@@ -13,11 +13,31 @@ when choosing the OpenGL device. The active renderer's device string records
 the selected adapter.
 
 CPU code decodes vertices, transforms and lights them, assembles primitives,
-clips them, applies culling, and prepares interpolation planes. Compute shaders
+clips them, applies culling, and prepares interpolation planes. GPU programs
 then evaluate fixed-point triangle coverage and fragment inputs, run TEV and
 alpha/depth tests, blend the result, and store raw color/depth EFB bits. Triangle
 dispatches have storage barriers to preserve GX command order. This backend
 does not yet move vertex transforms or primitive setup onto the GPU.
+
+On devices with fragment interlock and sufficient shader-storage capacity,
+automatic mode attempts instanced bounding rectangles and ordered fragment
+programs. Ordinary initialization declines retain compute rendering. Coverage, TEV,
+depth, blending and retained-state arithmetic use the shared batch shader.
+The owned framebuffer is single-sample; each pixel's EFB and retained writes
+remain inside its ordered critical section. State, texture, copy, clear,
+bounding-box and synchronization boundaries retain their existing ordering.
+
+A native submission holds at most 256 rectangles and 1,048,576 summed bounding
+pixels. The global 4,094-rectangle ordinal bound remains unchanged. Devices
+without the required capabilities use compute dispatch, including its
+sixteen-packet, union-area and occupancy limits. Both native shader families
+are validated before guest work can queue.
+
+For backend comparisons, `CUPID_GX_ORDERED_RASTER=0` requires compute and
+`CUPID_GX_ORDERED_RASTER=1` requires ordered rasterization. The default value
+is `auto`; unsupported required mode and invalid values report an error.
+This selection applies within `--graphics opengl`; the CLI's software-rendering
+default is unchanged.
 
 ## Coverage and fallback
 

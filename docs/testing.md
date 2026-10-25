@@ -1748,3 +1748,50 @@ change. Both exit normally at the frame limit. This is a bounded menu comparison
 with disabled host audio, not completed gameplay or sustained FPS qualification.
 The final receipt is
 `.cache/gpu-mid-batch-20261025-v1/integrated-galaxy-fields-v1/receipt.json`.
+
+## Ordered fragment backend and context initialization
+
+The guarded `hardware_renderer_ordered` suite requires actual vertex and
+fragment stages with no fragment compute stage. It compares 40 direct sequences
+and sixteen command streams against complete CPU EFB/depth, retained-state and
+RAM results. Sparse/full extents, 255/256/257 packets, work-area limits, state
+changes, copies, clears, uploads and bounding-box cuts retain explicit checks.
+Both existing shader families keep their original arithmetic.
+
+Windows MSVC Release/LTO passes nine selected automatic-mode graphics suites
+and eight forced-compute suites on NVIDIA. Required ordered mode passes the
+authored suite; forced compute explicitly skips ordered-only coverage, and
+invalid selection fails. Intel ARB interlock passes the authored checks and
+seven graphics suites in a separately frozen derivative whose only changes
+are the two adapter-preference export values. These are component results.
+
+GCC/Mesa passes eight graphics/guest-video suites for automatic compute
+fallback. Ordered-only coverage explicitly skips on that driver; forcing the
+unsupported mode reports an error. The constructor-scope repair also passes
+normal projection, 112 real-context resource/fallback cases and 32 required or
+invalid-mode exception cases. All 144 preserve the caller's full floating-point
+state. The prior failure added SSE `FE_INEXACT`, including in no-fault controls;
+the new outer scope covers context creation and failure cleanup.
+
+Both normal Windows CLI startup prefixes preserve guest state, native CPU
+diagnostics, raw frames and stored files against the preceding compute core.
+The Sunshine bound is three billion attempts/320 fields; Galaxy uses one
+billion/76 fields. The balanced 1,200-field Galaxy comparison adds four exact
+endpoint comparisons. These bounds do not establish completed levels or
+sustained gameplay speed.
+
+Frozen source, failed attempts and receipts remain under
+`.cache/gpu-native-raster-20261025-v1/`,
+`.cache/gpu-native-raster-prefix-20261025-v1/` and
+`.cache/gpu-ordered-auto-20261025-v2/`. Injected resource failures are
+separate from physical driver memory exhaustion and context loss.
+
+Initialization also drains and classifies pending OpenGL errors before optional
+work, after eager compilation and around failure cleanup. Out-of-memory and
+context-loss errors propagate to context destruction; they do not authorize
+continued compute rendering. Capability, ordinary injected errors and optional
+CPU allocation declines retain their tested fallback path. Focused Linux checks
+cover 1,365 classifier queues, 112 real-context resource/FPU cases and 208
+synthetic-error constructor cases. No physical driver exhaustion or reset is
+induced. Their sealed source and instrumentation remain in
+`.cache/gpu-ordered-auto-20261025-v3/`.

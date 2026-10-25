@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "../src/gfx/hardware_ordered_raster.hpp"
 #include "../src/gfx/hardware_program.hpp"
 #include "../src/gfx/hardware_projection.hpp"
 #include "cupid/core/host_float_environment.hpp"
@@ -32,6 +33,12 @@
 
 namespace {
 using namespace cupid;
+
+bool ordered_raster_active = false;
+
+bool native_ordered_raster_active() {
+  return ordered_raster_active;
+}
 
 // One epoch for every renderer_stage template instantiation and fixture construction.
 std::chrono::steady_clock::time_point renderer_run_started;
@@ -445,7 +452,10 @@ void wide_depth_origin_checks() {
   const std::array<GLuint, 4> ids{programs[0][0], programs[0][1], programs[1][0], programs[1][1]};
   for (unsigned i = 0; i < ids.size(); ++i)
     for (unsigned j = i + 1; j < ids.size(); ++j)
-      CHECK(ids[i] != ids[j]);
+      if (native_ordered_raster_active() && i / 2 == j / 2)
+        CHECK(ids[i] == ids[j]);
+      else
+        CHECK(ids[i] != ids[j]);
   CHECK(cases == 24);
   std::cout << "Verified authored wide depth origins through CPU and four GPU raster programs\n";
 }
@@ -653,7 +663,10 @@ void division_fragment_checks(bool projection, bool fog) {
   const std::array<GLuint, 4> ids{programs[0][0], programs[0][1], programs[1][0], programs[1][1]};
   for (unsigned i = 0; i < ids.size(); ++i)
     for (unsigned j = i + 1; j < ids.size(); ++j)
-      CHECK(ids[i] != ids[j]);
+      if (native_ordered_raster_active() && i / 2 == j / 2)
+        CHECK(ids[i] == ids[j]);
+      else
+        CHECK(ids[i] != ids[j]);
   CHECK(cases == 12 * ((projection ? 1u : 0u) + (fog ? 2u : 0u)));
   std::cout << "Verified " << cases
             << " analytic unequal-division projection/fog draws across four raster programs\n";
@@ -2934,8 +2947,11 @@ void zero_family_lifetime_checks() {
   const std::array<GLuint, 4> ids{programs[0][0], programs[0][1], programs[1][0], programs[1][1]};
   for (unsigned i = 0; i < ids.size(); ++i)
     for (unsigned j = i + 1; j < ids.size(); ++j)
-      CHECK(ids[i] != ids[j]);
-  std::cout << "Verified XFB/clear before raster use and reuse of four lazy scalar/batch "
+      if (native_ordered_raster_active() && i / 2 == j / 2)
+        CHECK(ids[i] == ids[j]);
+      else
+        CHECK(ids[i] != ids[j]);
+  std::cout << "Verified XFB/clear before raster use and reuse of lazy scalar/batch "
                "program IDs across zero/nonzero indirect families\n";
 }
 
@@ -3277,7 +3293,7 @@ void logical_sequence_cap_checks() {
   CHECK(stats.fragments == 4094 * per_triangle);
   CHECK(total - stats.fragments == per_triangle);
   CHECK(stats.fallback_rectangles == 1);
-  CHECK(stats.dispatches == 256);
+  CHECK(stats.dispatches == (native_ordered_raster_active() ? 16u : 256u));
   for (unsigned y = 0; y < 528; ++y)
     for (unsigned x = 0; x < 640; ++x) {
       CHECK(software->graphics.color(x, y) == hardware->graphics.color(x, y));
@@ -3401,7 +3417,8 @@ void empty_coverage_checks() {
     CHECK(renderer.draw(work));
   }
   stats = renderer.synchronize(gpu_colors, gpu_depths, &shader);
-  CHECK(stats.dispatches == 7 && stats.fragments == 6 && stats.fallback_rectangles == 0);
+  CHECK(stats.dispatches == (native_ordered_raster_active() ? 2u : 7u) && stats.fragments == 6 &&
+        stats.fallback_rectangles == 0);
   CHECK(stats.left == 0 && stats.right == 639 && stats.top == 8 && stats.bottom == 455);
   CHECK(cpu_colors == gpu_colors && cpu_depths == gpu_depths);
   CHECK(shader.texture_state() == retained);
@@ -3433,7 +3450,8 @@ void empty_coverage_checks() {
   stats = renderer.synchronize(gpu_colors, gpu_depths, &shader);
   cpu_colors[43 * 640 + 41] = sampled_color;
   cpu_depths[43 * 640 + 41] = depth;
-  CHECK(stats.dispatches == 8 && stats.fragments == 1 && stats.fallback_rectangles == 0);
+  CHECK(stats.dispatches == (native_ordered_raster_active() ? 3u : 8u) && stats.fragments == 1 &&
+        stats.fallback_rectangles == 0);
   CHECK(cpu_colors == gpu_colors && cpu_depths == gpu_depths);
   CHECK(shader.texture_state().texture != gfx::Color{});
   CHECK(shader.texture_state() == textured_software.texture_state());
@@ -3442,7 +3460,8 @@ void empty_coverage_checks() {
     CHECK(renderer.draw(work));
   }
   stats = renderer.synchronize(gpu_colors, gpu_depths, &shader);
-  CHECK(stats.dispatches == 8 && stats.fragments == 0 && stats.fallback_rectangles == 0);
+  CHECK(stats.dispatches == (native_ordered_raster_active() ? 3u : 8u) && stats.fragments == 0 &&
+        stats.fallback_rectangles == 0);
   CHECK(cpu_colors == gpu_colors && cpu_depths == gpu_depths);
   CHECK(shader.texture_state() == textured_software.texture_state());
   configure(captured[0]);
@@ -3452,7 +3471,8 @@ void empty_coverage_checks() {
   stats = renderer.synchronize(gpu_colors, gpu_depths, &shader);
   cpu_colors[226 * 640 + 639] = sampled_color;
   cpu_depths[226 * 640 + 639] = depth;
-  CHECK(stats.dispatches == 9 && stats.fragments == 1 && stats.fallback_rectangles == 0);
+  CHECK(stats.dispatches == (native_ordered_raster_active() ? 4u : 9u) && stats.fragments == 1 &&
+        stats.fallback_rectangles == 0);
   CHECK(cpu_colors == gpu_colors && cpu_depths == gpu_depths);
   CHECK(shader.texture_state() == textured_software.texture_state());
   std::cout
@@ -3503,6 +3523,7 @@ void benchmark(Fixture &software, Fixture &hardware) {
 #include "hardware_batch_interaction_checks.hpp"
 #include "hardware_batch_support.hpp"
 #include "hardware_mid_batch_checks.hpp"
+#include "hardware_native_raster_checks.hpp"
 
 int main(int argc, char **argv) {
   renderer_run_started = std::chrono::steady_clock::now();
@@ -3512,6 +3533,7 @@ int main(int argc, char **argv) {
   std::cout << "[renderer] returned fixture construction\n";
   renderer_stage_returned("fixture construction", fixture_started);
   bool mid_batch_only = false;
+  bool native_raster_only = false;
   bool required = false, measure = false, fog_only = false, texture_cache_only = false,
        xfb_only = false, efb_copy_only = false, bbox_only = false, projection_only = false,
        projection_staging_only = false, state_only = false, fixed_lod_only = false,
@@ -3521,6 +3543,7 @@ int main(int argc, char **argv) {
        projection_admission_only = false, early_empty_only = false, batch_interaction_only = false;
   for (int i = 1; i < argc; ++i) {
     mid_batch_only |= std::strcmp(argv[i], "--mid-batch-only") == 0;
+    native_raster_only |= std::strcmp(argv[i], "--native-raster-only") == 0;
     program_cache_only |= std::strcmp(argv[i], "--program-cache-only") == 0;
     skip_program_cache_checks |= std::strcmp(argv[i], "--skip-program-cache-checks") == 0;
     required |= std::strcmp(argv[i], "--require-device") == 0;
@@ -3548,6 +3571,11 @@ int main(int argc, char **argv) {
     renderer_stage("backend initialization",
                    [&] { hardware.graphics.set_hardware_rendering(true); });
     std::cout << "[renderer] device=" << hardware.graphics.hardware_device() << '\n';
+    ordered_raster_active = hardware.graphics.hardware_uses_ordered_raster();
+    if (native_raster_only && !ordered_raster_active) {
+      std::cerr << "Ordered raster unavailable on this device; compute remains active\n";
+      return 77;
+    }
   } catch (const gfx::HardwareUnavailable &error) {
     std::cerr << "Hardware backend unavailable: " << error.what() << '\n';
     return required ? 1 : 77;
@@ -3577,6 +3605,10 @@ int main(int argc, char **argv) {
       renderer_stage("batch_interaction_checks",
                      [&] { hardware_batch_test::interaction::checks(bounded_projection); });
     };
+    if (native_raster_only) {
+      hardware_native_raster_test::checks();
+      return;
+    }
     if (mid_batch_only) {
       hardware_mid_batch_test::checks();
       return;

@@ -463,3 +463,26 @@ verification remain under
 `.cache/native-game-observer-20261025/route-galaxy-pc-005-001/`. The observer uses
 a frozen core and disabled host audio. It does not qualify the subsequent
 medium-batch change, endpoint audio, completed levels or gameplay speed.
+
+## Galaxy independent file reopening and festival movement
+
+A separately frozen observer built from `cf383f2` starts with copies of the
+eight persisted files from the preceding Galaxy route. Ordinary Remote input
+reopens the existing Mario slot, chooses Play and advances the storybook.
+This establishes independent startup-file recognition; it does not restore
+saved level progress.
+
+The field-12,107 capture shows Mario at the initial festival plaza. Ordinary
+Nunchuk input holds both stick axes at 224 from fields 12,227 through 12,407,
+then returns them to neutral. The intervening capture shows running and dust;
+the field-12,407 image places Mario on the grass beside the wall. A later
+ordinary reverse-stick input returns him to the flower bed. These captures
+demonstrate bounded controllable 3D movement on this source snapshot.
+
+Every accepted capture through this observation preserves the checked CPU
+members, RAM hash and video counters, with no replay rejection or reported
+memory error. The input versions and inspected raw frames remain under
+`.cache/native-game-observer-20261025/route-galaxy-cf-restart-001/`.
+This is a live-route observation with disabled host audio, not a completed
+route replay, completed level or speed measurement. It precedes the ordered
+fragment backend and does not qualify that later source for festival gameplay.

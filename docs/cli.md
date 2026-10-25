@@ -18,7 +18,7 @@ path. Hosts without this code generator report an explicit error. The option
 also applies to `--self-test`, which returns skip code 77 on an unsupported
 host. It does not establish full-speed execution.
 
-`--graphics software` selects CPU rendering. `--graphics opengl` selects the OpenGL 4.3 compute path, with CPU execution for graphics states it cannot yet handle. A hidden context runs the graphics commands; `--headless` disables the separate game-output window. Both graphics and SDL output require a build with SDL support. A headless-only build supports software graphics. See [hardware rendering](hardware-rendering.md) for coverage and validation.
+`--graphics software` selects CPU rendering. `--graphics opengl` selects OpenGL 4.3 rendering, with CPU execution for graphics states it cannot yet handle. Automatic mode attempts ordered fragment rasterization on capable devices and retains compute when optional initialization declines. A hidden context runs the graphics commands; `--headless` disables the separate game-output window. Both graphics and SDL output require a build with SDL support. A headless-only build supports software graphics. See [hardware rendering](hardware-rendering.md) for coverage and validation.
 
 `--audio sdl` resamples and mixes guest PCM into a 48 kHz stereo stream; `--audio none` leaves host audio disabled. `--remote-speakers on` includes decoded Remote packets and requires SDL audio; the default is `off`. Headless runs can enable audio. See [host audio](host-audio.md) for buffering and verified scope.
 

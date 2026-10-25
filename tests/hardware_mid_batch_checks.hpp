@@ -14,7 +14,8 @@ struct Sequence {
   Cut cut = Cut::None;
 };
 
-void direct_sequence(const Sequence &sequence, unsigned family) {
+void direct_sequence(const Sequence &sequence, unsigned family,
+                     bool explicit_native_count = false) {
   const HostFloatEnvironment environment;
   Memory memory{Console::GameCube}, reference_memory{Console::GameCube};
   std::vector<u8> tmem(1024 * 1024), reference_tmem(tmem.size());
@@ -115,12 +116,17 @@ void direct_sequence(const Sequence &sequence, unsigned family) {
         hardware_batch_test::projection::shade(work, 1, reference, expected, expected_depths);
   }
   const auto stats = renderer.synchronize(actual, actual_depths, &retained);
-  if (stats.dispatches != sequence.dispatches || actual != expected ||
+  // Legacy sequences all fit the native packet/area budgets. Their state cuts
+  // remain two submissions; compute retains each original scheduling count.
+  const u64 wanted_dispatches = native_ordered_raster_active() && !explicit_native_count
+                                    ? (sequence.cut == Cut::None ? 1 : 2)
+                                    : sequence.dispatches;
+  if (stats.dispatches != wanted_dispatches || actual != expected ||
       actual_depths != expected_depths || retained.texture_state() != reference.texture_state())
     throw std::runtime_error(std::string("Mid-batch case ") + sequence.name +
                              " family=" + std::to_string(family) +
                              " dispatches=" + std::to_string(stats.dispatches) +
-                             " wanted=" + std::to_string(sequence.dispatches));
+                             " wanted=" + std::to_string(wanted_dispatches));
   CHECK(stats.fragments == fragments && stats.fallback_rectangles == 0);
   compare_ram();
   std::cout << "[mid-batch] " << sequence.name << " family=" << family

@@ -1,6 +1,6 @@
 # cupid-wii-gamecube
 
-cupid-wii-gamecube is a C++20 GameCube and Wii emulator for Windows and Linux. Its CLI runs an integrated interpreter, devices, disc reader, software and experimental OpenGL compute graphics, and audio runtime. A minimal SDL window displays guest output.
+cupid-wii-gamecube is a C++20 GameCube and Wii emulator for Windows and Linux. Its CLI runs an integrated interpreter, devices, disc reader, software and experimental OpenGL graphics, and audio runtime. A minimal SDL window displays guest output.
 
 Commercial gameplay is unfinished. Both supplied games reach file selection on Windows and Linux and generate nonzero PCM. Sunshine accepts menu controls and slot input; Galaxy accepts pointing and slot input, with guest-created data files and a complete native file-readback check. Controllable gameplay, complete save/load, commercial host playback and full speed remain unverified. See [compatibility](docs/compatibility.md) for conditions and [tests](docs/testing.md) for verified paths.
 

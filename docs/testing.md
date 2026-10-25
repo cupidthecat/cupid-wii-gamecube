@@ -1616,7 +1616,7 @@ declines and 24 valid large-origin/base-boundary cases. Depth/color/fog diagnost
 retain priority. An empty proof must preserve complete EFB/state and queued
 copy results; a covered neighbor must still obey the staged projection guard.
 
-The additional projection cases retain the CPU path for nonempty rational poles
+The additional projection cases retain the CPU path for unsafe sampled poles
 and staged underflow/overflow ranges. Proven empty coverage can finish before
 projection, with an exact scan capped at 256 positions.
 
@@ -1628,3 +1628,38 @@ available, and the separate GPU texture-copy target retains its 3,384 profiles.
 
 These are component assertions. Matched commercial prefixes and gameplay speed
 need separate runs with the selected complete core and identical inputs.
+
+## Packed native sequences and sampled projection
+
+The packed sequence cache passes the full MSVC Release/LTO public suite
+(68 tests) and the GCC Release suite with pinned dependencies (69 tests).
+Both configurations require the graphics device tests. Eighteen unconfigured
+private/reference cases remain explicit skips. The system-dependency GCC
+configuration retains its failed owned-server audio shutdown check; the pinned
+SDL build passes that same check without changing the test.
+
+The new register-body fixture compares 4,616 complete CPU states and authored
+RAM against ordinary interpreter execution. It covers 512 variable-length keys,
+reordered reuse, page boundaries, real byte exhaustion, stale entries and reset.
+Separate Linux linker wrappers check six allocation/protection failures,
+unchanged full State before fallback, safe recompilation and actual page
+permissions. Their 1,833 recorded events include no writable/executable request;
+the largest changed protection range is 8,192 bytes. These failure checks cover
+GCC components, not Windows failure injection or guest execution timing.
+
+The projection checks exercise 46 authored admission decisions under sixteen
+host floating-point environments, plus actual GPU color, depth, retained state,
+copy, clear and CPU handoffs. MSVC and GCC pass the complete required renderer
+suites. Clang 18 Debug `-O1` ASan/UBSan passes 22 selected CPU/runtime/environment
+tests with leak checking, and the required-device projection admission suite
+with driver leak checking disabled. Generated native code, assembly, shaders
+and external drivers remain outside sanitizer instrumentation.
+
+Eight native Windows startup children compare both supplied games in AB/BA
+order with copied storage and ordinary input. All guest report values, final
+frame SHA-256 values and stored files match, excluding the declared compilation
+and hardware-work diagnostics. Sunshine reaches 320 fields within three billion
+attempts; Galaxy reaches 76 fields within one billion. These bounds establish
+startup agreement, not playable levels, endpoint audio or sustained full speed.
+Exact commands, manifests, logs and terminal receipts remain under
+`.cache/native-blocks-20261025/` and `.cache/projection-20261025/`.

@@ -26,10 +26,20 @@ already resident instruction-cache line. The interpreter admits groups of two
 or more; native execution requires four. Native sequences concatenate validated
 leaf operations into one host call. Repeatedly overwritten destinations can
 remain in a volatile host register between operations; independent destinations
-retain their ordinary stores. Their separate cache has 256 bounded slots
-and replaces old sequences without exhausting the individual-instruction cache.
-The state dump reports compilation, execution, cache-hit and replacement counts
-for these sequences.
+retain their ordinary stores. Their separate cache packs 16-byte-aligned bodies
+into a 512 KiB byte budget by default. Exact fetched instruction words identify
+each body. A last-entry check and 256 dispatch hints accelerate lookup; a hint
+collision leaves the compiled body available in the backing map. Nonempty,
+aligned bodies bound the number of map entries as well as executable storage.
+
+Only actual byte exhaustion retires the sequence cache. Every lookup pointer is
+cleared before storage is reused, and allocation or protection failure returns
+to ordinary execution without changing guest registers. Compilation changes
+permissions only on the host pages touched by the new body; writable pages are
+never executable. The individual-instruction cache retains its separate bound.
+The state dump reports compilation, execution, cache-hit and replacement counts.
+`native_block_cache_entries` can exceed 256; `native_block_replacements` counts
+compiled entries retired when the byte arena fills.
 
 Scalar groups also admit one-cycle byte, halfword and word loads/stores with
 integer neighbors and valid branches. Indexed integer and floating transfers

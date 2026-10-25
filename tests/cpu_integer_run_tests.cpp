@@ -442,11 +442,13 @@ void bounded_native_sequence_tests() {
       CHECK(separate.execute(baseline, word));
     CHECK(native.execute_sequence(state, words));
     equal_state(state, baseline);
-    CHECK(native.statistics().block_cache_entries == 1);
+    CHECK(native.statistics().block_cache_entries >= 1 &&
+          native.statistics().block_cache_entries <= 128);
     CHECK(native.statistics().block_executable_bytes <= 65536);
     CHECK(native.statistics().block_compilations == sample + 1);
   }
-  CHECK(native.statistics().block_replacements == 99);
+  CHECK(native.statistics().block_replacements > 0 && native.statistics().block_replacements < 99);
+  CHECK(native.statistics().block_replacements + native.statistics().block_cache_entries == 100);
   const auto unchanged = state;
   constexpr std::array<u32, 9> too_many{};
   constexpr std::array<u32, 2> illegal{0x48000004, 0x38630001};

@@ -3,6 +3,7 @@
 #include "cupid/gfx/efb_copy.hpp"
 #include "cupid/gfx/xfb_copy.hpp"
 #include "hardware_batch.hpp"
+#include "hardware_projection.hpp"
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -826,7 +827,7 @@ bool HardwareRenderer::draw(const RasterWork &work) {
             std::max(std::abs(numerator.first), std::abs(numerator.second)) / minimum < 8388608.0f;
       }
     }
-    if (!safe) {
+    if (!safe && !detail::bounded_projection(work, impl_->texture_count)) {
       ++impl_->fallbacks;
       impl_->fallback = "Projected texture coordinate range requires the CPU fragment path";
       return false;

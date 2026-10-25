@@ -897,3 +897,45 @@ share the host with correctness work and have no isolated speed interpretation.
 The receipts, fixed schedules and all control costs remain in
 `.cache/cpu-bundle-05175df-20261024/` and
 `.cache/integrated-progress-20261024/cpu-bundle-*/`.
+
+## Packed sequence storage and discrete projection
+
+The native sequence cache retains exact opcode-content keys until its byte
+budget fills. Dispatch collisions no longer retire compiled bodies, and code
+writes change protection only on touched host pages. A frozen MSVC Release/LTO
+comparison against `2d5bcea` runs 324 component children across both consoles,
+short/mixed/heavy sequences, unchanged leaf controls and 1 to 8,192 keys.
+Every paired complete State and guard image matches. At 257 keys, warm sequences
+reuse their compiled bodies instead of recompiling on each sweep.
+
+A further 192 children use fixed logical-processor affinity and eight million
+hot calls each for 1, 64 and 256 keys. Results retain costs: mixed 256-key median
+paired candidate/baseline ratios are about 1.165 on both consoles, while heavy
+sequence controls improve. Other controls vary substantially. All cold, hot,
+process and state records remain under
+`.cache/native-blocks-20261025/timing-v1/` and `timing-controls-v2/`.
+Neither component schedule establishes a uniform gain or commercial-game FPS.
+
+The sampled projection guard can retain small draws whose continuous coordinate
+range crosses a pole between actual raster samples. Six matched MSVC processes
+run in AB/BA/AB order on NVIDIA RTX 2000 Ada. Each profile retains its first
+draw and three warm 128-iteration samples. Every full color/depth buffer matches
+ordinary software command processing, and all paired frame hashes and guest
+fragment counts match.
+
+| Command profile | Earlier warm median seconds | Sampled guard warm median seconds |
+| --- | ---: | ---: |
+| Crossing only | 0.0392574 | 0.0030610 |
+| Safe/crossing alternation | 0.1976680 | 0.0053421 |
+| Coarse-safe control | 0.0042604 | 0.0048605 |
+| Quad-cap decline control | 0.1865590 | 0.2009820 |
+| Extreme staged decline control | 0.2022980 | 0.1898370 |
+
+The final safe/crossing sample records 385 full EFB readbacks earlier and four
+with sampled admission. The coarse-safe and quad-cap controls retain their
+slower medians. Complete process costs include cold initialization and full
+buffer comparisons outside the timed submission interval. Builds, sanitizer
+checks and longer game runs share the host; call durations include driver work
+and waits. Exact commands, frozen libraries, all samples and terminal receipts
+remain under `.cache/projection-20261025/timing-v1/`. These component results
+do not establish sustained gameplay speed.

@@ -3,6 +3,7 @@
 #include "test_support.hpp"
 #include <array>
 #include <iostream>
+#include <span>
 #include <vector>
 
 using namespace cupid;
@@ -429,6 +430,137 @@ void rejected_hint_tests() {
         native.statistics().capacity_fallbacks == 0);
 }
 
+class SequencePair {
+public:
+  SequencePair(Console console, unsigned block_capacity)
+      : interpreter_(expected_memory_, console), native_(2, block_capacity) {
+    for (unsigned n = 0; n < actual_memory_.bytes.size(); ++n)
+      actual_memory_.bytes[n] = static_cast<u8>((n * 37u) ^ (n >> 7));
+    expected_memory_.bytes = actual_memory_.bytes;
+  }
+
+  void execute(std::span<const u32> words, unsigned pattern) {
+    CHECK(words.size() >= 2 && words.size() <= 8);
+    const State initial = seed(pattern & 7, (pattern & 8) != 0);
+    State actual = initial;
+    // Each short register-only sequence starts with fresh hidden clock phases.
+    // The caller, rather than the emitted body, owns fetch and retirement.
+    interpreter_.reset();
+    interpreter_.state() = initial;
+    for (unsigned n = 0; n < words.size(); ++n) {
+      actual_memory_.write32(initial.pc + n * 4, words[n]);
+      expected_memory_.write32(initial.pc + n * 4, words[n]);
+    }
+    expected_memory_.records.clear();
+    for (unsigned n = 0; n < words.size(); ++n)
+      CHECK(interpreter_.step() == 1);
+    State expected = interpreter_.state();
+    expected.pc = initial.pc;
+    expected.last_pc = initial.last_pc;
+    expected.last_opcode = initial.last_opcode;
+    expected.cycles = initial.cycles;
+    expected.instructions = initial.instructions;
+    expected.timebase = initial.timebase;
+    CHECK(native_.execute_sequence(actual, words));
+    equal_state(actual, expected);
+    CHECK(actual_memory_.bytes == expected_memory_.bytes);
+    for (const auto &record : expected_memory_.records)
+      CHECK(record[0] <= 1); // The independent interpreter only fetched code.
+  }
+
+  NativeInteger &native() {
+    return native_;
+  }
+
+private:
+  RecordedMemory actual_memory_, expected_memory_;
+  Interpreter interpreter_;
+  NativeInteger native_;
+};
+
+std::array<u32, 8> sequence_words(unsigned sample) {
+  return {immediate(14, 3, 3, sample + 1),        extended(10, 4, 3, 4, true, (sample & 1) != 0),
+          immediate(26, 4, 4, sample ^ 0x8001),   extended(138, 5, 3, 4, true, true),
+          extended(136, 3, 5, 3, true, true),     immediate(11, 0, 3, sample ^ 0xff00),
+          extended(824, 4, 3, sample & 31, true), immediate(24, 4, 5, sample ^ 0x1234)};
+}
+
+void sequence_retention_tests() {
+  // More keys than the dispatch table can retain must still reuse code whose
+  // packed bodies fit the arena. Vary lengths to cross host-page boundaries.
+  constexpr unsigned count = 512;
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    SequencePair pair(console, 256);
+    for (unsigned n = 0; n < count; ++n) {
+      const auto words = sequence_words(n);
+      pair.execute(std::span(words).first(2 + n % 7), n);
+      const auto statistics = pair.native().statistics();
+      CHECK(statistics.block_compilations == n + 1);
+      CHECK(statistics.block_cache_entries == n + 1);
+      CHECK(statistics.block_replacements == 0);
+      CHECK(statistics.block_executable_bytes <= 256 * 2048);
+    }
+    const auto warmed = pair.native().statistics();
+    for (unsigned sweep = 0; sweep < 3; ++sweep) {
+      for (unsigned index = 0; index < count; ++index) {
+        const unsigned n = sweep & 1 ? count - index - 1 : (index + 257) % count;
+        const auto words = sequence_words(n);
+        pair.execute(std::span(words).first(2 + n % 7), n + sweep * count);
+      }
+    }
+    const auto repeated = pair.native().statistics();
+    CHECK(repeated.block_compilations == warmed.block_compilations);
+    CHECK(repeated.block_cache_entries == count);
+    CHECK(repeated.block_replacements == 0);
+    CHECK(repeated.block_cache_hits - warmed.block_cache_hits == 3 * count);
+    CHECK(repeated.block_executable_bytes == warmed.block_executable_bytes);
+    CHECK(repeated.cache_entries == 0); // Leaves have an independent budget.
+
+    pair.native().reset();
+    const auto cleared = pair.native().statistics();
+    CHECK(cleared.block_compilations == 0 && cleared.block_cache_entries == 0 &&
+          cleared.block_cache_hits == 0 && cleared.block_executable_bytes == 0);
+    const auto words = sequence_words(256);
+    pair.execute(std::span(words).first(2 + 256 % 7), 7);
+    CHECK(pair.native().statistics().block_compilations == 1 &&
+          pair.native().statistics().block_cache_hits == 0);
+  }
+}
+
+void sequence_arena_exhaustion_tests() {
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    SequencePair pair(console, 1);
+    for (unsigned n = 0; n < 128; ++n) {
+      const auto words = sequence_words(n);
+      pair.execute(words, n);
+      const auto statistics = pair.native().statistics();
+      CHECK(statistics.block_compilations == n + 1);
+      CHECK(statistics.block_compilation_failures == 0);
+      CHECK(statistics.block_cache_entries != 0 && statistics.block_cache_entries <= n + 1);
+      CHECK(statistics.block_executable_bytes <= 65536);
+      pair.execute(words, n + 128);
+      CHECK(pair.native().statistics().block_compilations == n + 1);
+    }
+    const auto exhausted = pair.native().statistics();
+    CHECK(exhausted.block_replacements != 0);
+    CHECK(exhausted.block_cache_entries < exhausted.block_compilations);
+    CHECK(exhausted.block_cache_hits == 128);
+
+    // A whole-arena retirement must discard old lookup entries before their
+    // backing bytes are reused, including entries from its first generation.
+    const auto first = sequence_words(0);
+    pair.execute(first, 1);
+    CHECK(pair.native().statistics().block_compilations == exhausted.block_compilations + 1);
+    pair.execute(first, 2);
+    CHECK(pair.native().statistics().block_compilations == exhausted.block_compilations + 1);
+    CHECK(pair.native().statistics().block_cache_hits == exhausted.block_cache_hits + 1);
+    pair.native().reset();
+    pair.execute(first, 3);
+    CHECK(pair.native().statistics().block_compilations == 1 &&
+          pair.native().statistics().block_cache_hits == 0);
+  }
+}
+
 void clock_monitor_and_fault_tests() {
   for (Console console : {Console::GameCube, Console::Wii}) {
     Pair pair(console);
@@ -493,6 +625,8 @@ int main() {
     fetch_and_fallback_tests();
     bounded_cache_tests();
     rejected_hint_tests();
+    sequence_retention_tests();
+    sequence_arena_exhaustion_tests();
     clock_monitor_and_fault_tests();
   });
 }

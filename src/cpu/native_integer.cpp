@@ -81,7 +81,8 @@ bool eligible(u32 opcode) {
 #if CUPID_NATIVE_X64
 static_assert(std::is_standard_layout_v<State> && std::is_trivially_copyable_v<State>);
 using Operation = void (*)(State *);
-constexpr std::size_t block_slot_bytes = 8 * 256;
+constexpr std::size_t maximum_sequence_bytes = 8 * 256;
+constexpr std::size_t sequence_alignment = 16;
 
 struct BlockKey {
   std::array<u32, 8> words{};
@@ -468,11 +469,11 @@ unsigned destination_register(u32 opcode) {
   return primary >= 20 ? (opcode >> 16) & 31 : (opcode >> 21) & 31;
 }
 
-Encoder<block_slot_bytes> encode_sequence(std::span<const u32> words) {
+Encoder<maximum_sequence_bytes> encode_sequence(std::span<const u32> words) {
   // R11 is volatile in both host ABIs and unused by instruction scratch work.
   // Sequences contain only register operations, so one dirty guest register can
   // remain here until replacement or return without an observable state gap.
-  Encoder<block_slot_bytes> code;
+  Encoder<maximum_sequence_bytes> code;
   code.entry();
   for (unsigned n = 0; n < words.size(); ++n) {
     const unsigned destination = destination_register(words[n]);
@@ -488,9 +489,12 @@ Encoder<block_slot_bytes> encode_sequence(std::span<const u32> words) {
   return code;
 }
 
+std::size_t page_size();
+
 class ExecutablePage {
 public:
-  explicit ExecutablePage(std::size_t size) : size_(size) {
+  explicit ExecutablePage(std::size_t size, std::size_t limit = 0)
+      : size_(size), limit_(limit ? limit : size), page_bytes_(page_size()) {
 #ifdef _WIN32
     memory_ =
         static_cast<u8 *>(VirtualAlloc(nullptr, size_, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
@@ -517,27 +521,39 @@ public:
   ExecutablePage(const ExecutablePage &) = delete;
   ExecutablePage &operator=(const ExecutablePage &) = delete;
 
-  bool fits(std::size_t bytes) const {
-    return bytes <= size_ - used_;
+  bool fits(std::size_t bytes, std::size_t alignment = 1) const {
+    const auto padding = (alignment - used_ % alignment) % alignment;
+    return padding <= limit_ - used_ && bytes <= limit_ - used_ - padding;
   }
 
-  Operation append(std::span<const u8> code) {
-    if (!fits(code.size()))
+  Operation append(std::span<const u8> code, std::size_t alignment = 1) {
+    if (!fits(code.size(), alignment))
       throw std::logic_error("Native code page capacity exceeded");
-    const auto operation = replace(used_, code);
-    used_ += code.size();
+    const auto offset = (used_ + alignment - 1) / alignment * alignment;
+    const auto operation = replace(offset, code);
+    used_ = offset + code.size();
     return operation;
   }
 
+  void rewind() noexcept {
+    used_ = 0;
+  }
+
+private:
   Operation replace(std::size_t offset, std::span<const u8> code) {
-    if (offset > size_ || code.size() > size_ - offset)
+    if (offset > limit_ || code.empty() || code.size() > limit_ - offset)
       throw std::logic_error("Native code replacement exceeds its arena bound");
     // Emitted operations make no calls. Compilation runs on the owning CPU
     // thread between operations, so an existing page is never executing here.
-    if (sealed_)
-      protect(false);
+    // Only touched pages change permissions. Unwritten pages start writable;
+    // earlier entries on other pages remain readable and executable.
+    const auto begin = offset / page_bytes_ * page_bytes_;
+    const auto end = (offset + code.size() + page_bytes_ - 1) / page_bytes_ * page_bytes_;
+    if (begin < sealed_bytes_)
+      protect(begin, std::min(end, sealed_bytes_) - begin, false);
     std::memcpy(memory_ + offset, code.data(), code.size());
-    protect(true);
+    protect(begin, end - begin, true);
+    sealed_bytes_ = std::max(sealed_bytes_, end);
 #ifdef _WIN32
     if (!FlushInstructionCache(GetCurrentProcess(), memory_ + offset, code.size()))
       throw std::system_error(static_cast<int>(GetLastError()), std::system_category(),
@@ -549,23 +565,21 @@ public:
     return reinterpret_cast<Operation>(memory_ + offset);
   }
 
-private:
-  void protect(bool executable) {
+  void protect(std::size_t offset, std::size_t bytes, bool executable) {
 #ifdef _WIN32
     DWORD previous = 0;
-    if (!VirtualProtect(memory_, size_, executable ? PAGE_EXECUTE_READ : PAGE_READWRITE, &previous))
+    if (!VirtualProtect(memory_ + offset, bytes, executable ? PAGE_EXECUTE_READ : PAGE_READWRITE,
+                        &previous))
       throw std::system_error(static_cast<int>(GetLastError()), std::system_category(),
                               "Native code page protection failed");
 #else
-    if (mprotect(memory_, size_, PROT_READ | (executable ? PROT_EXEC : PROT_WRITE)) != 0)
+    if (mprotect(memory_ + offset, bytes, PROT_READ | (executable ? PROT_EXEC : PROT_WRITE)) != 0)
       throw std::system_error(errno, std::generic_category(), "Native code page protection failed");
 #endif
-    sealed_ = executable;
   }
 
   u8 *memory_ = nullptr;
-  std::size_t size_ = 0, used_ = 0;
-  bool sealed_ = false;
+  std::size_t size_ = 0, limit_ = 0, page_bytes_ = 0, used_ = 0, sealed_bytes_ = 0;
 };
 
 std::size_t page_size() {
@@ -588,7 +602,6 @@ struct NativeInteger::Impl {
       : capacity(limit), block_capacity(block_limit) {
 #if CUPID_NATIVE_X64
     operations.reserve(capacity);
-    blocks.resize(block_capacity);
     block_lookup.reserve(block_capacity);
 #endif
   }
@@ -597,16 +610,19 @@ struct NativeInteger::Impl {
 #if CUPID_NATIVE_X64
   std::unordered_map<u32, Operation> operations;
   std::vector<std::unique_ptr<ExecutablePage>> pages;
-  std::vector<BlockEntry> blocks;
-  std::unordered_map<BlockKey, unsigned, BlockHash> block_lookup;
+  std::unordered_map<BlockKey, Operation, BlockHash> block_lookup;
+  std::array<BlockEntry, 256> block_hints{};
+  BlockEntry last_block{};
   std::unique_ptr<ExecutablePage> block_arena;
-  unsigned next_block = 0, last_block = 0;
 
-  void clear_blocks() noexcept {
-    std::fill(blocks.begin(), blocks.end(), BlockEntry{});
+  void clear_blocks(bool release = true) noexcept {
     block_lookup.clear();
-    block_arena.reset();
-    next_block = last_block = 0;
+    block_hints = {};
+    last_block = {};
+    if (release)
+      block_arena.reset();
+    else if (block_arena)
+      block_arena->rewind();
   }
 #endif
 };
@@ -685,38 +701,47 @@ bool NativeInteger::execute_sequence(State &state, std::span<const u32> words) {
   key.count = static_cast<u32>(words.size());
   std::copy(words.begin(), words.end(), key.words.begin());
   bool hit = false;
-  unsigned slot = impl_->last_block;
-  if (impl_->blocks[slot].operation && impl_->blocks[slot].key == key)
+  Operation operation = nullptr;
+  unsigned hint_index = 0;
+  const bool last_hit = impl_->last_block.operation && impl_->last_block.key == key;
+  if (last_hit) {
+    operation = impl_->last_block.operation;
     hit = true;
-  else if (const auto found = impl_->block_lookup.find(key); found != impl_->block_lookup.end()) {
-    slot = found->second;
-    hit = true;
+  } else {
+    hint_index = static_cast<unsigned>(BlockHash{}(key) & (impl_->block_hints.size() - 1));
+    const auto &hint = impl_->block_hints[hint_index];
+    if (hint.operation && hint.key == key) {
+      operation = hint.operation;
+      hit = true;
+    } else if (const auto found = impl_->block_lookup.find(key);
+               found != impl_->block_lookup.end()) {
+      operation = found->second;
+      hit = true;
+    }
   }
   if (!hit) {
     if (!std::all_of(words.begin(), words.end(), eligible))
       return false;
-    slot = impl_->next_block;
     try {
       const auto code = encode_sequence(words);
       if (!impl_->block_arena) {
-        const std::size_t requested = impl_->block_capacity * block_slot_bytes;
+        const std::size_t requested = impl_->block_capacity * maximum_sequence_bytes;
         const auto page = page_size();
         const auto bytes = (requested + page - 1) / page * page;
-        impl_->block_arena = std::make_unique<ExecutablePage>(bytes);
+        impl_->block_arena = std::make_unique<ExecutablePage>(bytes, requested);
         statistics_.block_executable_bytes = bytes;
       }
-      auto &entry = impl_->blocks[slot];
-      if (entry.operation)
-        impl_->block_lookup.erase(entry.key);
-      const auto offset = slot * block_slot_bytes;
-      const auto operation = impl_->block_arena->replace(offset, code.code());
-      impl_->block_lookup.emplace(key, slot);
-      if (entry.operation)
-        ++statistics_.block_replacements;
-      else
-        ++statistics_.block_cache_entries;
-      entry = {key, operation};
-      impl_->next_block = (slot + 1) % impl_->block_capacity;
+      // Dispatch collisions never retire compiled code. Aligned nonempty
+      // bodies also bound metadata by the byte budget, independently of hints.
+      // Reclaim only when this body cannot fit in the remaining arena.
+      if (!impl_->block_arena->fits(code.code().size(), sequence_alignment)) {
+        statistics_.block_replacements += impl_->block_lookup.size();
+        impl_->clear_blocks(false);
+        statistics_.block_cache_entries = 0;
+      }
+      operation = impl_->block_arena->append(code.code(), sequence_alignment);
+      impl_->block_lookup.emplace(key, operation);
+      statistics_.block_cache_entries = impl_->block_lookup.size();
       ++statistics_.block_compilations;
     } catch (const std::bad_alloc &) {
       impl_->clear_blocks();
@@ -732,8 +757,11 @@ bool NativeInteger::execute_sequence(State &state, std::span<const u32> words) {
       return false;
     }
   }
-  impl_->last_block = slot;
-  invoke_operation(state, impl_->blocks[slot].operation);
+  if (!last_hit) {
+    impl_->block_hints[hint_index] = {key, operation};
+    impl_->last_block = {key, operation};
+  }
+  invoke_operation(state, operation);
   statistics_.executed += words.size();
   statistics_.block_executed += words.size();
   ++statistics_.block_runs;

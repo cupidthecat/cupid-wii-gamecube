@@ -21,6 +21,40 @@ inline void seed(gfx::FragmentShader &shader) {
     shader.restore_indirect_texture(i, sentinel.indirect[i]);
 }
 
+inline void bounded_helper_checks() {
+  const TestFloatEnvironment restore;
+  const auto rows = projection_cases::authored();
+  constexpr int modes[]{FE_TONEAREST, FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO};
+  unsigned checked = 0, admitted = 0;
+  for (unsigned mode = 0; mode < 4; ++mode)
+    for (unsigned denormal = 0; denormal < 4; ++denormal) {
+      CHECK(std::fesetround(modes[mode]) == 0);
+      CHECK(std::feclearexcept(FE_ALL_EXCEPT) == 0);
+      CHECK(std::feraiseexcept(FE_INVALID | FE_DIVBYZERO) == 0);
+#if defined(_M_X64) || defined(__x86_64__)
+      constexpr unsigned simd_modes[]{0u, 0x6000u, 0x4000u, 0x2000u};
+      _mm_setcsr((_mm_getcsr() & ~0xe040u) | simd_modes[(mode + 1) % 4] |
+                 ((denormal & 1) ? 0x8000u : 0u) | ((denormal & 2) ? 0x40u : 0u));
+#endif
+      for (const auto &row : rows) {
+        const FloatEnvironmentBits before;
+        const bool result = gfx::detail::bounded_projection(row.work, row.count);
+        CHECK(FloatEnvironmentBits{} == before);
+        if (result != row.extra)
+          throw std::runtime_error("Bounded projection helper " + row.name + " expected=" +
+                                   std::to_string(row.extra) + " actual=" + std::to_string(result));
+        ++checked;
+        admitted += result;
+      }
+      CHECK(!gfx::detail::bounded_projection(projection_cases::seed(), 0));
+    }
+  CHECK(checked == rows.size() * 16);
+  CHECK(admitted == 11 * 16);
+  std::cout << "Verified " << checked
+            << " bounded projection helper decisions across 16 "
+               "host environments with exact control and sticky-flag restoration\n";
+}
+
 inline void configure(Memory &memory, std::array<u32, 256> &bp, unsigned count, unsigned family) {
   std::array<u8, 64> tile{};
   for (unsigned texel = 0; texel < 16; ++texel) {

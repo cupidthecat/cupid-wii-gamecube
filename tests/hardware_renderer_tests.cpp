@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "../src/gfx/hardware_program.hpp"
+#include "../src/gfx/hardware_projection.hpp"
 #include "cupid/core/host_float_environment.hpp"
 #include "cupid/gfx/command_processor.hpp"
 #include "cupid/gfx/efb_copy.hpp"
@@ -3542,12 +3543,13 @@ int main(int argc, char **argv) {
     return 1;
   }
   return run_tests([&] {
-    [[maybe_unused]] constexpr bool bounded_projection = false;
+    [[maybe_unused]] constexpr bool bounded_projection = true;
     const auto gather_checks = [&] {
       renderer_stage("batch_gather_checks", [&] { hardware_batch_test::gather::checks(); });
     };
     const auto admission_checks = [&] {
       renderer_stage("batch_projection_checks", [&] {
+        hardware_batch_test::projection::bounded_helper_checks();
         hardware_batch_test::projection::cp_cpu_controls();
         hardware_batch_test::projection::direct(bounded_projection);
         hardware_batch_test::projection::mixed(bounded_projection);

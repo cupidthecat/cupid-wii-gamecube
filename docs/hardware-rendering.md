@@ -847,6 +847,16 @@ projection factors on the CPU. Integer exponent checks retain a normal-value
 margin without adding floating-point products. A small final coordinate alone
 cannot establish that every intermediate stays normal on the host GPU.
 
+When the continuous-range guard declines a small rectangle, an additional check
+can validate its actual samples. It visits at most 64 even-aligned 2x2 quads,
+including uncovered neighbors needed for derivatives. All generated texture
+coordinates retain separate reciprocal, Q multiplication, projection division,
+S/T multiplication and derivative stages. A pole between samples can therefore
+remain on the GPU when every sampled stage is safe. Zero Q keeps its reciprocal
+branch. Invalid bounds, inexact integer offsets, unsafe intermediates and
+extreme unused coordinates retain CPU execution. The check preserves the
+caller's floating-point controls and sticky flags.
+
 The patterned regression covers 124 signed, used/unused-coordinate,
 scalar/batch and exponent-neighbor cases. Thirty-two remain GPU eligible and
 92 decline. A serialized four-draw sequence checks queued GPU work, large-Q

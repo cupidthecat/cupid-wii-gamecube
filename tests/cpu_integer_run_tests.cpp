@@ -2376,10 +2376,10 @@ void register_branch_guard_tests() {
             CHECK(pair.run.state().spr[spr::lr] == (taken && link ? 0x80001008u : 0x12345678u));
             if (pair.run.execution_backend() == ExecutionBackend::NativeInteger) {
               const auto after = pair.run.native_statistics();
-              CHECK(after.executed - before.executed == 1);
-              CHECK(after.fallback - before.fallback == 1);
+              CHECK(after.executed - before.executed == 2);
+              CHECK(after.fallback == before.fallback);
               CHECK(after.compiled_operations == before.compiled_operations);
-              CHECK(after.block_runs == before.block_runs);
+              CHECK(after.block_runs == before.block_runs + 1);
             }
           }
   });

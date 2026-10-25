@@ -23,14 +23,18 @@ compiled-code hits.
 
 The runtime can execute up to eight one-cycle register operations from an
 already resident instruction-cache line. The interpreter admits groups of two
-or more; native execution requires four. Native sequences concatenate validated
-leaf operations into one host call. Repeatedly overwritten destinations can
-remain in a volatile host register between operations; independent destinations
-retain their ordinary stores. Their separate cache packs 16-byte-aligned bodies
-into a 512 KiB byte budget by default. Exact fetched instruction words identify
-each body. A last-entry check and 256 dispatch hints accelerate lookup; a hint
-collision leaves the compiled body available in the backing map. Nonempty,
-aligned bodies bound the number of map entries as well as executable storage.
+or more; purely arithmetic native sequences require four. Native sequences
+concatenate validated leaf operations into one host call. Repeatedly overwritten
+destinations can remain in a volatile host register between operations;
+independent destinations
+retain their ordinary stores. Their shared sequence cache packs 16-byte-aligned
+bodies into a 128 MiB runtime byte budget. The standalone two-argument
+`NativeInteger` constructor retains its 512 KiB default; an explicit byte budget
+sets storage independently of the initial map reservation. The arena allocates
+on the first compiled sequence. Exact fetched instruction words identify each
+body. A last-entry check precedes the backing-map lookup, avoiding a redundant
+dispatch-table lookup and hash. Nonempty, aligned bodies bound the number of
+map entries as well as executable storage.
 
 Only actual byte exhaustion retires the sequence cache. Every lookup pointer is
 cleared before storage is reused, and allocation or protection failure returns
@@ -40,6 +44,26 @@ never executable. The individual-instruction cache retains its separate bound.
 The state dump reports compilation, execution, cache-hit and replacement counts.
 `native_block_cache_entries` can exceed 256; `native_block_replacements` counts
 compiled entries retired when the byte arena fills.
+
+Eligible resident register spans can also compile conditional branches with
+their integer neighbors, starting at two instructions. Control entries use a
+distinct typed return function and backing map while sharing the arithmetic code
+arena. Each emitted exit spills retained registers, computes its target from the
+current entry PC and
+returns the actual retired count together with an explicit taken flag. A taken
+branch to the next word still ends the span. CTR wrap, CR tests, conditional
+link updates and absolute/relative targets keep their ordinary behavior.
+
+Compilation occurs before the first register-only retirement. Resource failure
+leaves guest state and the result unchanged, then uses the existing C++ path.
+Only instruction-cache lines actually executed commit hits, in their original
+order. Partial RAM prefixes retain their resource-free cached-operation helper;
+they do not allocate or compile after guest state has changed. The caller still
+owns last-instruction metadata, fetched status, ticking and every event cut.
+
+The native execution counters include emitted branch retirements. Fallback
+counts also include C++ RAM groups and collapsed polling loops, so they do not
+measure the proportion of unsupported instructions or host execution time.
 
 Scalar groups also admit one-cycle byte, halfword and word loads/stores with
 integer neighbors and valid branches. Indexed integer and floating transfers

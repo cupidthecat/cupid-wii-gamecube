@@ -1663,3 +1663,42 @@ attempts; Galaxy reaches 76 fields within one billion. These bounds establish
 startup agreement, not playable levels, endpoint audio or sustained full speed.
 Exact commands, manifests, logs and terminal receipts remain under
 `.cache/native-blocks-20261025/` and `.cache/projection-20261025/`.
+
+## Native conditional branches and runtime code retention
+
+The integrated MSVC Release/LTO build passes 70 public tests. GCC Release with
+pinned dependencies passes all 71 public tests, including owned-server audio
+shutdown. Both configurations require graphics execution. Eighteen unconfigured
+private tests remain explicit skips in the full Windows registration. The
+system-dependency GCC configuration retains its documented audio-shutdown
+failure. Clang 18 Debug `-O1` ASan/UBSan passes seven selected CPU/runtime suites
+with leak detection; generated code remains outside sanitizer instrumentation.
+The conditional-branch fixture passes 337,896 complete CPU/RAM comparisons and
+975,956 ordinary interpreter retirements. It covers both consoles, cold and hot
+entries, CTR wrap, CR tests, relative and absolute targets, link updates,
+cross-line retirement, taken fallthroughs, true code exhaustion and reset.
+The byte-budget fixture adds 16,660 complete CPU/RAM comparisons. It checks
+legacy constructor bounds, explicit budgets, arithmetic/control sharing,
+reordered reuse of 2,048 retained bodies and the interpreter's 128 MiB arena.
+The separate CPU grouping, event-budget and Machine fixtures check retirement,
+instruction-cache effects and device/interrupt boundaries.
+
+The optional compiled-source comparison passes 196,608 branch cases on GCC.
+It compares GPR, CR, XER, LR, CTR, PC, taken status and retired count; clocks and
+devices are outside that comparison. A separate Linux failure harness populates
+both typed caches before forcing 16 protection failures and 12 allocation
+failures. Its 28 cases check unchanged state on declined compilation, safe
+recompilation and subsequent clock continuity. All 68 executable mappings are
+released, with no writable/executable protection request. Windows resource
+failure injection remains untested.
+
+Eight matched Windows native startup children preserve the reported CPU/RAM
+hashes, ordinary guest report values, raw frame bytes and stored files. The
+declared native and hardware-work diagnostics are compared separately. Sunshine
+reaches 320 fields at three billion attempts; Galaxy reaches 76 fields at one
+billion. Shared-host elapsed times do not establish a speed improvement or
+gameplay FPS. Commands and terminal receipts remain under
+`.cache/native-blocks-20261025/native-integration-prefix-v2/`,
+`.cache/native-integration-20261025/`,
+`.cache/native-integration-20261025-linux-v2/` and
+`.cache/native-integration-faults-20261025-v1/`.

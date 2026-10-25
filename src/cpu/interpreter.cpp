@@ -280,7 +280,8 @@ Interpreter::Interpreter(Bus &bus, Console console) : bus_(bus), console_(consol
 
 void Interpreter::set_execution_backend(ExecutionBackend backend) {
   if (backend == ExecutionBackend::NativeInteger && !native_integer_)
-    native_integer_ = std::make_unique<NativeInteger>();
+    native_integer_ =
+        std::make_unique<NativeInteger>(1024, 256, NativeInteger::runtime_sequence_byte_budget);
   backend_ = backend;
 }
 
@@ -895,13 +896,30 @@ IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cy
       const u32 start = state_.pc;
       unsigned retired = 0;
       bool taken = false;
-      for (u32 opcode : std::span<const u32>(words).first(count)) {
-        if (!retired || retired == first_size)
-          instruction_cache_.commit_hit(!retired ? key : second_key);
-        taken = execute_register_run_instruction(opcode, start + retired * 4);
-        ++retired;
-        if (taken)
-          break;
+      NativeControlRun compiled;
+      if (backend_ == ExecutionBackend::NativeInteger &&
+          native_integer_->execute_control_sequence(state_, std::span(words).first(count),
+                                                    compiled)) {
+        retired = compiled.instructions;
+        taken = compiled.taken;
+        // Admitted register operations cannot fill, invalidate or observe the
+        // instruction cache. Commit exactly the executed lines after resource
+        // admission succeeds, preserving their original hit order.
+        instruction_cache_.commit_hit(key);
+        if (retired > first_size)
+          instruction_cache_.commit_hit(second_key);
+        next_pc_ = state_.pc;
+      } else {
+        // Compilation failure returns before guest mutation. The existing
+        // resource-free register path remains valid for this resident span.
+        for (u32 opcode : std::span<const u32>(words).first(count)) {
+          if (!retired || retired == first_size)
+            instruction_cache_.commit_hit(!retired ? key : second_key);
+          taken = execute_register_run_instruction(opcode, start + retired * 4);
+          ++retired;
+          if (taken)
+            break;
+        }
       }
       state_.last_pc = start + (retired - 1) * 4;
       state_.last_opcode = current_opcode_ = words[retired - 1];

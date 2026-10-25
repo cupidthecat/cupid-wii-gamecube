@@ -3,11 +3,17 @@
 
 #include "cupid/core/types.hpp"
 #include <array>
+#include <cstddef>
 #include <memory>
 #include <span>
 
 namespace cupid::cpu {
 struct State;
+
+struct NativeControlRun {
+  u32 instructions = 0;
+  bool taken = false;
+};
 
 enum class ExecutionBackend { Interpreter, NativeInteger };
 
@@ -24,6 +30,9 @@ struct NativeIntegerStatistics {
 // exceptions and timing. One CPU thread owns an instance and its code pages.
 class NativeInteger {
 public:
+  static constexpr std::size_t runtime_sequence_byte_budget = 128u * 1024u * 1024u;
+  static constexpr std::size_t maximum_sequence_byte_budget = 128u * 1024u * 1024u;
+
   static bool supported() noexcept;
   static bool can_execute(u32 opcode) noexcept;
 
@@ -40,6 +49,9 @@ public:
   }
 
   explicit NativeInteger(unsigned capacity = 1024, unsigned block_capacity = 256);
+  // An explicit byte budget decouples runtime code retention from lookup
+  // reservation hints. The two-argument form keeps its legacy byte bound.
+  NativeInteger(unsigned capacity, unsigned block_capacity, std::size_t sequence_byte_budget);
   ~NativeInteger();
   NativeInteger(const NativeInteger &) = delete;
   NativeInteger &operator=(const NativeInteger &) = delete;
@@ -84,6 +96,12 @@ public:
   // return false before any guest register changes.
   bool execute_sequence(State &state, std::span<const u32> opcodes);
 
+  // Compiles a resident register sequence containing conditional branches.
+  // The entry PC is relocatable; the caller owns fetch, retirement and timing.
+  // Failure leaves guest state and result unchanged before executing a word.
+  bool execute_control_sequence(State &state, std::span<const u32> opcodes,
+                                NativeControlRun &result);
+
   void reset();
   NativeIntegerStatistics statistics() const noexcept;
 
@@ -96,6 +114,14 @@ private:
   static void
   invoke_operation(State &state, void (*operation)(State *)) {
     operation(&state);
+  }
+
+#if defined(__clang__)
+  __attribute__((no_sanitize("function")))
+#endif
+  static u32
+  invoke_control(State &state, u32 (*operation)(State *)) {
+    return operation(&state);
   }
 
   struct Hint {

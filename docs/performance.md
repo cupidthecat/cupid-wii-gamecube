@@ -939,3 +939,29 @@ checks and longer game runs share the host; call durations include driver work
 and waits. Exact commands, frozen libraries, all samples and terminal receipts
 remain under `.cache/projection-20261025/timing-v1/`. These component results
 do not establish sustained gameplay speed.
+
+## Conditional branches and code-cache working sets
+
+Native register spans can include conditional branch exits. Their emitted
+retirement counts preserve ordinary timing cuts, including taken branches to
+the following word. Arithmetic and control bodies share a 128 MiB runtime code
+budget, independent of the initial hash-map reservation. Windows commits the
+arena when the first sequence compiles. Standalone legacy constructors retain
+their smaller budgets, and the runtime's individual-instruction cache remains
+separate. This change trades a larger code allocation for retained working sets.
+
+A matched Galaxy startup comparison of the same branch-capable core with
+512 KiB and 128 MiB budgets runs on MSVC and GCC. At one billion attempts, the
+smaller arena compiles 7,571 bodies and retires 5,850 entries; the runtime budget
+retains all 4,963 compiled bodies with zero retirements. Guest reports, final
+raw frames and stored files match. The constructor, mapping, protection and
+cold allocation checks remain under `.cache/native-runtime-budget-20261025/`.
+
+Eight further Windows startup children compare the combined branch/cache work
+against `a717752` in AB/BA order. Sunshine compiles 2,815 sequence bodies and
+executes 10,469,355 sequence calls; Galaxy compiles 4,963 bodies and executes
+41,842,975 calls. Neither run retires a cached body. CPU/RAM hashes, final raw
+frames and stored files agree with the earlier core. The runs share the host
+with correctness checks. Their elapsed times do not establish a runtime gain
+or sustained gameplay FPS. The complete comparison remains under
+`.cache/native-blocks-20261025/native-integration-prefix-v2/`.

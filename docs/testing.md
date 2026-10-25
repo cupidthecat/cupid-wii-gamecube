@@ -1666,17 +1666,24 @@ Exact commands, manifests, logs and terminal receipts remain under
 
 ## Native conditional branches and runtime code retention
 
-The integrated MSVC Release/LTO build passes 70 public tests. GCC Release with
-pinned dependencies passes all 71 public tests, including owned-server audio
+The conditional-branch and runtime-budget snapshot passes 70 MSVC Release/LTO
+public tests. GCC Release with pinned dependencies passes all 71 public tests,
+including owned-server audio
 shutdown. Both configurations require graphics execution. Eighteen unconfigured
 private tests remain explicit skips in the full Windows registration. The
 system-dependency GCC configuration retains its documented audio-shutdown
 failure. Clang 18 Debug `-O1` ASan/UBSan passes seven selected CPU/runtime suites
 with leak detection; generated code remains outside sanitizer instrumentation.
-The conditional-branch fixture passes 337,896 complete CPU/RAM comparisons and
-975,956 ordinary interpreter retirements. It covers both consoles, cold and hot
+The subsequent PC-dispatch addition passes those seven CPU/runtime suites on
+MSVC, pinned GCC and Clang sanitizers, plus formatting and changed-core static
+analysis. Its private source comparison also passes all 196,608 cases.
+The conditional-branch fixture passes 344,040 complete CPU/RAM comparisons and
+993,252 ordinary interpreter retirements. It covers both consoles, cold and hot
 entries, CTR wrap, CR tests, relative and absolute targets, link updates,
 cross-line retirement, taken fallthroughs, true code exhaustion and reset.
+Its 6,144 PC-reuse cases cover dispatch collisions, changed fetched contents,
+shorter admitted spans, reset and shared arithmetic/control exhaustion. Untaken
+branches expose differing suffixes to the ordinary interpreter comparison.
 The byte-budget fixture adds 16,660 complete CPU/RAM comparisons. It checks
 legacy constructor bounds, explicit budgets, arithmetic/control sharing,
 reordered reuse of 2,048 retained bodies and the interpreter's 128 MiB arena.
@@ -1691,6 +1698,11 @@ failures. Its 28 cases check unchanged state on declined compilation, safe
 recompilation and subsequent clock continuity. All 68 executable mappings are
 released, with no writable/executable protection request. Windows resource
 failure injection remains untested.
+
+Repeating the failure checks with populated PC hints adds 560 complete-State
+comparisons and 128 exact-PC/content revisits. Released old arenas remain
+inaccessible during those revisits, preventing a reused mapping address from
+hiding a stale entry. All 28 failure cases and all 68 mapping lifetimes pass.
 
 Eight matched Windows native startup children preserve the reported CPU/RAM
 hashes, ordinary guest report values, raw frame bytes and stored files. The

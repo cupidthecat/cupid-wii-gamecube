@@ -54,6 +54,12 @@ returns the actual retired count together with an explicit taken flag. A taken
 branch to the next word still ends the span. CTR wrap, CR tests, conditional
 link updates and absolute/relative targets keep their ordinary behavior.
 
+Control dispatch checks the last entry, then a 4,096-slot PC hint before the
+content map. A hint must match every fetched word and the admitted word count.
+Identical contents can execute at another PC because emitted targets are
+relocatable. Hint collisions retain their bodies in the backing map. Shared
+arena retirement and reset clear every hint before code storage is reused.
+
 Compilation occurs before the first register-only retirement. Resource failure
 leaves guest state and the result unchanged, then uses the existing C++ path.
 Only instruction-cache lines actually executed commit hits, in their original

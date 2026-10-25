@@ -703,6 +703,8 @@ struct NativeInteger::Impl {
   BlockEntry last_block{};
   std::unordered_map<BlockKey, ControlOperation, BlockHash> control_lookup;
   ControlEntry last_control{};
+  // PC hints accelerate dispatch only; exact fetched contents remain authoritative.
+  std::array<ControlEntry, 4096> control_pc_hints{};
   std::unique_ptr<ExecutablePage> block_arena;
 
   std::size_t sequence_count() const noexcept {
@@ -714,6 +716,7 @@ struct NativeInteger::Impl {
     last_block = {};
     control_lookup.clear();
     last_control = {};
+    control_pc_hints = {};
     if (release)
       block_arena.reset();
     else if (block_arena)
@@ -881,9 +884,17 @@ bool NativeInteger::execute_control_sequence(State &state, std::span<const u32> 
   std::copy(words.begin(), words.end(), key.words.begin());
   ControlOperation operation = nullptr;
   bool hit = false;
+  const unsigned pc_hint_index =
+      (state.pc >> 2) & static_cast<unsigned>(impl_->control_pc_hints.size() - 1);
+  auto &pc_hint = impl_->control_pc_hints[pc_hint_index];
   const bool last_hit = impl_->last_control.operation && impl_->last_control.key == key;
+  bool pc_hit = false;
   if (last_hit) {
     operation = impl_->last_control.operation;
+    hit = true;
+  } else if (pc_hint.operation && pc_hint.key == key) {
+    operation = pc_hint.operation;
+    pc_hit = true;
     hit = true;
   } else if (const auto found = impl_->control_lookup.find(key);
              found != impl_->control_lookup.end()) {
@@ -932,8 +943,11 @@ bool NativeInteger::execute_control_sequence(State &state, std::span<const u32> 
       return false;
     }
   }
-  if (!last_hit)
+  if (!last_hit) {
     impl_->last_control = {key, operation};
+    if (!pc_hit)
+      pc_hint = {key, operation};
+  }
   const u32 encoded = invoke_control(state, operation);
   result = {encoded & 255u, (encoded & 256u) != 0};
   statistics_.executed += result.instructions;

@@ -965,3 +965,22 @@ frames and stored files agree with the earlier core. The runs share the host
 with correctness checks. Their elapsed times do not establish a runtime gain
 or sustained gameplay FPS. The complete comparison remains under
 `.cache/native-blocks-20261025/native-integration-prefix-v2/`.
+
+Control entries also have 4,096 PC-indexed dispatch hints. The last-entry check
+retains priority. Each PC hint requires exact fetched contents and count; a
+collision preserves the compiled body in the content map. This avoids hashing
+on a matching hint without using guest RAM as a substitute for fetched words.
+
+A private MSVC component schedule runs 24 AB/BA children. All six State/RAM
+phase images and all native counters match in every pair. Median paired hot
+candidate/baseline ratios are 0.856, 0.768 and 0.864 for taken-branch working
+sets of 64, 257 and 512 keys. The one-key control retains a 1.069 regression;
+untaken and arithmetic controls are near parity. Samples last 40-90 ms on a
+shared host and do not establish a whole-game gain. All cold, process and
+control records remain under `.cache/native-pc-dispatch-20261025-v1/timing-v1/`.
+
+Eight matched startup children compare the integrated PC hints against the
+same branch-capable core. CPU/RAM hashes, raw frames, stored files and every
+native counter match. The same Sunshine and Galaxy startup bounds apply.
+The longer Sunshine route runs separately against the preceding integrated
+core; its outcome is not evidence for the PC-hint change.

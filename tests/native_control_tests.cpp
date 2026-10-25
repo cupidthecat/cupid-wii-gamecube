@@ -295,6 +295,73 @@ void typed_cache_and_exhaustion_tests() {
     CHECK(small.native.statistics().block_compilations == previous.block_compilations + 1);
   }
 }
+
+std::array<u32, 4> pc_program(unsigned key) {
+  return {immediate(14, 3, 3, key + 1), branch(12, key & 31, key & 1 ? 4 : -4, key & 2),
+          immediate(14, 4, 3, key ^ 0x1234), immediate(26, 4, 4, key ^ 0x8001)};
+}
+
+void pc_reuse_tests() {
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    Fixture fixture(console);
+    for (unsigned pass = 0; pass < 4; ++pass)
+      for (unsigned n = 0; n < 128; ++n) {
+        const unsigned key = pass & 1 ? 127 - n : n;
+        auto state = seed(key ^ (pass << 16));
+        state.pc = 0x1000 + key * 32;
+        fixture.execute(pc_program(key), state);
+      }
+    CHECK(fixture.native.statistics().block_compilations == 128);
+    // These PCs collide in the dispatch table. Exact fetched contents still
+    // select the body, and collisions must leave backing entries available.
+    for (unsigned pass = 0; pass < 4; ++pass)
+      for (unsigned n = 0; n < 128; ++n) {
+        auto state = seed(n ^ (pass << 16));
+        state.pc = 0x1000 + (n & 3) * 0x4000;
+        fixture.execute(pc_program(n), state);
+      }
+    CHECK(fixture.native.statistics().block_compilations == 128 &&
+          fixture.native.statistics().block_replacements == 0);
+    // A shorter event quota changes the admitted word count at the same PC.
+    // Untaken branches expose the differing suffixes to the stepped oracle.
+    for (unsigned n = 0; n < 128; ++n) {
+      auto state = seed(n);
+      state.pc = 0x2000;
+      const auto program = pc_program(n);
+      fixture.execute(std::span(program).first(2), state);
+      fixture.execute(std::span(program).first(3), state);
+      fixture.execute(program, state);
+    }
+    CHECK(fixture.native.statistics().block_compilations == 384 &&
+          fixture.native.statistics().block_replacements == 0);
+    fixture.native.reset();
+    CHECK(fixture.native.statistics().block_compilations == 0);
+    for (unsigned n = 0; n < 128; ++n) {
+      auto state = seed(n);
+      state.pc = 0x2000;
+      fixture.execute(pc_program(n), state);
+    }
+    CHECK(fixture.native.statistics().block_compilations == 128);
+  }
+}
+
+void pc_shared_exhaustion_tests() {
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    Fixture fixture(console, 1);
+    for (unsigned n = 0; n < 512; ++n) {
+      auto state = seed(n);
+      state.pc = 0x1000 + (n & 15) * 32;
+      fixture.execute(pc_program(n), state);
+      const std::array<u32, 4> arithmetic{
+          immediate(14, 3, 3, n + 1), immediate(26, 3, 3, n ^ 0x8001),
+          immediate(24, 3, 4, n ^ 0x1234), immediate(14, 4, 3, n ^ 0xff00)};
+      fixture.execute(arithmetic, state, false);
+      fixture.execute(pc_program(n), state);
+    }
+    CHECK(fixture.native.statistics().block_replacements > 0 &&
+          fixture.native.statistics().block_compilation_failures == 0);
+  }
+}
 } // namespace
 
 int main() {
@@ -307,6 +374,8 @@ int main() {
     flag_and_multiple_exit_tests();
     rejection_tests();
     typed_cache_and_exhaustion_tests();
+    pc_reuse_tests();
+    pc_shared_exhaustion_tests();
     std::cout << comparisons << " complete-State/RAM control comparisons, " << retirements
               << " stepped oracle retirements passed\n";
   });

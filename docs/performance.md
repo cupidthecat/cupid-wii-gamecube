@@ -1062,3 +1062,20 @@ protected callback. All results match. Shared-host candidate/baseline ratios are
 overhead rather than a gameplay gain. Samples and emitted-code comparisons,
 including the recorded non-LTO extra template call, remain under
 `.cache/hfe-exception-boundary-20261025-v1/`.
+
+## XFB row copies
+
+Little-endian hosts copy each completed XFB staging row into guest RAM with
+`memcpy`. A 96-child MSVC Release/LTO comparison covers six valid layouts and
+two 64 MiB cycling-buffer cases. Median paired candidate/baseline elapsed
+ratios range from 0.044 to 0.502; all 24 balanced quartets favor the candidate.
+The 640-by-528 row set records 0.122 with reused buffers and 0.464 with cycling
+buffers. Setup, allocation and hashing are outside the timer; shared dispatch
+and bookkeeping costs remain included. No samples are removed.
+
+These measurements cover CPU row scattering after readback, not readback waits,
+GPU execution or whole-emulator speed. The logical big-endian fallback retains
+the original byte loop; no big-endian hardware result is established. Qualified
+loop, source, executable and raw samples remain under
+`.cache/xfb-row-memcpy-20261026-v1/` and
+`.cache/xfb-row-scatter-results-20261026-v1/`.

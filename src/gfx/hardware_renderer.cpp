@@ -1202,13 +1202,20 @@ bool HardwareRenderer::copy_xfb(std::span<const u32> bp) {
   impl_->MemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
   impl_->GetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, GLsizeiptr(bytes),
                           impl_->xfb_staging.data());
-  for (unsigned row = 0; row < layout.height; ++row)
-    for (unsigned column = 0; column < words_per_row; ++column) {
-      const u32 value = impl_->xfb_staging[std::size_t(row) * words_per_row + column];
-      const auto offset = std::size_t(row) * layout.stride + column * sizeof(u32);
-      for (unsigned byte = 0; byte < 4; ++byte)
-        destination[offset + byte] = static_cast<u8>(value >> (byte * 8));
+  for (unsigned row = 0; row < layout.height; ++row) {
+    if constexpr (std::endian::native == std::endian::little) {
+      std::memcpy(destination.data() + std::size_t(row) * layout.stride,
+                  impl_->xfb_staging.data() + std::size_t(row) * words_per_row,
+                  std::size_t(words_per_row) * sizeof(u32));
+    } else {
+      for (unsigned column = 0; column < words_per_row; ++column) {
+        const u32 value = impl_->xfb_staging[std::size_t(row) * words_per_row + column];
+        const auto offset = std::size_t(row) * layout.stride + column * sizeof(u32);
+        for (unsigned byte = 0; byte < 4; ++byte)
+          destination[offset + byte] = static_cast<u8>(value >> (byte * 8));
+      }
     }
+  }
   ++impl_->xfb_copies;
   impl_->xfb_readback_bytes += bytes;
   if (bp[0x52] & (1 << 11)) {

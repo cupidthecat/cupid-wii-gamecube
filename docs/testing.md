@@ -1868,3 +1868,29 @@ against the preceding RAM-packet build. Sunshine reaches 320 fields at three
 billion attempts; Galaxy reaches 76 at one billion. Only commit metadata is
 excluded. Their frozen compiled-source closure and terminal comparisons remain
 under `.cache/hfe-root-parent-prefix-20261025-v1/`.
+
+## XFB row-copy qualification
+
+Strict MSVC and GCC checks each compare 288 original, candidate and fallback
+row-copy byte/FPU cases, six valid planner profiles, six rejected inputs and six
+MEM1/MEM2 bounds cases. The candidate preserves each row's exact byte count and
+increasing row order. Valid XFB rows cannot overlap because the planner clips
+the copied length to the stride.
+
+Two required-device NVIDIA children pass 3,384 complete GPU texture/RAM/clear
+profiles and the GameCube/Wii hardware-frame checks. Shader code, GL operations,
+copy planning and clear ordering remain outside this change. Big-endian
+coverage is logical/source-only. The sealed component evidence is under
+`.cache/xfb-row-memcpy-20261026-v1/qualification-v2/`; component timings are
+described in [performance](performance.md#xfb-row-copies).
+
+The main strict MSVC Release/LTO build passes FIFO, XFB-copy, GPU texture-copy
+and hardware-video tests. Two ordinary CLI startup checks retain all 59
+non-metadata fields against the preceding floating-state-boundary source,
+including all fifteen native CPU counters and hardware results. Sunshine
+reaches 320 fields at three billion attempts; Galaxy reaches 76 at one billion.
+Raw frames, stored files and physical stage counts match. Only commit metadata
+is excluded. The executable's compiled revision label is the parent revision;
+the actual source and build closure are frozen under
+`.cache/xfb-root-prefix-20261026-v1/attempt-2/`. Host audio is disabled, and these
+short shared-host checks do not establish gameplay speed or audio output.

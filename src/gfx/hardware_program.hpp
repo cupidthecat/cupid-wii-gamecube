@@ -10,40 +10,41 @@
 namespace cupid::gfx::detail {
 template <typename Api>
 GLuint compile_compute_program(Api &api, const char *source, const char *kind) {
-  // Driver compilation can change host exception flags. Lazy creation must
-  // compile independently of guest rounding and restore the caller's environment.
-  const HostFloatEnvironment environment;
-  const GLuint shader = api.CreateShader(GL_COMPUTE_SHADER);
-  if (!shader)
-    throw std::runtime_error(std::string("Hardware ") + kind + " shader creation failed");
-  api.ShaderSource(shader, 1, &source, nullptr);
-  api.CompileShader(shader);
-  GLint success = 0;
-  api.GetShaderiv(shader, GL_COMPILE_STATUS, &success);
-  if (!success) {
-    std::array<char, 8192> log{};
-    api.GetShaderInfoLog(shader, GLsizei(log.size()), nullptr, log.data());
+  return HostFloatEnvironment::run([&] {
+    // Driver compilation can change host exception flags. Lazy creation must
+    // compile independently of guest rounding and restore the caller's environment.
+    const GLuint shader = api.CreateShader(GL_COMPUTE_SHADER);
+    if (!shader)
+      throw std::runtime_error(std::string("Hardware ") + kind + " shader creation failed");
+    api.ShaderSource(shader, 1, &source, nullptr);
+    api.CompileShader(shader);
+    GLint success = 0;
+    api.GetShaderiv(shader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+      std::array<char, 8192> log{};
+      api.GetShaderInfoLog(shader, GLsizei(log.size()), nullptr, log.data());
+      api.DeleteShader(shader);
+      throw std::runtime_error(std::string("Hardware ") + kind +
+                               " compilation failed: " + log.data());
+    }
+    const GLuint linked = api.CreateProgram();
+    if (!linked) {
+      api.DeleteShader(shader);
+      throw std::runtime_error(std::string("Hardware ") + kind + " program creation failed");
+    }
+    api.AttachShader(linked, shader);
+    api.LinkProgram(linked);
     api.DeleteShader(shader);
-    throw std::runtime_error(std::string("Hardware ") + kind +
-                             " compilation failed: " + log.data());
-  }
-  const GLuint linked = api.CreateProgram();
-  if (!linked) {
-    api.DeleteShader(shader);
-    throw std::runtime_error(std::string("Hardware ") + kind + " program creation failed");
-  }
-  api.AttachShader(linked, shader);
-  api.LinkProgram(linked);
-  api.DeleteShader(shader);
-  success = 0;
-  api.GetProgramiv(linked, GL_LINK_STATUS, &success);
-  if (!success) {
-    std::array<char, 8192> log{};
-    api.GetProgramInfoLog(linked, GLsizei(log.size()), nullptr, log.data());
-    api.DeleteProgram(linked);
-    throw std::runtime_error(std::string("Hardware ") + kind + " link failed: " + log.data());
-  }
-  return linked;
+    success = 0;
+    api.GetProgramiv(linked, GL_LINK_STATUS, &success);
+    if (!success) {
+      std::array<char, 8192> log{};
+      api.GetProgramInfoLog(linked, GLsizei(log.size()), nullptr, log.data());
+      api.DeleteProgram(linked);
+      throw std::runtime_error(std::string("Hardware ") + kind + " link failed: " + log.data());
+    }
+    return linked;
+  });
 }
 
 struct FragmentPrograms {
@@ -64,9 +65,10 @@ void dispatch_fragment_program(FragmentPrograms &programs, bool batch, Use use, 
   }
   // Drivers can defer compilation until the first real dispatch. Protect only
   // initialization; cached programs execute without saving the host environment.
-  const HostFloatEnvironment environment;
-  run();
-  initialized = true;
+  HostFloatEnvironment::run([&] {
+    run();
+    initialized = true;
+  });
 }
 
 template <typename Compile, typename Delete>

@@ -323,136 +323,142 @@ struct HardwareRenderer::Impl {
   }
 
   void configure_ordered_raster() {
-    const HostFloatEnvironment environment;
-    const char *value = SDL_getenv("CUPID_GX_ORDERED_RASTER");
-    const std::string_view selection = value ? value : "auto";
-    if (selection == "0")
-      return;
-    if (selection != "auto" && selection != "1")
-      throw HardwareUnavailable("Ordered raster mode requires auto, 1 or 0");
-    const auto preflight = ordered_initialization_errors(GetError);
-    if (preflight == OrderedInitializationErrors::Fatal)
-      throw HardwareUnavailable("Fatal OpenGL error before ordered raster initialization");
-    bool fatal_error = false;
-    const auto recover_initialization = [&](const std::exception &error) {
-      fatal_error |= ordered_initialization_errors(GetError) == OrderedInitializationErrors::Fatal;
-      // OOM or context loss makes continued GL operation unreliable. Let the
-      // outer constructor destroy its context instead of selecting compute.
-      if (fatal_error)
-        throw HardwareUnavailable("Fatal OpenGL error during ordered raster initialization");
-      release_ordered_resources();
-      if (ordered_initialization_errors(GetError) == OrderedInitializationErrors::Fatal)
-        throw HardwareUnavailable("Fatal OpenGL error during ordered raster cleanup");
-      if (selection == "1")
-        throw;
-      std::clog << "Ordered raster unavailable; using compute: " << error.what() << '\n';
-    };
-    try {
-      if (preflight != OrderedInitializationErrors::None)
-        throw HardwareUnavailable("OpenGL error before ordered raster initialization");
-      initialize_ordered_raster();
-      // Validate both shader families before guest work is queued. Automatic
-      // selection can then fall back without replaying a partially drawn batch.
-      for (unsigned family = 0; family < ordered_programs.size(); ++family)
-        ensure_ordered_program(family);
-      const auto initialization_status = ordered_initialization_errors(GetError);
-      fatal_error = initialization_status == OrderedInitializationErrors::Fatal;
-      if (initialization_status != OrderedInitializationErrors::None)
-        throw HardwareUnavailable("OpenGL error after ordered raster initialization");
-    } catch (const std::runtime_error &error) {
-      recover_initialization(error);
-      return;
-    } catch (const std::bad_alloc &error) {
-      recover_initialization(error);
-      return;
-    }
-    std::clog << "Ordered raster active: " << ordered_suffix << ", device=" << device
-              << ", packet_capacity=" << ordered_packet_capacity
-              << ", area_capacity=" << ordered_area_capacity << '\n';
+    HostFloatEnvironment::run([&] {
+      const char *value = SDL_getenv("CUPID_GX_ORDERED_RASTER");
+      const std::string_view selection = value ? value : "auto";
+      if (selection == "0")
+        return;
+      if (selection != "auto" && selection != "1")
+        throw HardwareUnavailable("Ordered raster mode requires auto, 1 or 0");
+      const auto preflight = ordered_initialization_errors(GetError);
+      if (preflight == OrderedInitializationErrors::Fatal)
+        throw HardwareUnavailable("Fatal OpenGL error before ordered raster initialization");
+      bool fatal_error = false;
+      const auto recover_initialization = [&](const std::exception &error) {
+        fatal_error |=
+            ordered_initialization_errors(GetError) == OrderedInitializationErrors::Fatal;
+        // OOM or context loss makes continued GL operation unreliable. Let the
+        // outer constructor destroy its context instead of selecting compute.
+        if (fatal_error)
+          throw HardwareUnavailable("Fatal OpenGL error during ordered raster initialization");
+        release_ordered_resources();
+        if (ordered_initialization_errors(GetError) == OrderedInitializationErrors::Fatal)
+          throw HardwareUnavailable("Fatal OpenGL error during ordered raster cleanup");
+        if (selection == "1")
+          throw;
+        std::clog << "Ordered raster unavailable; using compute: " << error.what() << '\n';
+      };
+      try {
+        if (preflight != OrderedInitializationErrors::None)
+          throw HardwareUnavailable("OpenGL error before ordered raster initialization");
+        initialize_ordered_raster();
+        // Validate both shader families before guest work is queued. Automatic
+        // selection can then fall back without replaying a partially drawn batch.
+        for (unsigned family = 0; family < ordered_programs.size(); ++family)
+          ensure_ordered_program(family);
+        const auto initialization_status = ordered_initialization_errors(GetError);
+        fatal_error = initialization_status == OrderedInitializationErrors::Fatal;
+        if (initialization_status != OrderedInitializationErrors::None)
+          throw HardwareUnavailable("OpenGL error after ordered raster initialization");
+      } catch (const std::runtime_error &error) {
+        recover_initialization(error);
+        return;
+      } catch (const std::bad_alloc &error) {
+        recover_initialization(error);
+        return;
+      }
+      std::clog << "Ordered raster active: " << ordered_suffix << ", device=" << device
+                << ", packet_capacity=" << ordered_packet_capacity
+                << ", area_capacity=" << ordered_area_capacity << '\n';
+    });
   }
 
   void initialize_ordered_raster() {
-    const HostFloatEnvironment environment;
-    GetStringi = load_gl<PFNGLGETSTRINGIPROC>("glGetStringi");
-    GLint count = 0;
-    GetIntegerv(GL_NUM_EXTENSIONS, &count);
-    bool arb = false, nv = false;
-    for (GLint n = 0; n < count; ++n) {
-      const std::string_view extension(
-          reinterpret_cast<const char *>(GetStringi(GL_EXTENSIONS, GLuint(n))));
-      arb |= extension == "GL_ARB_fragment_shader_interlock";
-      nv |= extension == "GL_NV_fragment_shader_interlock";
-    }
-    if (!arb && !nv)
-      throw HardwareUnavailable("Requested ordered raster mode lacks fragment interlock");
-    GLint vertex_blocks = 0;
-    GetIntegerv(GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS, &vertex_blocks);
-    if (vertex_blocks < 1)
-      throw HardwareUnavailable("Requested ordered raster mode lacks a vertex SSBO");
-    GLint fragment_blocks = 0, combined_blocks = 0;
-    GetIntegerv(GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS, &fragment_blocks);
-    GetIntegerv(GL_MAX_COMBINED_SHADER_STORAGE_BLOCKS, &combined_blocks);
-    if (fragment_blocks < 7 || combined_blocks < 8)
-      throw HardwareUnavailable("Requested ordered raster mode lacks fragment SSBO capacity");
-    GLint maximum_bytes = 0;
-    GetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &maximum_bytes);
-    if (maximum_bytes < GLint((5 + ordered_packet_capacity * 254) * sizeof(u32)))
-      throw HardwareUnavailable("Requested ordered raster mode lacks packet SSBO capacity");
-    ordered_extension =
-        arb ? "GL_ARB_fragment_shader_interlock" : "GL_NV_fragment_shader_interlock";
-    ordered_suffix = arb ? "ARB" : "NV";
-    GenVertexArrays = load_gl<PFNGLGENVERTEXARRAYSPROC>("glGenVertexArrays");
-    BindVertexArray = load_gl<PFNGLBINDVERTEXARRAYPROC>("glBindVertexArray");
-    DeleteVertexArrays = load_gl<PFNGLDELETEVERTEXARRAYSPROC>("glDeleteVertexArrays");
-    DrawArraysInstanced = load_gl<PFNGLDRAWARRAYSINSTANCEDPROC>("glDrawArraysInstanced");
-    GenFramebuffers = load_gl<PFNGLGENFRAMEBUFFERSPROC>("glGenFramebuffers");
-    BindFramebuffer = load_gl<PFNGLBINDFRAMEBUFFERPROC>("glBindFramebuffer");
-    FramebufferTexture2D = load_gl<PFNGLFRAMEBUFFERTEXTURE2DPROC>("glFramebufferTexture2D");
-    CheckFramebufferStatus = load_gl<PFNGLCHECKFRAMEBUFFERSTATUSPROC>("glCheckFramebufferStatus");
-    DeleteFramebuffers = load_gl<PFNGLDELETEFRAMEBUFFERSPROC>("glDeleteFramebuffers");
-    TexStorage2D = load_gl<PFNGLTEXSTORAGE2DPROC>("glTexStorage2D");
-    GenTextures = load_gl<TextureNameFunction>("glGenTextures");
-    DeleteTextures = load_gl<DeleteTextureFunction>("glDeleteTextures");
-    BindTexture = load_gl<BindTextureFunction>("glBindTexture");
-    Viewport = load_gl<ViewportFunction>("glViewport");
-    Disable = load_gl<DisableFunction>("glDisable");
-    ColorMask = load_gl<ColorMaskFunction>("glColorMask");
-    PolygonMode = load_gl<PolygonModeFunction>("glPolygonMode");
-    GenVertexArrays(1, &ordered_vao);
-    GenTextures(1, &ordered_color);
-    BindTexture(GL_TEXTURE_2D, ordered_color);
-    TexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 640, 528);
-    GenFramebuffers(1, &ordered_framebuffer);
-    BindFramebuffer(GL_FRAMEBUFFER, ordered_framebuffer);
-    FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ordered_color, 0);
-    if (!ordered_vao || !ordered_color || !ordered_framebuffer ||
-        CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-      throw HardwareUnavailable("Requested ordered raster framebuffer allocation failed");
-    ordered_raster = true;
+    HostFloatEnvironment::run([&] {
+      GetStringi = load_gl<PFNGLGETSTRINGIPROC>("glGetStringi");
+      GLint count = 0;
+      GetIntegerv(GL_NUM_EXTENSIONS, &count);
+      bool arb = false, nv = false;
+      for (GLint n = 0; n < count; ++n) {
+        const std::string_view extension(
+            reinterpret_cast<const char *>(GetStringi(GL_EXTENSIONS, GLuint(n))));
+        arb |= extension == "GL_ARB_fragment_shader_interlock";
+        nv |= extension == "GL_NV_fragment_shader_interlock";
+      }
+      if (!arb && !nv)
+        throw HardwareUnavailable("Requested ordered raster mode lacks fragment interlock");
+      GLint vertex_blocks = 0;
+      GetIntegerv(GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS, &vertex_blocks);
+      if (vertex_blocks < 1)
+        throw HardwareUnavailable("Requested ordered raster mode lacks a vertex SSBO");
+      GLint fragment_blocks = 0, combined_blocks = 0;
+      GetIntegerv(GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS, &fragment_blocks);
+      GetIntegerv(GL_MAX_COMBINED_SHADER_STORAGE_BLOCKS, &combined_blocks);
+      if (fragment_blocks < 7 || combined_blocks < 8)
+        throw HardwareUnavailable("Requested ordered raster mode lacks fragment SSBO capacity");
+      GLint maximum_bytes = 0;
+      GetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &maximum_bytes);
+      if (maximum_bytes < GLint((5 + ordered_packet_capacity * 254) * sizeof(u32)))
+        throw HardwareUnavailable("Requested ordered raster mode lacks packet SSBO capacity");
+      ordered_extension =
+          arb ? "GL_ARB_fragment_shader_interlock" : "GL_NV_fragment_shader_interlock";
+      ordered_suffix = arb ? "ARB" : "NV";
+      GenVertexArrays = load_gl<PFNGLGENVERTEXARRAYSPROC>("glGenVertexArrays");
+      BindVertexArray = load_gl<PFNGLBINDVERTEXARRAYPROC>("glBindVertexArray");
+      DeleteVertexArrays = load_gl<PFNGLDELETEVERTEXARRAYSPROC>("glDeleteVertexArrays");
+      DrawArraysInstanced = load_gl<PFNGLDRAWARRAYSINSTANCEDPROC>("glDrawArraysInstanced");
+      GenFramebuffers = load_gl<PFNGLGENFRAMEBUFFERSPROC>("glGenFramebuffers");
+      BindFramebuffer = load_gl<PFNGLBINDFRAMEBUFFERPROC>("glBindFramebuffer");
+      FramebufferTexture2D = load_gl<PFNGLFRAMEBUFFERTEXTURE2DPROC>("glFramebufferTexture2D");
+      CheckFramebufferStatus = load_gl<PFNGLCHECKFRAMEBUFFERSTATUSPROC>("glCheckFramebufferStatus");
+      DeleteFramebuffers = load_gl<PFNGLDELETEFRAMEBUFFERSPROC>("glDeleteFramebuffers");
+      TexStorage2D = load_gl<PFNGLTEXSTORAGE2DPROC>("glTexStorage2D");
+      GenTextures = load_gl<TextureNameFunction>("glGenTextures");
+      DeleteTextures = load_gl<DeleteTextureFunction>("glDeleteTextures");
+      BindTexture = load_gl<BindTextureFunction>("glBindTexture");
+      Viewport = load_gl<ViewportFunction>("glViewport");
+      Disable = load_gl<DisableFunction>("glDisable");
+      ColorMask = load_gl<ColorMaskFunction>("glColorMask");
+      PolygonMode = load_gl<PolygonModeFunction>("glPolygonMode");
+      GenVertexArrays(1, &ordered_vao);
+      GenTextures(1, &ordered_color);
+      BindTexture(GL_TEXTURE_2D, ordered_color);
+      TexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 640, 528);
+      GenFramebuffers(1, &ordered_framebuffer);
+      BindFramebuffer(GL_FRAMEBUFFER, ordered_framebuffer);
+      FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ordered_color, 0);
+      if (!ordered_vao || !ordered_color || !ordered_framebuffer ||
+          CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        throw HardwareUnavailable("Requested ordered raster framebuffer allocation failed");
+      ordered_raster = true;
+    });
   }
 
   void dispatch_ordered_raster(unsigned family, GLsizei rectangles) {
     ensure_ordered_program(family);
-    std::optional<HostFloatEnvironment> initialization_environment;
+    const auto dispatch = [&] {
+      BindFramebuffer(GL_FRAMEBUFFER, ordered_framebuffer);
+      BindVertexArray(ordered_vao);
+      Viewport(0, 0, 640, 528);
+      for (GLenum capability :
+           {GL_DEPTH_TEST, GL_STENCIL_TEST, GL_BLEND, GL_CULL_FACE, GL_SCISSOR_TEST, GL_MULTISAMPLE,
+            GL_RASTERIZER_DISCARD, GL_SAMPLE_ALPHA_TO_COVERAGE, GL_SAMPLE_ALPHA_TO_ONE,
+            GL_SAMPLE_COVERAGE, GL_SAMPLE_MASK, GL_POLYGON_OFFSET_FILL, GL_DITHER,
+            GL_FRAMEBUFFER_SRGB})
+        Disable(capability);
+      ColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+      PolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+      UseProgram(ordered_programs[family]);
+      DrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, rectangles);
+      MemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+      ordered_initialized[family] = true;
+      ++ordered_draws;
+      ordered_rectangles += static_cast<u64>(rectangles);
+    };
     if (!ordered_initialized[family])
-      initialization_environment.emplace();
-    BindFramebuffer(GL_FRAMEBUFFER, ordered_framebuffer);
-    BindVertexArray(ordered_vao);
-    Viewport(0, 0, 640, 528);
-    for (GLenum capability :
-         {GL_DEPTH_TEST, GL_STENCIL_TEST, GL_BLEND, GL_CULL_FACE, GL_SCISSOR_TEST, GL_MULTISAMPLE,
-          GL_RASTERIZER_DISCARD, GL_SAMPLE_ALPHA_TO_COVERAGE, GL_SAMPLE_ALPHA_TO_ONE,
-          GL_SAMPLE_COVERAGE, GL_SAMPLE_MASK, GL_POLYGON_OFFSET_FILL, GL_DITHER,
-          GL_FRAMEBUFFER_SRGB})
-      Disable(capability);
-    ColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-    PolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-    UseProgram(ordered_programs[family]);
-    DrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, rectangles);
-    MemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
-    ordered_initialized[family] = true;
-    ++ordered_draws;
-    ordered_rectangles += static_cast<u64>(rectangles);
+      HostFloatEnvironment::run(dispatch);
+    else
+      dispatch();
   }
 
   GLuint compile_program(const char *source, const char *kind) {
@@ -495,16 +501,18 @@ struct HardwareRenderer::Impl {
   void ensure_family(unsigned family) {
     if (fragment_programs[family].scalar)
       return;
-    const auto scalar = family ? zero_source(compute_source) : std::string{};
-    const auto batch = family ? zero_source(batch_source) : std::string{};
-    fragment_programs[family] = detail::create_fragment_programs(
-        [&](bool batched) {
-          const char *source = batched ? batch_source : compute_source;
-          if (family)
-            source = batched ? batch.c_str() : scalar.c_str();
-          return compile_program(source, batched ? "batch fragment" : "fragment");
-        },
-        [&](GLuint program) { DeleteProgram(program); });
+    HostFloatEnvironment::run([&] {
+      const auto scalar = family ? zero_source(compute_source) : std::string{};
+      const auto batch = family ? zero_source(batch_source) : std::string{};
+      fragment_programs[family] = detail::create_fragment_programs(
+          [&](bool batched) {
+            const char *source = batched ? batch_source : compute_source;
+            if (family)
+              source = batched ? batch.c_str() : scalar.c_str();
+            return compile_program(source, batched ? "batch fragment" : "fragment");
+          },
+          [&](GLuint program) { DeleteProgram(program); });
+    });
   }
 
   template <typename Dispatch>
@@ -704,11 +712,14 @@ struct HardwareRenderer::Impl {
                  GL_DYNAMIC_DRAW);
     };
     if (ordered_raster) {
-      std::optional<HostFloatEnvironment> initialization_environment;
+      const auto dispatch = [&] {
+        upload();
+        dispatch_ordered_raster(queued_family, GLsizei(queued.size()));
+      };
       if (!ordered_initialized[queued_family])
-        initialization_environment.emplace();
-      upload();
-      dispatch_ordered_raster(queued_family, GLsizei(queued.size()));
+        HostFloatEnvironment::run(dispatch);
+      else
+        dispatch();
     } else {
       dispatch_fragment(queued_family, true, [&] {
         upload();
@@ -768,35 +779,38 @@ struct HardwareRenderer::Impl {
 };
 
 HardwareRenderer::HardwareRenderer(Memory &memory, std::span<const u8> texture_memory) {
-  const HostFloatEnvironment construction_environment;
-  if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0)
-    throw HardwareUnavailable(std::string("Hardware video initialization failed: ") +
-                              SDL_GetError());
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-  SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 0);
-  SDL_Window *window =
-      SDL_CreateWindow("cupid hardware renderer", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-                       1, 1, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN);
-  if (!window) {
-    SDL_QuitSubSystem(SDL_INIT_VIDEO);
-    throw HardwareUnavailable(std::string("OpenGL 4.3 window creation failed: ") + SDL_GetError());
-  }
-  SDL_GLContext context = SDL_GL_CreateContext(window);
-  if (!context) {
-    SDL_DestroyWindow(window);
-    SDL_QuitSubSystem(SDL_INIT_VIDEO);
-    throw HardwareUnavailable(std::string("OpenGL 4.3 context creation failed: ") + SDL_GetError());
-  }
-  try {
-    impl_ = std::make_unique<Impl>(window, context, memory, texture_memory);
-  } catch (...) {
-    SDL_GL_DeleteContext(context);
-    SDL_DestroyWindow(window);
-    SDL_QuitSubSystem(SDL_INIT_VIDEO);
-    throw;
-  }
+  HostFloatEnvironment::run([&] {
+    if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0)
+      throw HardwareUnavailable(std::string("Hardware video initialization failed: ") +
+                                SDL_GetError());
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 0);
+    SDL_Window *window =
+        SDL_CreateWindow("cupid hardware renderer", SDL_WINDOWPOS_UNDEFINED,
+                         SDL_WINDOWPOS_UNDEFINED, 1, 1, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN);
+    if (!window) {
+      SDL_QuitSubSystem(SDL_INIT_VIDEO);
+      throw HardwareUnavailable(std::string("OpenGL 4.3 window creation failed: ") +
+                                SDL_GetError());
+    }
+    SDL_GLContext context = SDL_GL_CreateContext(window);
+    if (!context) {
+      SDL_DestroyWindow(window);
+      SDL_QuitSubSystem(SDL_INIT_VIDEO);
+      throw HardwareUnavailable(std::string("OpenGL 4.3 context creation failed: ") +
+                                SDL_GetError());
+    }
+    try {
+      impl_ = std::make_unique<Impl>(window, context, memory, texture_memory);
+    } catch (...) {
+      SDL_GL_DeleteContext(context);
+      SDL_DestroyWindow(window);
+      SDL_QuitSubSystem(SDL_INIT_VIDEO);
+      throw;
+    }
+  });
 }
 
 HardwareRenderer::~HardwareRenderer() = default;
@@ -1310,57 +1324,58 @@ HardwareStats HardwareRenderer::synchronize(std::span<u32> colors, std::span<u32
   result.efb_readback_bytes = impl_->efb_readback_bytes;
   if (!impl_->dirty)
     return result;
-  const HostFloatEnvironment synchronization_environment;
-  impl_->current();
-  impl_->flush_batch();
-  result.dispatches = impl_->dispatches;
-  const bool gather_state = shader && impl_->pending_rectangles != 0;
-  // Deferred driver compilation can extend through the first completed read.
-  std::optional<HostFloatEnvironment> initialization_environment;
-  if (shader && !impl_->sync_initialized)
-    initialization_environment.emplace();
-  if (gather_state)
-    impl_->gather_sync_packet();
-  impl_->BindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->buffers[0]);
-  impl_->GetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, GLsizeiptr(colors.size_bytes()),
-                          colors.data());
-  impl_->GetBufferSubData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(colors.size_bytes()),
-                          GLsizeiptr(depths.size_bytes()), depths.data());
-  result.efb_readbacks = ++impl_->efb_readbacks;
-  impl_->efb_readback_bytes += colors.size_bytes() + depths.size_bytes();
-  result.efb_readback_bytes = impl_->efb_readback_bytes;
-  std::array<u32, 19> counters{};
-  impl_->BindBuffer(GL_SHADER_STORAGE_BUFFER,
-                    gather_state ? impl_->sync_buffer : impl_->buffers[2]);
-  impl_->GetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
-                          GLsizeiptr(gather_state ? sizeof(counters) : 11 * sizeof(u32)),
-                          counters.data());
-  if (gather_state)
-    impl_->sync_initialized = true;
-  result.fragments = counters[0];
-  result.left = counters[1];
-  result.right = counters[2];
-  result.top = counters[3];
-  result.bottom = counters[4];
+  return HostFloatEnvironment::run([&] {
+    impl_->current();
+    impl_->flush_batch();
+    result.dispatches = impl_->dispatches;
+    const bool gather_state = shader && impl_->pending_rectangles != 0;
+    // Deferred driver compilation can extend through the first completed read.
+    std::optional<HostFloatEnvironment> initialization_environment;
+    if (shader && !impl_->sync_initialized)
+      initialization_environment.emplace();
+    if (gather_state)
+      impl_->gather_sync_packet();
+    impl_->BindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->buffers[0]);
+    impl_->GetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, GLsizeiptr(colors.size_bytes()),
+                            colors.data());
+    impl_->GetBufferSubData(GL_SHADER_STORAGE_BUFFER, GLsizeiptr(colors.size_bytes()),
+                            GLsizeiptr(depths.size_bytes()), depths.data());
+    result.efb_readbacks = ++impl_->efb_readbacks;
+    impl_->efb_readback_bytes += colors.size_bytes() + depths.size_bytes();
+    result.efb_readback_bytes = impl_->efb_readback_bytes;
+    std::array<u32, 19> counters{};
+    impl_->BindBuffer(GL_SHADER_STORAGE_BUFFER,
+                      gather_state ? impl_->sync_buffer : impl_->buffers[2]);
+    impl_->GetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
+                            GLsizeiptr(gather_state ? sizeof(counters) : 11 * sizeof(u32)),
+                            counters.data());
+    if (gather_state)
+      impl_->sync_initialized = true;
+    result.fragments = counters[0];
+    result.left = counters[1];
+    result.right = counters[2];
+    result.top = counters[3];
+    result.bottom = counters[4];
 
-  const auto unpack = [](u32 value) {
-    return Color{u8(value >> 24), u8(value >> 16), u8(value >> 8), u8(value)};
-  };
-  if (counters[5] && gather_state) {
-    shader->restore_texture_state(unpack(counters[11]), unpack(counters[12]));
-  }
-  if (counters[6] && gather_state) {
-    shader->restore_indirect_coordinates(
-        {static_cast<s32>(counters[13]), static_cast<s32>(counters[14])});
-  }
-  for (unsigned stage = 0; stage < 4; ++stage)
-    if (counters[7 + stage] && gather_state) {
-      shader->restore_indirect_texture(stage, unpack(counters[15 + stage]));
+    const auto unpack = [](u32 value) {
+      return Color{u8(value >> 24), u8(value >> 16), u8(value >> 8), u8(value)};
+    };
+    if (counters[5] && gather_state) {
+      shader->restore_texture_state(unpack(counters[11]), unpack(counters[12]));
     }
-  impl_->reset_counters();
-  impl_->dirty = false;
-  impl_->pending_rectangles = 0;
-  return result;
+    if (counters[6] && gather_state) {
+      shader->restore_indirect_coordinates(
+          {static_cast<s32>(counters[13]), static_cast<s32>(counters[14])});
+    }
+    for (unsigned stage = 0; stage < 4; ++stage)
+      if (counters[7 + stage] && gather_state) {
+        shader->restore_indirect_texture(stage, unpack(counters[15 + stage]));
+      }
+    impl_->reset_counters();
+    impl_->dirty = false;
+    impl_->pending_rectangles = 0;
+    return result;
+  });
 }
 
 const std::string &HardwareRenderer::device() const {

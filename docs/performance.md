@@ -1053,3 +1053,12 @@ terminal comparisons remain under
 `.cache/native-mixed-ram-20261025-v1/qualification-v4/` and
 `commercial-gate-v1/`. These startup bounds precede integration with the ordered
 fragment renderer and do not qualify gameplay FPS.
+
+## Protected floating-point operation costs
+
+A 32-child balanced component comparison measures normal scoped work and the
+protected callback. All results match. Shared-host candidate/baseline ratios are
+1.0096 under MSVC and 0.9866 under GCC. These near-parity samples measure wrapper
+overhead rather than a gameplay gain. Samples and emitted-code comparisons,
+including the recorded non-LTO extra template call, remain under
+`.cache/hfe-exception-boundary-20261025-v1/`.

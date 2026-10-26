@@ -1832,3 +1832,39 @@ failure or arena replacement. The combined source, generated build closure,
 binary hashes and terminal comparisons are sealed under
 `.cache/native-mixed-ram-20261025-v1/combined-integration-prefix-v1/`; parent
 build/test logs remain under `.cache/native-mixed-root-20261025-v1/`.
+
+## Floating-point exception boundaries
+
+Throwing graphics operations use `HostFloatEnvironment::run`. It restores caller
+controls, masks and sticky flags inside the catch boundary before rethrowing the
+same C++ exception. This handles an observed Windows unwind path that can reload
+captured x87 state after destructor restoration. Assembly, saved-state layout
+and defaults are unchanged. The guarantee covers work inside the callback.
+
+Protected regions include command decoding, shader compilation and rollback,
+complete SDL construction and cleanup, cold upload/dispatch, and dirty reads.
+Warmed paths, clean returns, projection arithmetic and the optional first-read
+scope retain their boundaries. Guest-selected CPU rounding is unchanged.
+
+The new `host_float_environment_boundary` test adds 24,192 cases per build:
+untouched-default throws, partial independent masks, rounding, sticky flags,
+nested calls, cleanup, returns and exception identity. Four MSVC configurations,
+GCC Release/LTO and Clang sanitizers pass eighteen host-state checks; the original
+seventeen test sources and cases remain unchanged.
+
+The migration passes 26,496 failure/state comparisons for mocked program APIs
+and the actual command parser on MSVC and GCC. The integrated strict MSVC build
+passes 26 selected
+CPU/FIFO/floating/CLI checks and eight ordinary device runs across automatic
+ordered rendering, forced compute, required ordered rendering, copies and guest
+video. Driver-error paths use mocked interfaces; physical exhaustion and reset
+remain untested. Source and receipts are retained in
+`.cache/hfe-exception-boundary-20261025-v1/`,
+`.cache/hfe-root-boundaries-20261025-v1/` and `.cache/hfe-root-parent-20261025-v1/`.
+
+Two ordinary Windows startup prefixes also preserve all 59 compared reported
+fields, including fifteen native counters, raw final frames and stored files
+against the preceding RAM-packet build. Sunshine reaches 320 fields at three
+billion attempts; Galaxy reaches 76 at one billion. Only commit metadata is
+excluded. Their frozen compiled-source closure and terminal comparisons remain
+under `.cache/hfe-root-parent-prefix-20261025-v1/`.

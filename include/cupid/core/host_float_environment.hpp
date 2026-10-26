@@ -2,6 +2,7 @@
 #pragma once
 #include <cfenv>
 #include <stdexcept>
+#include <utility>
 #if defined(_MSC_VER) && defined(_M_X64) && !defined(_M_ARM64EC)
 #include <cstddef>
 #endif
@@ -23,6 +24,9 @@ extern "C" void cupid_host_float_restore(const HostFloatState *state) noexcept;
 #endif
 // Host work entered from guest floating-point operations uses the default
 // environment, then restores the caller's rounding, masks and exception flags.
+// Use run() for work that can throw: Windows unwinding can overwrite x87 state
+// after an unwinding destructor restores it. Bare guards retain their normal
+// scope-exit behavior; run() also restores before propagating an exception.
 class HostFloatEnvironment {
 public:
   HostFloatEnvironment() {
@@ -39,6 +43,24 @@ public:
   }
 
   ~HostFloatEnvironment() {
+    restore();
+  }
+
+  template <class Operation> static decltype(auto) run(Operation &&operation) {
+    const HostFloatEnvironment environment;
+    try {
+      return std::forward<Operation>(operation)();
+    } catch (...) {
+      environment.restore();
+      throw;
+    }
+  }
+
+  HostFloatEnvironment(const HostFloatEnvironment &) = delete;
+  HostFloatEnvironment &operator=(const HostFloatEnvironment &) = delete;
+
+private:
+  void restore() const noexcept {
 #if defined(_MSC_VER) && defined(_M_X64) && !defined(_M_ARM64EC)
     detail::cupid_host_float_restore(&saved_);
 #else
@@ -46,10 +68,6 @@ public:
 #endif
   }
 
-  HostFloatEnvironment(const HostFloatEnvironment &) = delete;
-  HostFloatEnvironment &operator=(const HostFloatEnvironment &) = delete;
-
-private:
 #if defined(_MSC_VER) && defined(_M_X64) && !defined(_M_ARM64EC)
   detail::HostFloatState saved_;
 #else

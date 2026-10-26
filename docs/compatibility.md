@@ -490,3 +490,23 @@ endpoint state/frame and storage. This observer route uses disabled host audio
 and does not establish an independent replay, completed level or speed
 measurement. It precedes the ordered fragment backend and does not qualify
 that later source for festival gameplay.
+
+## Ordered-renderer airstrip replay through 16,000 fields
+
+A frozen `8dc8618` normal Windows CLI completes the same ordinary Sunshine
+replay with automatic ordered rendering, disabled host audio, copied empty
+storage and the original controller bytes. It exits at 16,000 fields. All 58
+strict reported fields, including fifteen native CPU diagnostics, CPU/RAM hashes
+and internal audio results, match `aa5c9b1`. Raw final PPM bytes and all four
+persisted files match. Revision metadata and physical submission count retain
+their declared differences.
+
+The final frame shows Mario airborne at the airstrip goop boundary; its PPM
+SHA-256 remains `3e69cbab0d48ef63f8a9974f36bfb10f7ebd2956c0f9bab48677658eb48e2dce`.
+This is an endpoint comparison. Intermediate raw-image equality, completed
+levels, endpoint audio and saved-level restoration remain unqualified.
+
+The run takes 1,913.16 seconds on a shared host and supplies no isolated FPS
+measurement. Its source precedes the RAM-packet and protected-operation changes,
+which have separate validation. Source, binaries, inputs and terminal evidence
+remain under `.cache/sunshine-renderer8dc-16000-20261025-v1/`.

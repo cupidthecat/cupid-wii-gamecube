@@ -60,50 +60,51 @@ inline std::string ordered_raster_fragment_source(std::string_view batch,
 
 template <typename Api>
 GLuint compile_ordered_raster_program(Api &api, const char *vertex, const char *fragment) {
-  const HostFloatEnvironment environment;
-  std::array<GLuint, 2> shaders{};
-  GLuint program = 0;
-  try {
-    const std::array<GLenum, 2> kinds{GL_VERTEX_SHADER, GL_FRAGMENT_SHADER};
-    const std::array<const char *, 2> sources{vertex, fragment};
-    for (unsigned n = 0; n < shaders.size(); ++n) {
-      shaders[n] = api.CreateShader(kinds[n]);
-      if (!shaders[n])
-        throw std::runtime_error("Ordered raster shader allocation failed");
-      api.ShaderSource(shaders[n], 1, &sources[n], nullptr);
-      api.CompileShader(shaders[n]);
+  return HostFloatEnvironment::run([&] {
+    std::array<GLuint, 2> shaders{};
+    GLuint program = 0;
+    try {
+      const std::array<GLenum, 2> kinds{GL_VERTEX_SHADER, GL_FRAGMENT_SHADER};
+      const std::array<const char *, 2> sources{vertex, fragment};
+      for (unsigned n = 0; n < shaders.size(); ++n) {
+        shaders[n] = api.CreateShader(kinds[n]);
+        if (!shaders[n])
+          throw std::runtime_error("Ordered raster shader allocation failed");
+        api.ShaderSource(shaders[n], 1, &sources[n], nullptr);
+        api.CompileShader(shaders[n]);
+        GLint success = 0;
+        api.GetShaderiv(shaders[n], GL_COMPILE_STATUS, &success);
+        if (!success) {
+          std::array<char, 8192> log{};
+          api.GetShaderInfoLog(shaders[n], GLsizei(log.size()), nullptr, log.data());
+          throw std::runtime_error(std::string("Ordered raster shader compilation failed: ") +
+                                   log.data());
+        }
+      }
+      program = api.CreateProgram();
+      if (!program)
+        throw std::runtime_error("Ordered raster program allocation failed");
+      for (GLuint shader : shaders)
+        api.AttachShader(program, shader);
+      api.LinkProgram(program);
       GLint success = 0;
-      api.GetShaderiv(shaders[n], GL_COMPILE_STATUS, &success);
+      api.GetProgramiv(program, GL_LINK_STATUS, &success);
       if (!success) {
         std::array<char, 8192> log{};
-        api.GetShaderInfoLog(shaders[n], GLsizei(log.size()), nullptr, log.data());
-        throw std::runtime_error(std::string("Ordered raster shader compilation failed: ") +
-                                 log.data());
+        api.GetProgramInfoLog(program, GLsizei(log.size()), nullptr, log.data());
+        throw std::runtime_error(std::string("Ordered raster program link failed: ") + log.data());
       }
+    } catch (...) {
+      for (GLuint shader : shaders)
+        if (shader)
+          api.DeleteShader(shader);
+      if (program)
+        api.DeleteProgram(program);
+      throw;
     }
-    program = api.CreateProgram();
-    if (!program)
-      throw std::runtime_error("Ordered raster program allocation failed");
     for (GLuint shader : shaders)
-      api.AttachShader(program, shader);
-    api.LinkProgram(program);
-    GLint success = 0;
-    api.GetProgramiv(program, GL_LINK_STATUS, &success);
-    if (!success) {
-      std::array<char, 8192> log{};
-      api.GetProgramInfoLog(program, GLsizei(log.size()), nullptr, log.data());
-      throw std::runtime_error(std::string("Ordered raster program link failed: ") + log.data());
-    }
-  } catch (...) {
-    for (GLuint shader : shaders)
-      if (shader)
-        api.DeleteShader(shader);
-    if (program)
-      api.DeleteProgram(program);
-    throw;
-  }
-  for (GLuint shader : shaders)
-    api.DeleteShader(shader);
-  return program;
+      api.DeleteShader(shader);
+    return program;
+  });
 }
 } // namespace cupid::gfx::detail

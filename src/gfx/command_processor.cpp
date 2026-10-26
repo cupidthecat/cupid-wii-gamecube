@@ -171,21 +171,22 @@ void CommandProcessor::submit(std::span<const u8> data) {
   if (pending_.empty())
     return;
   // Command execution owns its host environment even when entered from a guest store.
-  const HostFloatEnvironment host_environment;
-  std::size_t consumed = 0;
-  while (consumed < pending_.size()) {
-    std::size_t amount = 0;
-    try {
-      amount = decode(std::span<const u8>(pending_).subspan(consumed));
-    } catch (const BusFault &error) {
-      graphics_memory_error(error);
+  HostFloatEnvironment::run([&] {
+    std::size_t consumed = 0;
+    while (consumed < pending_.size()) {
+      std::size_t amount = 0;
+      try {
+        amount = decode(std::span<const u8>(pending_).subspan(consumed));
+      } catch (const BusFault &error) {
+        graphics_memory_error(error);
+      }
+      if (!amount)
+        break;
+      consumed += amount;
+      ++command_count_;
     }
-    if (!amount)
-      break;
-    consumed += amount;
-    ++command_count_;
-  }
-  pending_.erase(pending_.begin(), pending_.begin() + static_cast<std::ptrdiff_t>(consumed));
+    pending_.erase(pending_.begin(), pending_.begin() + static_cast<std::ptrdiff_t>(consumed));
+  });
 }
 
 std::size_t CommandProcessor::decode(std::span<const u8> bytes) {

@@ -756,7 +756,9 @@ if(CUPID_BUILD_TESTS)
       fragment_reference_checks efb_copy_reference_checks xfb_copy_reference_checks
       host_audio_reference_checks
       PROPERTIES TIMEOUT 600)
-    set_tests_properties(cpu_integer_run PROPERTIES TIMEOUT 300)
+    # The complete fixed branch/state matrix can exceed five minutes on shared
+    # instrumented runners. Keep every case and allow bounded headroom.
+    set_tests_properties(cpu_integer_run PROPERTIES TIMEOUT 600)
     # The 252-case Debug run took 1230.15 seconds; this scope has three times as many cases.
     set_tests_properties(runtime_group PROPERTIES TIMEOUT 5400)
     set_tests_properties(cpu_memory_reference_checks PROPERTIES TIMEOUT 1800)

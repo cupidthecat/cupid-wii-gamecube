@@ -144,6 +144,7 @@ struct RamControlCache {
   explicit RamControlCache(unsigned reservation) {
     lookup.reserve(reservation);
   }
+
   std::unordered_map<BlockKey, RamControlOperation, BlockHash> lookup;
   RamControlEntry last{};
 
@@ -1430,9 +1431,9 @@ bool NativeInteger::execute_ram_control_sequence(State &state, std::span<const u
 #endif
 }
 
-bool NativeInteger::execute_short_ram_control_sequence(
-    State &state, std::span<const u32> words, const NativeRamContext &context,
-    NativeRamControlRun &result) {
+bool NativeInteger::execute_short_ram_control_sequence(State &state, std::span<const u32> words,
+                                                       const NativeRamContext &context,
+                                                       NativeRamControlRun &result) {
   if ((words.size() != 6 && words.size() != 7) || !context.data || context.bytes < 4 ||
       context.physical_base > 0xffffffffu - (context.bytes - 1) || (state.msr & msr::le) ||
       bool(state.msr & msr::dr) != bool(context.bat_entries) || (words.back() >> 26) != 16 ||

@@ -31,7 +31,8 @@ __declspec(noinline)
 #elif defined(__GNUC__) || defined(__clang__)
 __attribute__((noinline))
 #endif
-unsigned short_ram_control_count(std::span<const u32> words) {
+unsigned
+short_ram_control_count(std::span<const u32> words) {
   if (words.size() < 6 || words.size() > 8)
     return 0;
   bool memory = false;
@@ -1119,7 +1120,8 @@ IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cy
                 physical_data >= view.physical_base &&
                 physical_data - view.physical_base <= view.bytes.size() - 4) {
               const NativeRamContext context{view.bytes.data(), map ? map->entries.data() : nullptr,
-                                             view.physical_base, static_cast<u32>(view.bytes.size())};
+                                             view.physical_base,
+                                             static_cast<u32>(view.bytes.size())};
               NativeRamControlRun compiled;
               if (native_integer_->execute_short_ram_control_sequence(state_, prefix, context,
                                                                       compiled) &&

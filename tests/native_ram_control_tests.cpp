@@ -205,6 +205,35 @@ void direct_matrix() {
               }
 }
 
+void narrow_matrix() {
+  u64 checks = 0;
+  NativeInteger native(8, 8, 262144);
+  for (unsigned length : {6u, 7u, 8u})
+    for (unsigned operation : {34u, 38u, 40u, 42u, 44u})
+      for (unsigned position = 0; position + 1 < length; ++position)
+        for (unsigned address : {0x2000u, 0x2001u, 0x2002u, 0xfffeu, 0xffffu, 0x10000u})
+          for (bool condition : {false, true}) {
+            const unsigned width = operation == 34 || operation == 38 ? 1 : 2;
+            std::array<u32, 8> words;
+            for (unsigned n = 0; n < length; ++n)
+              words[n] = dform(14, 5, 5, n + 1);
+            words[position] = dform(operation, 4, 3);
+            words[length - 1] = branch_word(12, 0, 64);
+            auto state = initial_state(unsigned(checks), 0, condition);
+            state.gpr[3] = address;
+            MixedMemory ram;
+            initialize(ram, unsigned(checks));
+            NativeRamContext context{ram.bytes.data(), nullptr, 0, unsigned(ram.bytes.size())};
+            const bool accepted = address <= ram.bytes.size() - width && !(address & (width - 1));
+            identify("narrow-transfer", checks, length);
+            direct_check(native, std::span(words).first(length), state, ram,
+                         accepted ? length : position, context);
+            ++checks;
+          }
+  CHECK(checks == 1080);
+  std::cout << "Narrow RAM/control comparisons: " << checks << '\n';
+}
+
 void taken_to_next_pc() {
   for (unsigned length : {6u, 7u, 8u}) {
     NativeInteger native(8, 8, 65536);
@@ -426,7 +455,9 @@ struct RuntimePair {
   Interpreter oracle{expected}, native{actual};
   State initial;
 
-  RuntimePair(std::span<const u32> words, unsigned offset, unsigned salt) {
+  RuntimePair(std::span<const u32> words, unsigned offset, unsigned salt,
+              Console console = Console::GameCube)
+      : oracle(expected, console), native(actual, console) {
     native.set_execution_backend(ExecutionBackend::NativeInteger);
     initial = initial_state(salt);
     initial.spr[spr::hid0] = 0x8000;
@@ -477,6 +508,39 @@ void runtime_matrix() {
               ++counts.runtime;
             }
           }
+}
+
+void narrow_runtime_matrix() {
+  unsigned checked = 0;
+  for (auto console : {Console::GameCube, Console::Wii})
+    for (unsigned length : {6u, 7u, 8u})
+      for (unsigned operation : {34u, 38u, 40u, 42u, 44u})
+        for (unsigned offset : {0u, 6u})
+          for (bool condition : {false, true}) {
+            std::array<u32, 8> words;
+            for (unsigned n = 0; n < words.size(); ++n)
+              words[n] = dform(14, 8, 8, n + 1);
+            const unsigned displacement = operation == 34 || operation == 38 ? 1 : 2;
+            words[0] = dform(operation, 4, 3, displacement);
+            words[length - 1] = branch_word(12, 0, 64);
+            RuntimePair pair(words, offset, checked, console);
+            pair.initial.cr = (pair.initial.cr & 0x7fffffff) | (condition ? 0x80000000u : 0);
+            for (unsigned phase = 0; phase < 2; ++phase) {
+              pair.oracle.state() = pair.native.state() = pair.initial;
+              const auto before = pair.native.native_statistics();
+              const auto result = pair.native.try_integer_run(8, 8);
+              CHECK(result.instructions == length && result.cycles == length);
+              for (unsigned n = 0; n < length; ++n)
+                CHECK(pair.oracle.step() == 1);
+              mixed_equal(pair.oracle.state(), pair.native.state());
+              CHECK(pair.expected.bytes == pair.actual.bytes);
+              CHECK(pair.expected.records == pair.actual.records);
+              block_delta(before, pair.native.native_statistics(), length, phase == 0);
+              ++checked;
+            }
+          }
+  CHECK(checked == 240);
+  std::cout << "Narrow RAM/control runtime comparisons: " << checked << '\n';
 }
 
 void same_memory(Memory &a, Memory &b, Console console) {
@@ -559,12 +623,14 @@ int main() {
   return run_tests([] {
     try {
       direct_matrix();
+      narrow_matrix();
       taken_to_next_pc();
       relocated_cache_reuse();
       guard_matrix();
       declines();
       cache_coexistence();
       runtime_matrix();
+      narrow_runtime_matrix();
       machine_matrix();
       CHECK(counts.direct == 24576 && counts.guards == 216);
       CHECK(counts.declines == 48 && counts.decline_warm == 48);

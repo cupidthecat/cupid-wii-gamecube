@@ -1079,3 +1079,31 @@ the original byte loop; no big-endian hardware result is established. Qualified
 loop, source, executable and raw samples remain under
 `.cache/xfb-row-memcpy-20261026-v1/` and
 `.cache/xfb-row-scatter-results-20261026-v1/`.
+
+## Native byte and halfword blocks
+
+An authored CPU workload compares baseline `3b74213e72d3` with the native
+`lbz`, `stb`, `lhz`, `lha`, and `sth` extension. Each sample executes ten million
+eight-instruction resident blocks, with strict floating-point flags, GCC 14.2,
+Release optimization, no LTO, no graphics/audio and no disc. Three A/B/B/A
+quartets run per workload and console configuration on the shared Linux host.
+Both builds select the native backend explicitly; the default backend is unchanged.
+Every serialized CPU field and all 65,536 RAM bytes match across each workload's
+twelve samples. Native counters differ as expected.
+
+| Configuration | Baseline median seconds | Candidate median seconds |
+| --- | ---: | ---: |
+| GameCube, mixed byte/halfword operations | 0.956808 | 0.556368 |
+| Wii, mixed byte/halfword operations | 0.959272 | 0.546389 |
+| GameCube, existing word-only operations | 0.576315 | 0.539287 |
+| Wii, existing word-only operations | 0.561403 | 0.513376 |
+
+The first implementation improved narrow transfers but made the word-only
+component medians 2.7–8.8 percent slower across two measurement passes. The
+retained implementation caches native packet eligibility with resident
+instruction words, eliminating repeated packet scans; the table shows this
+final pass. Earlier results are retained rather than discarded.
+
+These are synthetic CPU-path measurements, not game profiles or gameplay FPS.
+They do not establish sustained full speed on either console. Source, all timing
+samples and binary hashes are retained in `.cache/native-widths-20261027/`.

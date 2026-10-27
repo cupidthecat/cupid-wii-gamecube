@@ -87,6 +87,7 @@ public:
   struct Resident {
     std::span<const u32> words;
     unsigned integer_mask = 0, scalar_mask = 0, branch_mask = 0, scalar_start_mask = 0;
+    unsigned native_ram_mask = 0;
   };
 
   // Inspection never allocates, fills, or changes replacement state. A caller
@@ -163,6 +164,7 @@ private:
     u8 integer_mask = 0;
     u8 cache_flush_mask = 0;
     u8 scalar_mask = 0, scalar_branch_mask = 0, scalar_start_mask = 0;
+    u8 native_ram_mask = 0;
   };
 
   Line *obtain(Bus &bus, u32 physical, bool locked) {

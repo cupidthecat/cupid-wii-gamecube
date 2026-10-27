@@ -99,7 +99,7 @@ all earlier interrupt, replay and device deadlines.
 
 Native RAM groups can end in an eligible conditional branch. Separate entries
 handle eight-word blocks and six- or seven-word prefixes whose first branch is
-their last word. At least one aligned immediate word load or store must precede
+their last word. At least one eligible immediate integer load or store must precede
 that branch; the remaining prefix operations must be groupable integer
 instructions. A caller prefilter checks the possible short-block branch slots
 before inspecting the full resident span. It performs no fetch or cache update.
@@ -299,3 +299,26 @@ instruction-fetch order. On x64 it also checks x87 and SIMD rounding, flush mode
 sticky flags and unmasked controls. The cache-hint fixture compares every hint
 result with the separate predicates, then verifies subsequent fetches against an
 untouched cache, including eviction, invalidation, aliases and locked misses.
+
+## Byte and halfword RAM blocks
+
+Native RAM entries now also admit `lbz`, `stb`, `lhz`, `lha`, and `sth` beside
+`lwz` and `stw`. The nonbranch, eight-word control, and six/seven-word control
+entries share one memory-access emitter. Byte accesses accept any alignment;
+halfwords require two-byte alignment and words require four-byte alignment.
+Unaligned halfword and word accesses retain the existing scalar path.
+
+Each access checks the current translation, cache policy, backing interval and
+its own transfer width before reading or writing. Halfwords swap guest byte
+order before signed extension. Narrow stores modify only their addressed bytes.
+A declined later access publishes only the completed prefix, with no early
+branch effects. Register aliases, fresh backing contexts, event cuts and cache
+retirement retain their existing contracts. This extension does not enable
+update, indexed, reversed, reservation or floating transfers in emitted RAM
+blocks, and does not change the default execution backend.
+
+Instruction-cache fills also record which resident words can use native RAM
+blocks. The caller combines these masks across resident line boundaries instead
+of rescanning the whole packet at every invocation. Invalidation and replacement
+rebuild the mask with the instruction words; it never causes a fill, bypasses a
+memory guard or changes cache-hit retirement.

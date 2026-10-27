@@ -41,7 +41,7 @@ short_ram_control_count(std::span<const u32> words) {
     const unsigned primary = opcode >> 26;
     if (primary == 16)
       return memory && (n == 5 || n == 6) && !(opcode & 1) ? n + 1 : 0;
-    if (primary == 32 || primary == 36)
+    if (NativeInteger::ram_access_bytes(opcode))
       memory = true;
     else if (!NativeInteger::can_group(opcode))
       return 0;
@@ -961,7 +961,7 @@ IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cy
   if (instruction_cache_.scalar_run_hint(state_.pc)) {
     const auto first_line = instruction_cache_.inspect(key, physical);
     std::array<u32, 8> scalar_words;
-    unsigned scalar_count = 0, memory_mask = 0, branch_mask = 0;
+    unsigned scalar_count = 0, memory_mask = 0, branch_mask = 0, native_ram_mask = 0;
     u32 second_key = 0;
     const unsigned first_size = static_cast<unsigned>(first_line.words.size());
     const auto packet_count = [](const InstructionCache::Resident &line, unsigned available) {
@@ -982,6 +982,7 @@ IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cy
     };
     scalar_count = packet_count(first_line, limit);
     memory_mask = first_line.scalar_mask & ((1u << scalar_count) - 1);
+    native_ram_mask = first_line.native_ram_mask & ((1u << scalar_count) - 1);
     branch_mask = first_line.branch_mask & ((1u << scalar_count) - 1);
     // Hits only update replacement metadata, and admitted operations cannot
     // invalidate or fill the cache, so a single-line group can borrow its words.
@@ -995,6 +996,7 @@ IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cy
         std::copy_n(words.data(), scalar_count, scalar_words.data());
         std::copy_n(following.words.data(), next, scalar_words.data() + scalar_count);
         memory_mask |= (following.scalar_mask & ((1u << next) - 1)) << scalar_count;
+        native_ram_mask |= (following.native_ram_mask & ((1u << next) - 1)) << scalar_count;
         scalar_count += next;
         // Both copied ranges initialize this entire span; the unused tail is
         // never exposed, and a missing continuation retains the resident span.
@@ -1023,11 +1025,14 @@ IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cy
                        : std::span<u8>{};
       if (!bytes.empty()) {
         const u32 start = state_.pc;
+        const unsigned native_width =
+            std::max(1u, NativeInteger::ram_access_bytes(words[first_memory]));
         // Inspect the whole selected packet: truncating a packet at a branch
         // would bypass the existing invariant polling-loop folding below.
         // Use full packets to amortize one-entry dispatch and per-access
         // guards. Short packets retain the existing scalar loop.
-        if (backend_ == ExecutionBackend::NativeInteger && scalar_count == 8 && !(effective & 3)) {
+        if (backend_ == ExecutionBackend::NativeInteger && scalar_count == 8 &&
+            !(effective & (native_width - 1))) {
           const auto view = bus_.plain_cpu_ram_view();
           u32 physical_data = effective;
           if (state_.msr & msr::dr)
@@ -1037,11 +1042,8 @@ IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cy
           if (!view.bytes.empty() && view.bytes.size() >= 4 &&
               view.bytes.size() <= std::numeric_limits<u32>::max() &&
               physical_data >= view.physical_base &&
-              physical_data - view.physical_base <= view.bytes.size() - 4 &&
-              std::all_of(words.begin(), words.end(), [](u32 opcode) {
-                return (opcode >> 26) == 32 || (opcode >> 26) == 36 ||
-                       NativeInteger::can_group(opcode);
-              })) {
+              physical_data - view.physical_base <= view.bytes.size() - native_width &&
+              native_ram_mask == 255) {
             const NativeRamContext context{view.bytes.data(), map ? map->entries.data() : nullptr,
                                            view.physical_base, static_cast<u32>(view.bytes.size())};
             u32 retired = 0;
@@ -1063,11 +1065,8 @@ IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cy
         // actual full span, including a borrowed second line: an earlier branch
         // must retain the scalar polling fold rather than truncate this packet.
         if (backend_ == ExecutionBackend::NativeInteger && scalar_count == 8 &&
-            (words[7] >> 26) == 16 && !(words[7] & 1) && !(effective & 3) &&
-            std::all_of(words.begin(), words.end() - 1, [](u32 opcode) {
-              return (opcode >> 26) == 32 || (opcode >> 26) == 36 ||
-                     NativeInteger::can_group(opcode);
-            })) {
+            (words[7] >> 26) == 16 && !(words[7] & 1) && !(effective & (native_width - 1)) &&
+            (native_ram_mask & 127) == 127) {
           const auto view = bus_.plain_cpu_ram_view();
           u32 physical_data = effective;
           if (state_.msr & msr::dr)
@@ -1075,7 +1074,7 @@ IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cy
           if (!view.bytes.empty() && view.bytes.size() >= 4 &&
               view.bytes.size() <= std::numeric_limits<u32>::max() &&
               physical_data >= view.physical_base &&
-              physical_data - view.physical_base <= view.bytes.size() - 4) {
+              physical_data - view.physical_base <= view.bytes.size() - native_width) {
             const NativeRamContext context{view.bytes.data(), map ? map->entries.data() : nullptr,
                                            view.physical_base, static_cast<u32>(view.bytes.size())};
             NativeRamControlRun compiled;
@@ -1104,7 +1103,8 @@ IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cy
         // Reject all earlier branches so three-word polling keeps its old fold.
         // A selectable first BC must be at slot5/6 with LK clear. Skip the pure
         // scan otherwise; the helper still rejects all earlier control.
-        if (backend_ == ExecutionBackend::NativeInteger && scalar_count >= 6 && !(effective & 3) &&
+        if (backend_ == ExecutionBackend::NativeInteger && scalar_count >= 6 &&
+            !(effective & (native_width - 1)) &&
             ((words[5] >> 26) == 16
                  ? !(words[5] & 1)
                  : scalar_count >= 7 && (words[6] >> 26) == 16 && !(words[6] & 1))) {
@@ -1118,7 +1118,7 @@ IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cy
             if (!view.bytes.empty() && view.bytes.size() >= 4 &&
                 view.bytes.size() <= std::numeric_limits<u32>::max() &&
                 physical_data >= view.physical_base &&
-                physical_data - view.physical_base <= view.bytes.size() - 4) {
+                physical_data - view.physical_base <= view.bytes.size() - native_width) {
               const NativeRamContext context{view.bytes.data(), map ? map->entries.data() : nullptr,
                                              view.physical_base,
                                              static_cast<u32>(view.bytes.size())};

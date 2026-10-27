@@ -76,7 +76,8 @@ InstructionCache::Resident InstructionCache::inspect(u32 key, u32 physical) cons
           static_cast<unsigned>(line.integer_mask) >> shift,
           static_cast<unsigned>(line.scalar_mask) >> shift,
           static_cast<unsigned>(line.scalar_branch_mask) >> shift,
-          static_cast<unsigned>(line.scalar_start_mask) >> shift};
+          static_cast<unsigned>(line.scalar_start_mask) >> shift,
+          static_cast<unsigned>(line.native_ram_mask) >> shift};
 }
 
 void InstructionCache::commit_hit(u32 key) noexcept {
@@ -156,11 +157,13 @@ InstructionCache::Line *InstructionCache::obtain_other(Bus &bus, u32 physical, u
     Line loaded = set[way];
     loaded.address = address;
     bus.read_instruction_words(physical & ~31u, loaded.words);
-    loaded.integer_mask = 0;
+    loaded.integer_mask = loaded.native_ram_mask = 0;
     loaded.scalar_mask = loaded.scalar_branch_mask = 0;
     for (unsigned n = 0; n < loaded.words.size(); ++n) {
       if (NativeInteger::can_group(loaded.words[n]))
         loaded.integer_mask |= static_cast<u8>(1u << n);
+      if ((loaded.integer_mask & (1u << n)) || NativeInteger::ram_access_bytes(loaded.words[n]))
+        loaded.native_ram_mask |= static_cast<u8>(1u << n);
       const unsigned primary = loaded.words[n] >> 26, operation = (loaded.words[n] >> 1) & 1023;
       // Indexed scalar types share the immediate transfer core. Keep reversed,
       // reservation, string and integer-word FP stores on ordinary stepping.

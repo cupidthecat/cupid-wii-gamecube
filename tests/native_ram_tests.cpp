@@ -65,7 +65,7 @@ void semantics() {
   for (unsigned count = 2; count <= 8; ++count)
     for (unsigned memory_position = 0; memory_position < count; ++memory_position)
       for (unsigned reg : {0u, 3u, 7u, 31u})
-        for (unsigned operation : {32u, 36u})
+        for (unsigned operation : {32u, 34u, 36u, 38u, 40u, 42u, 44u})
           for (bool translated : {false, true}) {
             auto initial = mixed_seed(memory_position + reg);
             initial.gpr[3] = translated ? 0x80002000 : 0x2000;
@@ -168,6 +168,35 @@ void guards() {
           after.block_executable_bytes == stats.block_executable_bytes &&
           after.executed == stats.executed && after.fallback == stats.fallback);
     ++rejected;
+  }
+}
+
+void narrow_boundaries() {
+  NativeInteger native(8, 8, 131072);
+  for (unsigned operation : {34u, 38u, 40u, 42u, 44u}) {
+    const unsigned width = operation == 34 || operation == 38 ? 1 : 2;
+    for (unsigned position = 0; position < 8; ++position)
+      for (bool translated : {false, true})
+        for (unsigned address : {0u, 1u, 2u, 3u, 4094u, 4095u, 65534u, 65535u, 65536u}) {
+          auto initial = mixed_seed(address);
+          initial.gpr[3] = address | (translated ? 0x80000000u : 0u);
+          initial.gpr[7] = 0x2800 | (translated ? 0x80000000u : 0u);
+          std::array<u32, 8> words;
+          for (unsigned n = 0; n < words.size(); ++n)
+            words[n] = n == 0 && position ? dform(36, 6, 7) : dform(14, 5, 5, n + 1);
+          words[position] = dform(operation, 4, 3);
+          const bool accepted = address <= 65536u - width && !(address & (width - 1));
+          direct(native, words, initial, accepted ? 8 : position, translated);
+        }
+  }
+  // Big-endian signed extension must use bit 15 of the assembled halfword,
+  // not bit 15 of a little-endian host read or the high half of the register.
+  for (u32 value : {0u, 1u, 0x7fffu, 0x8000u, 0xffffu, 0x1234u, 0xff00u, 0x00ffu}) {
+    auto initial = mixed_seed();
+    initial.gpr[4] = value;
+    const std::array<u32, 4> words{dform(44, 4, 3), dform(42, 5, 3), dform(40, 6, 3),
+                                   dform(34, 8, 3)};
+    direct(native, words, initial, 4);
   }
 }
 
@@ -461,6 +490,30 @@ void runtime() {
   }
 }
 
+void narrow_runtime() {
+  for (auto console : {Console::GameCube, Console::Wii})
+    for (unsigned operation : {34u, 38u, 40u, 42u, 44u})
+      for (unsigned offset : {0u, 6u})
+        for (unsigned alignment : {0u, 1u, 2u, 3u}) {
+          RuntimePair pair(console);
+          std::array<u32, 8> words;
+          for (unsigned n = 0; n < words.size(); ++n)
+            words[n] = dform(14, 5, 5, n + 1);
+          words[0] = dform(operation, 4, 3, alignment);
+          pair.prepare(words, offset);
+          const unsigned width = operation == 34 || operation == 38 ? 1 : 2;
+          const auto before = pair.native.native_statistics();
+          const auto result = pair.attempt(8, 8);
+          if (!(alignment & (width - 1))) {
+            CHECK(result.instructions == 8 && result.cycles == 8);
+            activation(pair, before, 1, 1);
+          } else {
+            CHECK(result.instructions == 8 && result.cycles == 8);
+            CHECK(pair.native.native_statistics().block_runs == before.block_runs);
+          }
+        }
+}
+
 void environment() {
 #if defined(_M_X64) || defined(__x86_64__)
   const auto old_simd = _mm_getcsr();
@@ -513,6 +566,8 @@ int main() {
   }
   return run_tests([] {
     semantics();
+    narrow_boundaries();
+    narrow_runtime();
     guards();
     arithmetic_context_survival();
     context_and_hints();

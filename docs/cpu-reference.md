@@ -371,3 +371,25 @@ existing product transfer and exception rules.
 Little-endian execution, direct-store segments, NaN-to-integer quantization, locked-cache DMA queue timing, additional performance event selectors, and data cache visibility remain unfinished. Those recognized unfinished execution paths report explicit diagnostics. The timebase uses a twelve-cycle divider and the decrementer uses its own write phase. Full device scheduling and edge timing still need differential validation.
 
 PI memory-access error address and cause registers remain unmodeled beyond the interrupt request, matching the pinned caller's stated gap. Full MMIO transaction-width and fault fidelity still needs validation outside the tested store paths.
+
+## Native byte and halfword transfers
+
+The immediate `lbz`, `stb`, `lhz`, `lha`, and `sth` extension follows the width,
+byte-order and signed-extension behavior of `Jit_LoadStore.cpp` (`lXXx`, `stX`)
+and its `Interpreter_LoadStore.cpp` callers. The emitter uses the project's
+existing state offsets, guarded RAM context and typed block exits rather than
+reusing the reference's register-cache or fast-memory machinery.
+
+This comparison uses revision `3eb30c7620b4475b2e0404228ba0d2b238a132f1`.
+The earlier revision listed above retains historical implementation provenance;
+the current memory-comparison adapters no longer compile against its old
+initialization and framebuffer interfaces. At the newer revision, the unchanged
+memory comparison passes 14,336 direct loads, 30,848 store/BAT/TLB comparisons,
+16,384 BAT loads, 589,824 BAT addresses and 131,072 mutable table comparisons.
+The unchanged branch-source comparison passes 196,608 cases. These validate
+selected memory and control semantics, not whole-system or game performance.
+
+The public native tests separately compare complete CPU state and RAM against
+ordinary stepping, with new width-specific boundaries, signed halfwords,
+register aliases, partial retirement, translated backing and both consoles.
+The branch cases retain their original control/clock qualification boundaries.

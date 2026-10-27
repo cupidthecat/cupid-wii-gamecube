@@ -50,6 +50,16 @@ public:
   static bool supported() noexcept;
   static bool can_execute(u32 opcode) noexcept;
 
+  // Immediate, non-update integer transfers with precise per-access guards.
+  static constexpr unsigned ram_access_bytes(u32 opcode) noexcept {
+    const unsigned primary = opcode >> 26;
+    if ((primary & ~4u) == 32)
+      return 4;
+    if ((primary & ~4u) == 34)
+      return 1;
+    return primary == 40 || primary == 42 || primary == 44 ? 2 : 0;
+  }
+
   static bool can_group(u32 opcode) noexcept {
     const unsigned primary = opcode >> 26;
     if (primary == 0 || primary == 7 || primary >= 32)
@@ -116,13 +126,13 @@ public:
   bool execute_control_sequence(State &state, std::span<const u32> opcodes,
                                 NativeControlRun &result);
 
-  // Integer operations plus aligned immediate LWZ/STW. Every runtime guard
+  // Integer operations plus immediate byte and aligned halfword/word transfers. Every runtime guard
   // precedes its word's effects; completed earlier words are not rolled back.
   // False leaves guest state and result unchanged before invoking any word.
   bool execute_ram_sequence(State &state, std::span<const u32> opcodes,
                             const NativeRamContext &context, u32 &retired);
 
-  // Exactly eight words: a register/LWZ/STW prefix followed by one LK=0 BC.
+  // Exactly eight words: a register/integer-transfer prefix followed by one LK=0 BC.
   // Guards retire only the completed prefix; the final branch is not evaluated
   // early. Every invoked exit sets PC, while fetch, clocks and metadata remain
   // caller-owned. False preserves guest state and result before invocation.
@@ -130,7 +140,7 @@ public:
                                     const NativeRamContext &context, NativeRamControlRun &result);
 
   // Exactly six or seven words ending at their first LK=0 BC. The preceding
-  // words are integer/LWZ/STW, including at least one RAM access. Unlike the
+  // words are register/integer transfers, including at least one RAM access. Unlike the
   // exact-eight entry, this may execute a prefix of a longer resident selection;
   // the caller must exclude its unexecuted suffix from fetch-hit retirement.
   // The same guard, PC, result and caller-metadata contract applies.

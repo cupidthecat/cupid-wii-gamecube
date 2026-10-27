@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cupid/cpu/cache.hpp"
+#include "cupid/cpu/native_integer.hpp"
 #include "test_support.hpp"
 #include <algorithm>
 #include <array>
@@ -88,11 +89,34 @@ void continuation(InstructionCache &queried, QueryBus &bus, u32 address) {
       const auto a = queried.inspect(key, address + entry * 4);
       const auto b = untouched.inspect(key, address + entry * 4);
       CHECK(a.integer_mask == b.integer_mask && a.scalar_mask == b.scalar_mask &&
-            a.branch_mask == b.branch_mask && a.scalar_start_mask == b.scalar_start_mask);
+            a.branch_mask == b.branch_mask && a.scalar_start_mask == b.scalar_start_mask &&
+            a.native_ram_mask == b.native_ram_mask);
       CHECK(std::equal(a.words.begin(), a.words.end(), b.words.begin(), b.words.end()));
     }
     ++continuation_reads;
   }
+}
+
+void native_ram_classification() {
+  QueryBus bus;
+  InstructionCache cache;
+  for (unsigned primary = 0; primary < 64; ++primary)
+    for (unsigned offset = 0; offset < 8; ++offset) {
+      std::array<u32, 8> words{};
+      for (unsigned n = 0; n < words.size(); ++n)
+        words[n] = (primary << 26) | (n << 21) | (3u << 16) | n;
+      line(bus, 0x1000, words);
+      cache.invalidate(0x1000);
+      (void)cache.read(bus, 0x1000, true, false);
+      const auto resident = cache.inspect(0x1000 + offset * 4, 0x1000 + offset * 4);
+      unsigned mask = 0;
+      for (unsigned n = offset; n < words.size(); ++n)
+        if (NativeInteger::can_group(words[n]) || NativeInteger::ram_access_bytes(words[n]))
+          mask |= 1u << (n - offset);
+      CHECK(resident.native_ram_mask == mask);
+      cache.invalidate(0x1000);
+      CHECK(cache.inspect(0x1000, 0x1000).native_ram_mask == 0);
+    }
 }
 
 void exhaustive_line_categories() {
@@ -206,6 +230,7 @@ int main() {
     QueryBus bus;
     offsets(empty, bus, 0);
     exhaustive_line_categories();
+    native_ram_classification();
     boundary_tags_aliases_and_flush();
     pressure_trace();
     std::cout << "Ordinary hint truth cases=" << truth_cases

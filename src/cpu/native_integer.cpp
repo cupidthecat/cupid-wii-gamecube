@@ -611,6 +611,63 @@ Encoder<maximum_sequence_bytes> encode_control_sequence(std::span<const u32> wor
   return code;
 }
 
+// R11 holds the per-invocation RAM context. All guards precede the access,
+// and earlier completed register writes are already visible on every exit.
+void encode_ram_access(Encoder<maximum_sequence_bytes> &code, u32 opcode,
+                       std::array<std::size_t, 4> &exits) {
+  const unsigned primary = opcode >> 26;
+  const unsigned bytes = NativeInteger::ram_access_bytes(opcode);
+  const unsigned reg = (opcode >> 21) & 31, address = (opcode >> 16) & 31;
+  const u32 immediate = static_cast<u32>(static_cast<s32>(static_cast<s16>(opcode)));
+  if (address) {
+    code.load(0, address);
+    code.accumulator(0x05, immediate);
+  } else
+    code.accumulator(0xb8, immediate);
+  code.bytes({0xa8, u8(bytes - 1)}); // TEST AL,width-1; preserve modular 32-bit effective address.
+  exits[0] = code.jump_if(0x85);
+  code.bytes({0x49, 0x8b, 0x53, u8(offsetof(NativeRamContext, bat_entries))});
+  code.bytes({0x48, 0x85, 0xd2}); // TEST RDX,RDX
+  const auto untranslated = code.jump_if(0x84);
+  code.bytes({0x89, 0xc1, 0xc1, 0xe9, 17}); // ECX=effective>>17
+  code.bytes({0x8b, 0x14, 0x8a});           // EDX=BAT[ECX]
+  code.bytes({0x89, 0xd1, 0x83, 0xe1, 5, 0x83, 0xf9, 1});
+  exits[1] = code.jump_if(0x85); // Valid and normal cache policy only.
+  code.bytes({0x81, 0xe2});
+  code.word(0xfffe0000);
+  code.accumulator(0x25, 0x1ffff);
+  code.bytes({0x09, 0xd0});
+  code.bind(untranslated);
+  code.bytes({0x41, 0x2b, 0x43, u8(offsetof(NativeRamContext, physical_base))});
+  exits[2] = code.jump_if(0x82); // Physical address precedes the granted interval.
+  code.bytes({0x41, 0x8b, 0x53, u8(offsetof(NativeRamContext, bytes))});
+  code.bytes({0x83, 0xea, u8(bytes), 0x39,
+              0xd0}); // Unsigned offset<=backing bytes-access width, without wrap.
+  exits[3] = code.jump_if(0x87);
+  code.bytes({0x49, 0x8b, 0x13}); // RDX=host backing, EAX is a zero-extended offset.
+  if (primary == 32 || primary == 34 || primary == 40 || primary == 42) {
+    if (bytes == 4)
+      code.bytes({0x8b, 0x04, 0x02, 0x0f, 0xc8}); // Load word, BSWAP EAX.
+    else if (bytes == 1)
+      code.bytes({0x0f, 0xb6, 0x04, 0x02}); // Zero-extend one guest byte.
+    else {
+      code.bytes({0x0f, 0xb7, 0x04, 0x02, 0x66, 0xc1, 0xc0, 8}); // Load and swap AX.
+      if (primary == 42)
+        code.bytes({0x0f, 0xbf, 0xc0}); // Sign extension follows guest byte order.
+    }
+    code.store(reg);
+  } else {
+    code.bytes({0x89, 0xc1}); // Preserve checked offset before reading source GPR.
+    code.load(0, reg);
+    if (bytes == 4)
+      code.bytes({0x0f, 0xc8, 0x89, 0x04, 0x0a});
+    else if (bytes == 1)
+      code.bytes({0x88, 0x04, 0x0a});
+    else
+      code.bytes({0x66, 0xc1, 0xc0, 8, 0x66, 0x89, 0x04, 0x0a});
+  }
+}
+
 Encoder<maximum_sequence_bytes> encode_ram_sequence(std::span<const u32> words) {
   // Keep R11 for the fresh context. Register retention remains disabled, so
   // every completed integer write is already visible at a memory guard exit.
@@ -624,46 +681,11 @@ Encoder<maximum_sequence_bytes> encode_ram_sequence(std::span<const u32> words) 
   std::array<std::array<std::size_t, 4>, 8> exits{};
   for (unsigned n = 0; n < words.size(); ++n) {
     const u32 opcode = words[n];
-    const unsigned primary = opcode >> 26;
-    if (primary != 32 && primary != 36) {
+    if (!NativeInteger::ram_access_bytes(opcode)) {
       encode_instruction(code, opcode);
       continue;
     }
-    const unsigned reg = (opcode >> 21) & 31, address = (opcode >> 16) & 31;
-    const u32 immediate = static_cast<u32>(static_cast<s32>(static_cast<s16>(opcode)));
-    if (address) {
-      code.load(0, address);
-      code.accumulator(0x05, immediate);
-    } else
-      code.accumulator(0xb8, immediate);
-    code.bytes({0xa8, 3}); // TEST AL,3; preserve modular 32-bit effective address.
-    exits[n][0] = code.jump_if(0x85);
-    code.bytes({0x49, 0x8b, 0x53, u8(offsetof(NativeRamContext, bat_entries))});
-    code.bytes({0x48, 0x85, 0xd2}); // TEST RDX,RDX
-    const auto untranslated = code.jump_if(0x84);
-    code.bytes({0x89, 0xc1, 0xc1, 0xe9, 17}); // ECX=effective>>17
-    code.bytes({0x8b, 0x14, 0x8a});           // EDX=BAT[ECX]
-    code.bytes({0x89, 0xd1, 0x83, 0xe1, 5, 0x83, 0xf9, 1});
-    exits[n][1] = code.jump_if(0x85); // Valid and normal cache policy only.
-    code.bytes({0x81, 0xe2});
-    code.word(0xfffe0000);
-    code.accumulator(0x25, 0x1ffff);
-    code.bytes({0x09, 0xd0});
-    code.bind(untranslated);
-    code.bytes({0x41, 0x2b, 0x43, u8(offsetof(NativeRamContext, physical_base))});
-    exits[n][2] = code.jump_if(0x82); // Physical address precedes the granted interval.
-    code.bytes({0x41, 0x8b, 0x53, u8(offsetof(NativeRamContext, bytes))});
-    code.bytes({0x83, 0xea, 4, 0x39, 0xd0}); // Unsigned offset<=bytes-4, without wrap.
-    exits[n][3] = code.jump_if(0x87);
-    code.bytes({0x49, 0x8b, 0x13}); // RDX=host backing, EAX is a zero-extended offset.
-    if (primary == 32) {
-      code.bytes({0x8b, 0x04, 0x02, 0x0f, 0xc8}); // Load word, BSWAP EAX.
-      code.store(reg);
-    } else {
-      code.bytes({0x89, 0xc1}); // Preserve checked offset before reading source GPR.
-      code.load(0, reg);
-      code.bytes({0x0f, 0xc8, 0x89, 0x04, 0x0a}); // BSWAP; store [RDX+RCX].
-    }
+    encode_ram_access(code, opcode, exits[n]);
   }
   code.accumulator(0xb8, static_cast<u32>(words.size()));
   code.finish();
@@ -678,8 +700,7 @@ Encoder<maximum_sequence_bytes> encode_ram_sequence(std::span<const u32> words) 
 }
 
 Encoder<maximum_sequence_bytes> encode_ram_control_sequence(std::span<const u32> words) {
-  // Keep the existing word-only encoder unchanged. This separate entry reserves
-  // R11 for the fresh RAM context and never enables register retention.
+  // R11 retains the fresh RAM context; register retention stays disabled.
   Encoder<maximum_sequence_bytes> code;
   code.entry();
 #ifdef _WIN32
@@ -690,46 +711,11 @@ Encoder<maximum_sequence_bytes> encode_ram_control_sequence(std::span<const u32>
   std::array<std::array<std::size_t, 4>, 7> exits{};
   for (unsigned n = 0; n < 7; ++n) {
     const u32 opcode = words[n];
-    const unsigned primary = opcode >> 26;
-    if (primary != 32 && primary != 36) {
+    if (!NativeInteger::ram_access_bytes(opcode)) {
       encode_instruction(code, opcode);
       continue;
     }
-    const unsigned reg = (opcode >> 21) & 31, address = (opcode >> 16) & 31;
-    const u32 immediate = static_cast<u32>(static_cast<s32>(static_cast<s16>(opcode)));
-    if (address) {
-      code.load(0, address);
-      code.accumulator(0x05, immediate);
-    } else
-      code.accumulator(0xb8, immediate);
-    code.bytes({0xa8, 3}); // TEST AL,3; preserve modular 32-bit effective address.
-    exits[n][0] = code.jump_if(0x85);
-    code.bytes({0x49, 0x8b, 0x53, u8(offsetof(NativeRamContext, bat_entries))});
-    code.bytes({0x48, 0x85, 0xd2}); // TEST RDX,RDX
-    const auto untranslated = code.jump_if(0x84);
-    code.bytes({0x89, 0xc1, 0xc1, 0xe9, 17}); // ECX=effective>>17
-    code.bytes({0x8b, 0x14, 0x8a});           // EDX=BAT[ECX]
-    code.bytes({0x89, 0xd1, 0x83, 0xe1, 5, 0x83, 0xf9, 1});
-    exits[n][1] = code.jump_if(0x85); // Valid and normal cache policy only.
-    code.bytes({0x81, 0xe2});
-    code.word(0xfffe0000);
-    code.accumulator(0x25, 0x1ffff);
-    code.bytes({0x09, 0xd0});
-    code.bind(untranslated);
-    code.bytes({0x41, 0x2b, 0x43, u8(offsetof(NativeRamContext, physical_base))});
-    exits[n][2] = code.jump_if(0x82); // Physical address precedes the granted interval.
-    code.bytes({0x41, 0x8b, 0x53, u8(offsetof(NativeRamContext, bytes))});
-    code.bytes({0x83, 0xea, 4, 0x39, 0xd0}); // Unsigned offset<=bytes-4, without wrap.
-    exits[n][3] = code.jump_if(0x87);
-    code.bytes({0x49, 0x8b, 0x13}); // RDX=host backing, EAX is a zero-extended offset.
-    if (primary == 32) {
-      code.bytes({0x8b, 0x04, 0x02, 0x0f, 0xc8}); // Load word, BSWAP EAX.
-      code.store(reg);
-    } else {
-      code.bytes({0x89, 0xc1}); // Preserve checked offset before reading source GPR.
-      code.load(0, reg);
-      code.bytes({0x0f, 0xc8, 0x89, 0x04, 0x0a}); // BSWAP; store [RDX+RCX].
-    }
+    encode_ram_access(code, opcode, exits[n]);
   }
   // Admission requires the eighth word to be BC with LK=0. CTR and CR are
   // touched only after all seven preceding instructions have completed.
@@ -779,46 +765,11 @@ Encoder<maximum_sequence_bytes> encode_short_ram_control_sequence(std::span<cons
   std::array<std::array<std::size_t, 4>, 6> exits{};
   for (unsigned n = 0; n < prefix; ++n) {
     const u32 opcode = words[n];
-    const unsigned primary = opcode >> 26;
-    if (primary != 32 && primary != 36) {
+    if (!NativeInteger::ram_access_bytes(opcode)) {
       encode_instruction(code, opcode);
       continue;
     }
-    const unsigned reg = (opcode >> 21) & 31, address = (opcode >> 16) & 31;
-    const u32 immediate = static_cast<u32>(static_cast<s32>(static_cast<s16>(opcode)));
-    if (address) {
-      code.load(0, address);
-      code.accumulator(0x05, immediate);
-    } else
-      code.accumulator(0xb8, immediate);
-    code.bytes({0xa8, 3}); // TEST AL,3; preserve modular 32-bit effective address.
-    exits[n][0] = code.jump_if(0x85);
-    code.bytes({0x49, 0x8b, 0x53, u8(offsetof(NativeRamContext, bat_entries))});
-    code.bytes({0x48, 0x85, 0xd2}); // TEST RDX,RDX
-    const auto untranslated = code.jump_if(0x84);
-    code.bytes({0x89, 0xc1, 0xc1, 0xe9, 17}); // ECX=effective>>17
-    code.bytes({0x8b, 0x14, 0x8a});           // EDX=BAT[ECX]
-    code.bytes({0x89, 0xd1, 0x83, 0xe1, 5, 0x83, 0xf9, 1});
-    exits[n][1] = code.jump_if(0x85); // Valid and normal cache policy only.
-    code.bytes({0x81, 0xe2});
-    code.word(0xfffe0000);
-    code.accumulator(0x25, 0x1ffff);
-    code.bytes({0x09, 0xd0});
-    code.bind(untranslated);
-    code.bytes({0x41, 0x2b, 0x43, u8(offsetof(NativeRamContext, physical_base))});
-    exits[n][2] = code.jump_if(0x82); // Physical address precedes the granted interval.
-    code.bytes({0x41, 0x8b, 0x53, u8(offsetof(NativeRamContext, bytes))});
-    code.bytes({0x83, 0xea, 4, 0x39, 0xd0}); // Unsigned offset<=bytes-4, without wrap.
-    exits[n][3] = code.jump_if(0x87);
-    code.bytes({0x49, 0x8b, 0x13}); // RDX=host backing, EAX is a zero-extended offset.
-    if (primary == 32) {
-      code.bytes({0x8b, 0x04, 0x02, 0x0f, 0xc8}); // Load word, BSWAP EAX.
-      code.store(reg);
-    } else {
-      code.bytes({0x89, 0xc1}); // Preserve checked offset before reading source GPR.
-      code.load(0, reg);
-      code.bytes({0x0f, 0xc8, 0x89, 0x04, 0x0a}); // BSWAP; store [RDX+RCX].
-    }
+    encode_ram_access(code, opcode, exits[n]);
   }
   // The final word is the first BC, with LK=0. Its position determines both
   // fallthrough and relative target; no branch state changes on a guard exit.
@@ -1285,8 +1236,7 @@ bool NativeInteger::execute_ram_sequence(State &state, std::span<const u32> word
   if (!hit) {
     bool memory = false;
     for (u32 opcode : words) {
-      const auto primary = opcode >> 26;
-      if (primary == 32 || primary == 36)
+      if (ram_access_bytes(opcode))
         memory = true;
       else if (!can_group(opcode))
         return false;
@@ -1373,8 +1323,7 @@ bool NativeInteger::execute_ram_control_sequence(State &state, std::span<const u
     if (!hit) {
       bool memory = false;
       for (u32 opcode : words.first(7)) {
-        const unsigned primary = opcode >> 26;
-        if (primary == 32 || primary == 36)
+        if (ram_access_bytes(opcode))
           memory = true;
         else if (!can_group(opcode))
           return false;
@@ -1462,8 +1411,7 @@ bool NativeInteger::execute_short_ram_control_sequence(State &state, std::span<c
     if (!hit) {
       bool memory = false;
       for (u32 opcode : words.first(words.size() - 1)) {
-        const unsigned primary = opcode >> 26;
-        if (primary == 32 || primary == 36)
+        if (ram_access_bytes(opcode))
           memory = true;
         else if (!can_group(opcode))
           return false;

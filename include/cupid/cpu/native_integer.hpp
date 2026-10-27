@@ -15,6 +15,11 @@ struct NativeControlRun {
   bool taken = false;
 };
 
+struct NativeRamControlRun {
+  u32 instructions = 0;
+  bool taken = false;
+};
+
 // Fresh per-invocation backing. A null BAT table means relocation is disabled;
 // otherwise the caller has validated the table register key. Each memory access
 // checks its selected table entry before using the physical address.
@@ -116,6 +121,22 @@ public:
   // False leaves guest state and result unchanged before invoking any word.
   bool execute_ram_sequence(State &state, std::span<const u32> opcodes,
                             const NativeRamContext &context, u32 &retired);
+
+  // Exactly eight words: a register/LWZ/STW prefix followed by one LK=0 BC.
+  // Guards retire only the completed prefix; the final branch is not evaluated
+  // early. Every invoked exit sets PC, while fetch, clocks and metadata remain
+  // caller-owned. False preserves guest state and result before invocation.
+  bool execute_ram_control_sequence(State &state, std::span<const u32> opcodes,
+                                    const NativeRamContext &context, NativeRamControlRun &result);
+
+  // Exactly six or seven words ending at their first LK=0 BC. The preceding
+  // words are integer/LWZ/STW, including at least one RAM access. Unlike the
+  // exact-eight entry, this may execute a prefix of a longer resident selection;
+  // the caller must exclude its unexecuted suffix from fetch-hit retirement.
+  // The same guard, PC, result and caller-metadata contract applies.
+  bool execute_short_ram_control_sequence(State &state, std::span<const u32> opcodes,
+                                          const NativeRamContext &context,
+                                          NativeRamControlRun &result);
 
   void reset();
   NativeIntegerStatistics statistics() const noexcept;

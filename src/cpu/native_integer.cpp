@@ -124,6 +124,35 @@ struct RamEntry {
   RamOperation operation = nullptr;
 };
 
+// Identical host arguments do not make the RAM and RAM/control result contracts
+// interchangeable. Keep all lookup and hint publication in this namespace.
+struct RamControlOperation {
+  using Entry = u32 (*)(State *, const NativeRamContext *);
+  Entry entry = nullptr;
+
+  explicit operator bool() const noexcept {
+    return entry != nullptr;
+  }
+};
+
+struct RamControlEntry {
+  BlockKey key;
+  RamControlOperation operation{};
+};
+
+struct RamControlCache {
+  explicit RamControlCache(unsigned reservation) {
+    lookup.reserve(reservation);
+  }
+  std::unordered_map<BlockKey, RamControlOperation, BlockHash> lookup;
+  RamControlEntry last{};
+
+  void clear() noexcept {
+    lookup.clear();
+    last = {};
+  }
+};
+
 template <std::size_t Capacity = 256> class Encoder {
 public:
   explicit Encoder(bool retain_register = false) : retain_register_(retain_register) {
@@ -647,6 +676,182 @@ Encoder<maximum_sequence_bytes> encode_ram_sequence(std::span<const u32> words) 
   return code;
 }
 
+Encoder<maximum_sequence_bytes> encode_ram_control_sequence(std::span<const u32> words) {
+  // Keep the existing word-only encoder unchanged. This separate entry reserves
+  // R11 for the fresh RAM context and never enables register retention.
+  Encoder<maximum_sequence_bytes> code;
+  code.entry();
+#ifdef _WIN32
+  code.bytes({0x49, 0x89, 0xd3}); // RDX -> R11
+#else
+  code.bytes({0x49, 0x89, 0xf3}); // RSI -> R11
+#endif
+  std::array<std::array<std::size_t, 4>, 7> exits{};
+  for (unsigned n = 0; n < 7; ++n) {
+    const u32 opcode = words[n];
+    const unsigned primary = opcode >> 26;
+    if (primary != 32 && primary != 36) {
+      encode_instruction(code, opcode);
+      continue;
+    }
+    const unsigned reg = (opcode >> 21) & 31, address = (opcode >> 16) & 31;
+    const u32 immediate = static_cast<u32>(static_cast<s32>(static_cast<s16>(opcode)));
+    if (address) {
+      code.load(0, address);
+      code.accumulator(0x05, immediate);
+    } else
+      code.accumulator(0xb8, immediate);
+    code.bytes({0xa8, 3}); // TEST AL,3; preserve modular 32-bit effective address.
+    exits[n][0] = code.jump_if(0x85);
+    code.bytes({0x49, 0x8b, 0x53, u8(offsetof(NativeRamContext, bat_entries))});
+    code.bytes({0x48, 0x85, 0xd2}); // TEST RDX,RDX
+    const auto untranslated = code.jump_if(0x84);
+    code.bytes({0x89, 0xc1, 0xc1, 0xe9, 17}); // ECX=effective>>17
+    code.bytes({0x8b, 0x14, 0x8a});           // EDX=BAT[ECX]
+    code.bytes({0x89, 0xd1, 0x83, 0xe1, 5, 0x83, 0xf9, 1});
+    exits[n][1] = code.jump_if(0x85); // Valid and normal cache policy only.
+    code.bytes({0x81, 0xe2});
+    code.word(0xfffe0000);
+    code.accumulator(0x25, 0x1ffff);
+    code.bytes({0x09, 0xd0});
+    code.bind(untranslated);
+    code.bytes({0x41, 0x2b, 0x43, u8(offsetof(NativeRamContext, physical_base))});
+    exits[n][2] = code.jump_if(0x82); // Physical address precedes the granted interval.
+    code.bytes({0x41, 0x8b, 0x53, u8(offsetof(NativeRamContext, bytes))});
+    code.bytes({0x83, 0xea, 4, 0x39, 0xd0}); // Unsigned offset<=bytes-4, without wrap.
+    exits[n][3] = code.jump_if(0x87);
+    code.bytes({0x49, 0x8b, 0x13}); // RDX=host backing, EAX is a zero-extended offset.
+    if (primary == 32) {
+      code.bytes({0x8b, 0x04, 0x02, 0x0f, 0xc8}); // Load word, BSWAP EAX.
+      code.store(reg);
+    } else {
+      code.bytes({0x89, 0xc1}); // Preserve checked offset before reading source GPR.
+      code.load(0, reg);
+      code.bytes({0x0f, 0xc8, 0x89, 0x04, 0x0a}); // BSWAP; store [RDX+RCX].
+    }
+  }
+  // Admission requires the eighth word to be BC with LK=0. CTR and CR are
+  // touched only after all seven preceding instructions have completed.
+  const u32 branch = words[7];
+  const unsigned bo = (branch >> 21) & 31, bi = (branch >> 16) & 31;
+  std::array<std::size_t, 2> untaken{};
+  unsigned branches = 0;
+  if (!(bo & 4)) {
+    code.memory(0x8b, 0, offsetof(State, spr) + spr::ctr * sizeof(u32));
+    code.bytes({0x83, 0xe8, 1});
+    code.memory(0x89, 0, offsetof(State, spr) + spr::ctr * sizeof(u32));
+    untaken[branches++] = code.jump_if(bo & 2 ? 0x85 : 0x84);
+  }
+  if (!(bo & 16)) {
+    code.memory(0x8b, 0, offsetof(State, cr));
+    code.accumulator(0x25, 1u << (31 - bi));
+    untaken[branches++] = code.jump_if(bo & 8 ? 0x84 : 0x85);
+  }
+  const u32 displacement = static_cast<u32>(static_cast<s32>(static_cast<s16>(branch & 0xfffc)));
+  code.control_exit(8, true, displacement, (branch & 2) != 0);
+  for (unsigned n = 0; n < branches; ++n)
+    code.bind(untaken[n]);
+  code.control_exit(8, false);
+  for (unsigned n = 0; n < 7; ++n)
+    if (exits[n][0]) {
+      for (auto fixup : exits[n])
+        code.bind(fixup);
+      // No branch effects on a memory exit. Publish the next unexecuted PC,
+      // expose every completed register/store and return its exact count.
+      code.control_exit(n, false);
+    }
+  return code;
+}
+
+Encoder<maximum_sequence_bytes> encode_short_ram_control_sequence(std::span<const u32> words) {
+  // Short entries use only volatile integer scratch registers. R11 keeps the
+  // fresh RAM context, so every completed GPR write is published immediately.
+  const unsigned count = static_cast<unsigned>(words.size());
+  const unsigned prefix = count - 1;
+  Encoder<maximum_sequence_bytes> code;
+  code.entry();
+#ifdef _WIN32
+  code.bytes({0x49, 0x89, 0xd3}); // RDX -> R11
+#else
+  code.bytes({0x49, 0x89, 0xf3}); // RSI -> R11
+#endif
+  std::array<std::array<std::size_t, 4>, 6> exits{};
+  for (unsigned n = 0; n < prefix; ++n) {
+    const u32 opcode = words[n];
+    const unsigned primary = opcode >> 26;
+    if (primary != 32 && primary != 36) {
+      encode_instruction(code, opcode);
+      continue;
+    }
+    const unsigned reg = (opcode >> 21) & 31, address = (opcode >> 16) & 31;
+    const u32 immediate = static_cast<u32>(static_cast<s32>(static_cast<s16>(opcode)));
+    if (address) {
+      code.load(0, address);
+      code.accumulator(0x05, immediate);
+    } else
+      code.accumulator(0xb8, immediate);
+    code.bytes({0xa8, 3}); // TEST AL,3; preserve modular 32-bit effective address.
+    exits[n][0] = code.jump_if(0x85);
+    code.bytes({0x49, 0x8b, 0x53, u8(offsetof(NativeRamContext, bat_entries))});
+    code.bytes({0x48, 0x85, 0xd2}); // TEST RDX,RDX
+    const auto untranslated = code.jump_if(0x84);
+    code.bytes({0x89, 0xc1, 0xc1, 0xe9, 17}); // ECX=effective>>17
+    code.bytes({0x8b, 0x14, 0x8a});           // EDX=BAT[ECX]
+    code.bytes({0x89, 0xd1, 0x83, 0xe1, 5, 0x83, 0xf9, 1});
+    exits[n][1] = code.jump_if(0x85); // Valid and normal cache policy only.
+    code.bytes({0x81, 0xe2});
+    code.word(0xfffe0000);
+    code.accumulator(0x25, 0x1ffff);
+    code.bytes({0x09, 0xd0});
+    code.bind(untranslated);
+    code.bytes({0x41, 0x2b, 0x43, u8(offsetof(NativeRamContext, physical_base))});
+    exits[n][2] = code.jump_if(0x82); // Physical address precedes the granted interval.
+    code.bytes({0x41, 0x8b, 0x53, u8(offsetof(NativeRamContext, bytes))});
+    code.bytes({0x83, 0xea, 4, 0x39, 0xd0}); // Unsigned offset<=bytes-4, without wrap.
+    exits[n][3] = code.jump_if(0x87);
+    code.bytes({0x49, 0x8b, 0x13}); // RDX=host backing, EAX is a zero-extended offset.
+    if (primary == 32) {
+      code.bytes({0x8b, 0x04, 0x02, 0x0f, 0xc8}); // Load word, BSWAP EAX.
+      code.store(reg);
+    } else {
+      code.bytes({0x89, 0xc1}); // Preserve checked offset before reading source GPR.
+      code.load(0, reg);
+      code.bytes({0x0f, 0xc8, 0x89, 0x04, 0x0a}); // BSWAP; store [RDX+RCX].
+    }
+  }
+  // The final word is the first BC, with LK=0. Its position determines both
+  // fallthrough and relative target; no branch state changes on a guard exit.
+  const u32 branch = words[prefix];
+  const unsigned bo = (branch >> 21) & 31, bi = (branch >> 16) & 31;
+  std::array<std::size_t, 2> untaken{};
+  unsigned branches = 0;
+  if (!(bo & 4)) {
+    code.memory(0x8b, 0, offsetof(State, spr) + spr::ctr * sizeof(u32));
+    code.bytes({0x83, 0xe8, 1});
+    code.memory(0x89, 0, offsetof(State, spr) + spr::ctr * sizeof(u32));
+    untaken[branches++] = code.jump_if(bo & 2 ? 0x85 : 0x84);
+  }
+  if (!(bo & 16)) {
+    code.memory(0x8b, 0, offsetof(State, cr));
+    code.accumulator(0x25, 1u << (31 - bi));
+    untaken[branches++] = code.jump_if(bo & 8 ? 0x84 : 0x85);
+  }
+  const u32 displacement = static_cast<u32>(static_cast<s32>(static_cast<s16>(branch & 0xfffc)));
+  code.control_exit(count, true, displacement, (branch & 2) != 0);
+  for (unsigned n = 0; n < branches; ++n)
+    code.bind(untaken[n]);
+  code.control_exit(count, false);
+  for (unsigned n = 0; n < prefix; ++n)
+    if (exits[n][0]) {
+      for (auto fixup : exits[n])
+        code.bind(fixup);
+      // No branch effects on a memory exit. Publish the next unexecuted PC,
+      // expose every completed register/store and return its exact count.
+      code.control_exit(n, false);
+    }
+  return code;
+}
+
 std::size_t page_size();
 
 class ExecutablePage {
@@ -782,9 +987,13 @@ struct NativeInteger::Impl {
   // PC hints accelerate dispatch only; exact fetched contents remain authoritative.
   std::array<ControlEntry, 4096> control_pc_hints{};
   std::unique_ptr<ExecutablePage> block_arena;
+  // Existing nonbranch users do not allocate or reserve this namespace.
+  // Its metadata also dies before the arena during ordinary owner destruction.
+  std::unique_ptr<RamControlCache> ram_control;
 
   std::size_t sequence_count() const noexcept {
-    return block_lookup.size() + control_lookup.size() + ram_lookup.size();
+    return block_lookup.size() + control_lookup.size() + ram_lookup.size() +
+           (ram_control ? ram_control->lookup.size() : 0);
   }
 
   void clear_blocks(bool release = true) noexcept {
@@ -796,6 +1005,8 @@ struct NativeInteger::Impl {
     last_ram = {};
     ram_pc_hints = {};
     control_pc_hints = {};
+    if (ram_control)
+      ram_control->clear();
     if (release)
       block_arena.reset();
     else if (block_arena)
@@ -1128,6 +1339,182 @@ bool NativeInteger::execute_ram_sequence(State &state, std::span<const u32> word
 #else
   (void)state;
   (void)retired;
+  return false;
+#endif
+}
+
+bool NativeInteger::execute_ram_control_sequence(State &state, std::span<const u32> words,
+                                                 const NativeRamContext &context,
+                                                 NativeRamControlRun &result) {
+  if (words.size() != 8 || !context.data || context.bytes < 4 ||
+      context.physical_base > 0xffffffffu - (context.bytes - 1) || (state.msr & msr::le) ||
+      bool(state.msr & msr::dr) != bool(context.bat_entries) || (words[7] >> 26) != 16 ||
+      (words[7] & 1))
+    return false;
+#if CUPID_NATIVE_X64
+  BlockKey key;
+  key.count = 8;
+  std::copy(words.begin(), words.end(), key.words.begin());
+  RamControlOperation operation{};
+  bool hit = false;
+  try {
+    if (!impl_->ram_control)
+      impl_->ram_control = std::make_unique<RamControlCache>(impl_->block_capacity);
+    auto &cache = *impl_->ram_control;
+    const bool last_hit = cache.last.operation && cache.last.key == key;
+    if (last_hit) {
+      operation = cache.last.operation;
+      hit = true;
+    } else if (const auto found = cache.lookup.find(key); found != cache.lookup.end()) {
+      operation = found->second;
+      hit = true;
+    }
+    if (!hit) {
+      bool memory = false;
+      for (u32 opcode : words.first(7)) {
+        const unsigned primary = opcode >> 26;
+        if (primary == 32 || primary == 36)
+          memory = true;
+        else if (!can_group(opcode))
+          return false;
+      }
+      if (!memory)
+        return false;
+      const auto code = encode_ram_control_sequence(words);
+      if (!impl_->block_arena) {
+        const auto requested = impl_->sequence_byte_budget;
+        const auto page = page_size();
+        const auto bytes = (requested + page - 1) / page * page;
+        impl_->block_arena = std::make_unique<ExecutablePage>(bytes, requested);
+        statistics_.block_executable_bytes = bytes;
+      }
+      if (!impl_->block_arena->fits(code.code().size(), sequence_alignment)) {
+        statistics_.block_replacements += impl_->sequence_count();
+        impl_->clear_blocks(false);
+        statistics_.block_cache_entries = 0;
+      }
+      operation.entry =
+          impl_->block_arena->append<RamControlOperation::Entry>(code.code(), sequence_alignment);
+      cache.lookup.emplace(key, operation);
+      statistics_.block_cache_entries = impl_->sequence_count();
+      ++statistics_.block_compilations;
+    }
+    if (!last_hit)
+      cache.last = {key, operation};
+  } catch (const std::bad_alloc &) {
+    impl_->clear_blocks();
+    statistics_.block_cache_entries = statistics_.block_executable_bytes = 0;
+    ++statistics_.block_compilation_failures;
+    return false;
+  } catch (const std::system_error &) {
+    // Clear every old and new typed address before releasing uncertain storage.
+    impl_->clear_blocks();
+    statistics_.block_cache_entries = statistics_.block_executable_bytes = 0;
+    ++statistics_.block_compilation_failures;
+    return false;
+  }
+  const u32 encoded = invoke_ram(state, context, operation.entry);
+  result = {encoded & 255u, (encoded & 256u) != 0};
+  statistics_.executed += result.instructions;
+  statistics_.block_executed += result.instructions;
+  ++statistics_.block_runs;
+  if (hit) {
+    ++statistics_.block_cache_hits;
+    statistics_.cache_hits += result.instructions;
+  }
+  return true;
+#else
+  (void)state;
+  (void)result;
+  return false;
+#endif
+}
+
+bool NativeInteger::execute_short_ram_control_sequence(
+    State &state, std::span<const u32> words, const NativeRamContext &context,
+    NativeRamControlRun &result) {
+  if ((words.size() != 6 && words.size() != 7) || !context.data || context.bytes < 4 ||
+      context.physical_base > 0xffffffffu - (context.bytes - 1) || (state.msr & msr::le) ||
+      bool(state.msr & msr::dr) != bool(context.bat_entries) || (words.back() >> 26) != 16 ||
+      (words.back() & 1))
+    return false;
+#if CUPID_NATIVE_X64
+  // Default initialization zeroes the unused tail; count separates all three
+  // lengths in the shared typed cache. Only executed prefix words are keyed.
+  BlockKey key{};
+  key.count = static_cast<u32>(words.size());
+  std::copy(words.begin(), words.end(), key.words.begin());
+  RamControlOperation operation{};
+  bool hit = false;
+  try {
+    if (!impl_->ram_control)
+      impl_->ram_control = std::make_unique<RamControlCache>(impl_->block_capacity);
+    auto &cache = *impl_->ram_control;
+    const bool last_hit = cache.last.operation && cache.last.key == key;
+    if (last_hit) {
+      operation = cache.last.operation;
+      hit = true;
+    } else if (const auto found = cache.lookup.find(key); found != cache.lookup.end()) {
+      operation = found->second;
+      hit = true;
+    }
+    if (!hit) {
+      bool memory = false;
+      for (u32 opcode : words.first(words.size() - 1)) {
+        const unsigned primary = opcode >> 26;
+        if (primary == 32 || primary == 36)
+          memory = true;
+        else if (!can_group(opcode))
+          return false;
+      }
+      if (!memory)
+        return false;
+      const auto code = encode_short_ram_control_sequence(words);
+      if (!impl_->block_arena) {
+        const auto requested = impl_->sequence_byte_budget;
+        const auto page = page_size();
+        const auto bytes = (requested + page - 1) / page * page;
+        impl_->block_arena = std::make_unique<ExecutablePage>(bytes, requested);
+        statistics_.block_executable_bytes = bytes;
+      }
+      if (!impl_->block_arena->fits(code.code().size(), sequence_alignment)) {
+        statistics_.block_replacements += impl_->sequence_count();
+        impl_->clear_blocks(false);
+        statistics_.block_cache_entries = 0;
+      }
+      operation.entry =
+          impl_->block_arena->append<RamControlOperation::Entry>(code.code(), sequence_alignment);
+      cache.lookup.emplace(key, operation);
+      statistics_.block_cache_entries = impl_->sequence_count();
+      ++statistics_.block_compilations;
+    }
+    if (!last_hit)
+      cache.last = {key, operation};
+  } catch (const std::bad_alloc &) {
+    impl_->clear_blocks();
+    statistics_.block_cache_entries = statistics_.block_executable_bytes = 0;
+    ++statistics_.block_compilation_failures;
+    return false;
+  } catch (const std::system_error &) {
+    // Clear every old and new typed address before releasing uncertain storage.
+    impl_->clear_blocks();
+    statistics_.block_cache_entries = statistics_.block_executable_bytes = 0;
+    ++statistics_.block_compilation_failures;
+    return false;
+  }
+  const u32 encoded = invoke_ram(state, context, operation.entry);
+  result = {encoded & 255u, (encoded & 256u) != 0};
+  statistics_.executed += result.instructions;
+  statistics_.block_executed += result.instructions;
+  ++statistics_.block_runs;
+  if (hit) {
+    ++statistics_.block_cache_hits;
+    statistics_.cache_hits += result.instructions;
+  }
+  return true;
+#else
+  (void)state;
+  (void)result;
   return false;
 #endif
 }

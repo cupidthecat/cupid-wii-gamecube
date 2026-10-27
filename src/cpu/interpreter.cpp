@@ -22,6 +22,32 @@ unsigned scalar_primary(u32 opcode) {
   return (opcode >> 26) == 31 ? 32 + ((opcode >> 6) & 31) : opcode >> 26;
 }
 
+// Analyze only the already selected resident words. Stop at the FIRST control
+// boundary: a later branch cannot hide a polling head or another early branch.
+// This does not fill a cache line, translate/fetch a target, or examine a suffix
+// after the selected BC. Existing exact-eight entries retain their own path.
+#if defined(_MSC_VER)
+__declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline))
+#endif
+unsigned short_ram_control_count(std::span<const u32> words) {
+  if (words.size() < 6 || words.size() > 8)
+    return 0;
+  bool memory = false;
+  for (unsigned n = 0; n < words.size(); ++n) {
+    const u32 opcode = words[n];
+    const unsigned primary = opcode >> 26;
+    if (primary == 16)
+      return memory && (n == 5 || n == 6) && !(opcode & 1) ? n + 1 : 0;
+    if (primary == 32 || primary == 36)
+      memory = true;
+    else if (!NativeInteger::can_group(opcode))
+      return 0;
+  }
+  return 0;
+}
+
 u32 swap32(u32 v) {
   return ((v & 0xff) << 24) | ((v & 0xff00) << 8) | ((v >> 8) & 0xff00) | (v >> 24);
 }
@@ -1029,6 +1055,91 @@ IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cy
               state_.instructions += retired;
               tick(retired);
               return {retired, retired};
+            }
+          }
+        }
+        // Keep the successful nonbranch RAM path above intact. Inspect the
+        // actual full span, including a borrowed second line: an earlier branch
+        // must retain the scalar polling fold rather than truncate this packet.
+        if (backend_ == ExecutionBackend::NativeInteger && scalar_count == 8 &&
+            (words[7] >> 26) == 16 && !(words[7] & 1) && !(effective & 3) &&
+            std::all_of(words.begin(), words.end() - 1, [](u32 opcode) {
+              return (opcode >> 26) == 32 || (opcode >> 26) == 36 ||
+                     NativeInteger::can_group(opcode);
+            })) {
+          const auto view = bus_.plain_cpu_ram_view();
+          u32 physical_data = effective;
+          if (state_.msr & msr::dr)
+            physical_data = (map->entries[effective >> 17] & 0xfffe0000) | (effective & 0x1ffff);
+          if (!view.bytes.empty() && view.bytes.size() >= 4 &&
+              view.bytes.size() <= std::numeric_limits<u32>::max() &&
+              physical_data >= view.physical_base &&
+              physical_data - view.physical_base <= view.bytes.size() - 4) {
+            const NativeRamContext context{view.bytes.data(), map ? map->entries.data() : nullptr,
+                                           view.physical_base, static_cast<u32>(view.bytes.size())};
+            NativeRamControlRun compiled;
+            if (native_integer_->execute_ram_control_sequence(state_, words, context, compiled) &&
+                compiled.instructions) {
+              const u32 retired = compiled.instructions;
+              instruction_cache_.commit_hit(key);
+              if (retired > first_size)
+                instruction_cache_.commit_hit(second_key);
+              state_.last_pc = start + (retired - 1) * 4;
+              state_.last_opcode = current_opcode_ = words[retired - 1];
+              // The explicit branch outcome also represents taken-to-next-PC.
+              if (!compiled.taken)
+                state_.pc = start + retired * 4;
+              next_pc_ = state_.pc;
+              last_step_fetched_ = true;
+              state_.instructions += retired;
+              tick(retired);
+              return {retired, retired};
+            }
+          }
+        }
+        // Old successful nonbranch/eight-word control entries return above.
+        // A first BC at slot5/6 makes both old native predicates reject before
+        // invocation; slot7 is never retried here, including an invoked zero.
+        // Reject all earlier branches so three-word polling keeps its old fold.
+        // A selectable first BC must be at slot5/6 with LK clear. Skip the pure
+        // scan otherwise; the helper still rejects all earlier control.
+        if (backend_ == ExecutionBackend::NativeInteger && scalar_count >= 6 && !(effective & 3) &&
+            ((words[5] >> 26) == 16
+                 ? !(words[5] & 1)
+                 : scalar_count >= 7 && (words[6] >> 26) == 16 && !(words[6] & 1))) {
+          const unsigned count = short_ram_control_count(words);
+          if (count) {
+            const auto prefix = words.first(count);
+            const auto view = bus_.plain_cpu_ram_view();
+            u32 physical_data = effective;
+            if (state_.msr & msr::dr)
+              physical_data = (map->entries[effective >> 17] & 0xfffe0000) | (effective & 0x1ffff);
+            if (!view.bytes.empty() && view.bytes.size() >= 4 &&
+                view.bytes.size() <= std::numeric_limits<u32>::max() &&
+                physical_data >= view.physical_base &&
+                physical_data - view.physical_base <= view.bytes.size() - 4) {
+              const NativeRamContext context{view.bytes.data(), map ? map->entries.data() : nullptr,
+                                             view.physical_base, static_cast<u32>(view.bytes.size())};
+              NativeRamControlRun compiled;
+              if (native_integer_->execute_short_ram_control_sequence(state_, prefix, context,
+                                                                      compiled) &&
+                  compiled.instructions) {
+                const u32 retired = compiled.instructions;
+                instruction_cache_.commit_hit(key);
+                if (retired > first_size)
+                  instruction_cache_.commit_hit(second_key);
+                state_.last_pc = start + (retired - 1) * 4;
+                state_.last_opcode = current_opcode_ = prefix[retired - 1];
+                // Untaken BC returns before its suffix; taken-to-next remains
+                // explicitly taken. The next admission owns any target fetch.
+                if (!compiled.taken)
+                  state_.pc = start + retired * 4;
+                next_pc_ = state_.pc;
+                last_step_fetched_ = true;
+                state_.instructions += retired;
+                tick(retired);
+                return {retired, retired};
+              }
             }
           }
         }

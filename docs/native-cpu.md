@@ -97,6 +97,27 @@ iterations count as CPU fallback retirements; native execution counts only
 actual emitted calls. The runtime retains its 4,096-attempt host-poll bound and
 all earlier interrupt, replay and device deadlines.
 
+Native RAM groups can end in an eligible conditional branch. Separate entries
+handle eight-word blocks and six- or seven-word prefixes whose first branch is
+their last word. At least one aligned immediate word load or store must precede
+that branch; the remaining prefix operations must be groupable integer
+instructions. A caller prefilter checks the possible short-block branch slots
+before inspecting the full resident span. It performs no fetch or cache update.
+
+Each invocation supplies the current RAM backing and BAT table. Generated
+memory accesses check alignment, mapping and bounds before their effects. If a
+later access declines, earlier operations remain retired and ordinary stepping
+resumes at the unexecuted word. The terminal branch updates CR/CTR-dependent
+control flow only after its prefix succeeds. The caller retains instruction
+fetch, retirement metadata, timing and event boundaries.
+
+RAM-and-branch entries use a separate typed cache in the shared code arena.
+Reset and arena retirement clear its lookup references before reusing storage.
+The `native_ram_control` regression compares complete CPU state and RAM against
+the scalar interpreter, including guarded partial execution, changed backing,
+BAT changes, relocated code, cache reuse and ordinary Machine execution. These
+component checks establish no commercial-game frame rate.
+
 A resident `dcbf`, one-cycle integer operation and conditional branch can also
 execute together. This exact three-instruction group accounts for seven cycles
 and retains CR, CTR, link and absolute-branch behavior. It relies on the current

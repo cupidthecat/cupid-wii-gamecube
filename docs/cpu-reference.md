@@ -393,3 +393,12 @@ The public native tests separately compare complete CPU state and RAM against
 ordinary stepping, with new width-specific boundaries, signed halfwords,
 register aliases, partial retirement, translated backing and both consoles.
 The branch cases retain their original control/clock qualification boundaries.
+
+The indexed non-update extension uses the same pinned `lXXx`/`stX` source paths
+and the `lwzx`, `lbzx`, `lhzx`, `lhax`, `stwx`, `stbx`, and `sthx` interpreter
+handlers. Its address calculation and register-alias tests are independent of
+the reference register-cache implementation. Public coverage includes 1,127
+new direct full-state/RAM comparisons, 1,512 indexed RAM/control cases and
+336 cold/warm runtime cases across both consoles. All 1,024 extended-opcode
+values also exercise resident native-eligibility classification. Existing
+unsupported update-form tests remain rejection cases rather than being removed.

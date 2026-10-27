@@ -116,7 +116,7 @@ void guards() {
                                : 0);
           }
         }
-  for (u32 word : {0x48000004u, 0x4182fff8u, dform(33, 4, 3), dform(48, 4, 3), xform(23, 4, 3, 5),
+  for (u32 word : {0x48000004u, 0x4182fff8u, dform(33, 4, 3), dform(48, 4, 3), xform(55, 4, 3, 5),
                    dform(7, 4, 3), 0u}) {
     const std::array<u32, 2> words{dform(32, 4, 3), word};
     auto initial = mixed_seed();
@@ -168,6 +168,33 @@ void guards() {
           after.block_executable_bytes == stats.block_executable_bytes &&
           after.executed == stats.executed && after.fallback == stats.fallback);
     ++rejected;
+  }
+}
+
+void indexed_semantics() {
+  NativeInteger native(8, 8, 262144);
+  for (unsigned operation : {23u, 87u, 151u, 215u, 279u, 343u, 407u})
+    for (unsigned destination : {0u, 3u, 4u, 7u, 31u})
+      for (unsigned base : {0u, 3u, 4u, 7u})
+        for (unsigned index : {0u, 3u, 4u, 7u})
+          for (bool translated : {false, true}) {
+            auto initial = mixed_seed(operation + destination);
+            initial.gpr[base] = 0x1000;
+            initial.gpr[index] = (base ? 0x1000u : 0x2000u) | (translated ? 0x80000000u : 0u);
+            const std::array<u32, 4> words{dform(14, 8, 8, 1),
+                                           xform(operation, destination, base, index),
+                                           dform(26, 8, 8, 7), dform(14, 9, 9, 3)};
+            // When RA and RB alias in relocated mode, their sum wraps to 0x2000,
+            // which is not in the granted BAT. The completed prefix still retires.
+            const unsigned expected = translated && base && base == index ? 1 : 4;
+            direct(native, words, initial, expected, translated);
+          }
+  for (unsigned operation : {23u, 87u, 151u, 215u, 279u, 343u, 407u}) {
+    auto initial = mixed_seed();
+    initial.gpr[3] = 0xfffffff0;
+    initial.gpr[4] = 0x2010;
+    const std::array<u32, 2> words{xform(operation, 5, 3, 4), dform(14, 8, 8, 1)};
+    direct(native, words, initial, 2);
   }
 }
 
@@ -566,6 +593,7 @@ int main() {
   }
   return run_tests([] {
     semantics();
+    indexed_semantics();
     narrow_boundaries();
     narrow_runtime();
     guards();

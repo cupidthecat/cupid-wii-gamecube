@@ -313,12 +313,19 @@ its own transfer width before reading or writing. Halfwords swap guest byte
 order before signed extension. Narrow stores modify only their addressed bytes.
 A declined later access publishes only the completed prefix, with no early
 branch effects. Register aliases, fresh backing contexts, event cuts and cache
-retirement retain their existing contracts. This extension does not enable
-update, indexed, reversed, reservation or floating transfers in emitted RAM
-blocks, and does not change the default execution backend.
+retirement retain their existing contracts. Update, reversed, reservation and floating transfers remain outside emitted RAM
+blocks. The default execution backend is unchanged.
 
 Instruction-cache fills also record which resident words can use native RAM
 blocks. The caller combines these masks across resident line boundaries instead
 of rescanning the whole packet at every invocation. Invalidation and replacement
 rebuild the mask with the instruction words; it never causes a fill, bypasses a
 memory guard or changes cache-hit retirement.
+
+Indexed non-update integer transfers (`lwzx`, `lbzx`, `lhzx`, `lhax`, `stwx`,
+`stbx`, and `sthx`) use the same emitted access guards. The effective address is
+computed from the current base and index registers, with zero-base semantics
+and 32-bit wrap, before any destination changes. Loads may overwrite either
+address register without changing that access; stores read the original source
+register even when it aliases the base or index. The caller still requires
+resident instructions and an event-free budget.

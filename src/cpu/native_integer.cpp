@@ -615,15 +615,24 @@ Encoder<maximum_sequence_bytes> encode_control_sequence(std::span<const u32> wor
 // and earlier completed register writes are already visible on every exit.
 void encode_ram_access(Encoder<maximum_sequence_bytes> &code, u32 opcode,
                        std::array<std::size_t, 4> &exits) {
-  const unsigned primary = opcode >> 26;
+  const unsigned primary = NativeInteger::ram_access_primary(opcode);
   const unsigned bytes = NativeInteger::ram_access_bytes(opcode);
   const unsigned reg = (opcode >> 21) & 31, address = (opcode >> 16) & 31;
-  const u32 immediate = static_cast<u32>(static_cast<s32>(static_cast<s16>(opcode)));
-  if (address) {
-    code.load(0, address);
-    code.accumulator(0x05, immediate);
-  } else
-    code.accumulator(0xb8, immediate);
+  if ((opcode >> 26) == 31) {
+    const unsigned index = (opcode >> 11) & 31;
+    code.load(0, index);
+    if (address) {
+      code.load(1, address);
+      code.bytes({0x01, 0xc8}); // EAX=RB+RA with 32-bit wrap, before any guest write.
+    }
+  } else {
+    const u32 immediate = static_cast<u32>(static_cast<s32>(static_cast<s16>(opcode)));
+    if (address) {
+      code.load(0, address);
+      code.accumulator(0x05, immediate);
+    } else
+      code.accumulator(0xb8, immediate);
+  }
   code.bytes({0xa8, u8(bytes - 1)}); // TEST AL,width-1; preserve modular 32-bit effective address.
   exits[0] = code.jump_if(0x85);
   code.bytes({0x49, 0x8b, 0x53, u8(offsetof(NativeRamContext, bat_entries))});

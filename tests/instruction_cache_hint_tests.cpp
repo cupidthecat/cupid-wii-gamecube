@@ -119,6 +119,25 @@ void native_ram_classification() {
     }
 }
 
+void indexed_ram_classification() {
+  QueryBus bus;
+  InstructionCache cache;
+  for (unsigned operation = 0; operation < 1024; ++operation) {
+    std::array<u32, 8> words;
+    for (unsigned n = 0; n < words.size(); ++n)
+      words[n] = (31u << 26) | (n << 21) | (3u << 16) | (4u << 11) | (operation << 1) | (n & 1);
+    line(bus, 0x1000, words);
+    cache.invalidate(0x1000);
+    (void)cache.read(bus, 0x1000, true, false);
+    const auto resident = cache.inspect(0x1000, 0x1000);
+    unsigned mask = 0;
+    for (unsigned n = 0; n < words.size(); ++n)
+      if (NativeInteger::can_group(words[n]) || NativeInteger::ram_access_bytes(words[n]))
+        mask |= 1u << n;
+    CHECK(resident.native_ram_mask == mask);
+  }
+}
+
 void exhaustive_line_categories() {
   QueryBus bus;
   for (u32 pattern = 0; pattern < 65536; ++pattern) {
@@ -231,6 +250,7 @@ int main() {
     offsets(empty, bus, 0);
     exhaustive_line_categories();
     native_ram_classification();
+    indexed_ram_classification();
     boundary_tags_aliases_and_flush();
     pressure_trace();
     std::cout << "Ordinary hint truth cases=" << truth_cases

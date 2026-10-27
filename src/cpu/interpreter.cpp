@@ -1025,8 +1025,9 @@ IntegerRun Interpreter::try_integer_run(u32 maximum_instructions, u32 maximum_cy
                        : std::span<u8>{};
       if (!bytes.empty()) {
         const u32 start = state_.pc;
-        const unsigned native_width =
-            std::max(1u, NativeInteger::ram_access_bytes(words[first_memory]));
+        // The scalar admission already decoded the first transfer's kind.
+        // Reuse it instead of decoding its indexed instruction again here.
+        const unsigned native_width = (primary & ~4u) == 32 ? 4 : (primary & ~4u) == 34 ? 1 : 2;
         // Inspect the whole selected packet: truncating a packet at a branch
         // would bypass the existing invariant polling-loop folding below.
         // Use full packets to amortize one-entry dispatch and per-access

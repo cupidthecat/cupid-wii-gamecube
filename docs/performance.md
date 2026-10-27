@@ -1107,3 +1107,24 @@ final pass. Earlier results are retained rather than discarded.
 These are synthetic CPU-path measurements, not game profiles or gameplay FPS.
 They do not establish sustained full speed on either console. Source, all timing
 samples and binary hashes are retained in `.cache/native-widths-20261027/`.
+
+## Native indexed integer transfers
+
+The same ten-million-block CPU methodology compares `0fa9cb3c6b9b` with indexed
+non-update integer transfers. Each configuration has three A/B/B/A quartets,
+with matching complete serialized CPU state and RAM in all twelve samples.
+Both builds explicitly select native execution; no games, graphics or audio run.
+
+| Configuration | Baseline median seconds | Candidate median seconds |
+| --- | ---: | ---: |
+| GameCube, indexed transfers | 0.976773 | 0.539224 |
+| Wii, indexed transfers | 0.939499 | 0.549234 |
+| GameCube, immediate word-only control | 0.548096 | 0.556445 |
+| Wii, immediate word-only control | 0.515295 | 0.518595 |
+
+Indexed medians improve in these synthetic workloads. The immediate-word
+controls remain 1.5 and 0.6 percent slower in this shared-host pass, so this does
+not establish a universal CPU speedup. Earlier versions had larger control
+regressions; the retained caller reuses the already decoded transfer width.
+All passes, benchmark source and binary hashes remain in
+`.cache/native-indexed-20261027/`. Whole-game gains require matched game runs.

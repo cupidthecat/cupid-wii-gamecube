@@ -50,9 +50,28 @@ public:
   static bool supported() noexcept;
   static bool can_execute(u32 opcode) noexcept;
 
-  // Immediate, non-update integer transfers with precise per-access guards.
+  // Normalize immediate/indexed non-update transfers to the same access kind.
+  static constexpr unsigned ram_access_primary(u32 opcode) noexcept {
+    if ((opcode >> 26) != 31)
+      return opcode >> 26;
+    switch ((opcode >> 1) & 1023) {
+    case 23:
+    case 87:
+    case 151:
+    case 215:
+    case 279:
+    case 343:
+    case 407:
+      return 32 + ((opcode >> 6) & 31);
+    default:
+      return 0;
+    }
+  }
+
   static constexpr unsigned ram_access_bytes(u32 opcode) noexcept {
-    const unsigned primary = opcode >> 26;
+    if (((opcode >> 26) & ~4u) == 32)
+      return 4;
+    const unsigned primary = ram_access_primary(opcode);
     if ((primary & ~4u) == 32)
       return 4;
     if ((primary & ~4u) == 34)

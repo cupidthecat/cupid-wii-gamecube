@@ -58,3 +58,39 @@ An isolated MSVC Release setup benchmark submitted one million identical triangl
 `tests/rasterizer_reference_checks.cpp` links the actual pinned `Clipper.cpp`, `Rasterizer.cpp` and `BPFunctions.cpp`, with a test collector replacing downstream shading. Its generated triangle, line and point corpus compares coordinates, depth, both color channels and eight texture inputs at their s17.7 transfer boundary. It varies clipping, culling, scissoring, W, vertex coordinates, BP texture scales, line/point sizes and texture offsets, and frozen depth. Each case starts from reset state; frozen cases first seed a defined depth plane. This avoids carrying the reference's undefined zero-area slope result into later cases. No failed case is counted as a successful comparison.
 
 The optional harness requires the external `Source/Core/` include directory, C++23, fmt and strict floating options. Test-only backend hooks fail if unrelated application entry points retained by a linker are called. Function-section garbage collection can discard those unused paths. It does not vendor reference files. These checks cover the reference CPU path; real hardware rasterization has not been validated.
+
+
+## Coverage before software projection
+
+At behavioral revision `2c805fee8f232d090c454381bb1b8422242345e1`,
+`VideoBackends/Software/Rasterizer.cpp`, `DrawTriangleFrontFace`, tests four
+samples against each triangle edge before `BuildBlock`. The product now forms
+an exact four-bit intersection with its existing signed-64 edge equations.
+Quads with no covered sample skip software projection; surviving quads retain
+all four helper lanes, their evaluation order, and the existing per-pixel
+scissor checks. The mask also replaces repeated per-fragment edge products.
+
+Depth-plane updates, other plane construction and hardware admission stay
+before this optimization. Frozen-depth behavior therefore retains its prior
+anchor even when coverage emits no fragments. Hardware work descriptions and
+submission policy are unchanged.
+
+Skipping unused projection can change host floating-point sticky flags in raw
+`Rasterizer` calls. Such unused arithmetic is also skipped by the behavioral
+path. Normal FIFO execution owns a protected host environment and restores its
+caller through `HostFloatEnvironment`; direct raw rasterizer flag equality is
+not a validation claim for this change. Covered-fragment values, derivatives,
+callback order and retained depth state require separate exact comparisons.
+
+
+The public coverage-mask fixture checks 270,177 independent scalar/mask
+comparisons, including every four-bit result, exact top-left ties, degenerate
+edges, odd/negative anchors and large signed constants. Integrated rasterizer,
+graphics and FIFO floating-environment suites pass under MSVC, GCC and Clang 18
+ASan/UBSan. A separate pair of frozen product executables on each of MSVC and
+GCC compares 78 ordered callback cases byte-for-byte, including raw UV and
+derivative bits, colors/depth, error outcomes, work metadata and a frozen-depth
+follow-up. The separate pinned-source raster comparison also passes; its UV
+observations are quantized at the fixed-coordinate transfer boundary and do not
+replace the raw product comparison. Private fixtures and receipts remain under
+`build/raster-coverage-20261031/`.

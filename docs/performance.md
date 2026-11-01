@@ -1210,3 +1210,39 @@ the host. Sunshine is slower in this pass, so the shader component improvement
 does not establish a uniform runtime gain. These startup prefixes do not
 qualify sustained gameplay speed, audio output or completed levels. Complete
 records remain in `runtime-v1/` in the same evidence directory.
+
+
+## Software quad coverage
+
+A follow-up Galaxy software profile attributes 14.10 percent of sampled self
+CPU time to rasterization. The next change rejects empty 2x2 coverage masks
+before projecting texture coordinates and uses the mask for covered samples.
+
+Forty-eight balanced GCC Release processes compare this change against
+`e0c8ec8`. Each configuration has three A/B/B/A quartets. Timers include draw
+setup and rasterization with a count-only callback; fixture setup, warm-up,
+qualification hashing and file output stay outside. All qualification hashes,
+callback counts and retained-plane follow-ups match in every sample.
+
+| Configuration | Draws per sample | Baseline median seconds | Candidate median seconds |
+| --- | ---: | ---: | ---: |
+| Dense, eight texture coordinates | 100 | 0.400247 | 0.293208 |
+| Thin diagonal, eight texture coordinates | 100 | 0.245046 | 0.006771 |
+| Dense, zero texture coordinates | 500 | 0.756900 | 0.693405 |
+| Culled control | 1,000,000 | 0.099807 | 0.102189 |
+
+The culled control is 2.4 percent slower in this pass. These shared-host
+component intervals exclude fragment shading and hardware rendering; they do
+not establish game FPS. Every sample, calibration record, raw callback image
+and frozen executable is retained under `build/raster-coverage-20261031/`.
+
+
+Eight additional ordinary GCC CLI startup children run A/B/B/A per title, with
+native CPU, software graphics, headless output, host audio disabled, validated
+fonts and copied storage. All stop at one billion attempts: Sunshine at 72
+fields, Galaxy at 76. Every report field except revision metadata matches,
+including native counters; raw final frames and stored files match. Other
+builds and comparison checks share the host, and the timing pass does not
+establish a game speedup. Commands, all durations and strict comparison results
+remain under `runtime-v1/` in the same evidence directory. These bounds do not
+qualify completed levels or sustained gameplay.

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cupid/gfx/rasterizer.hpp"
+#include "raster_coverage.hpp"
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -452,13 +453,13 @@ void Rasterizer::rasterize(const ScreenVertex &a, const ScreenVertex &b, const S
     if (hardware && hardware({min_x, min_y, max_x, max_y, edges, depth_, w_plane, colors, textures,
                               xf_float(xf_, 0x101a)}))
       continue;
-    const auto covered = [&](int sample_x, int sample_y) {
-      return std::all_of(edges.begin(), edges.end(), [&](const RasterWork::Edge &edge) {
-        return edge.constant + edge.dx * (sample_y * 16) - edge.dy * (sample_x * 16) > 0;
-      });
-    };
     for (int block_y = min_y & ~1; block_y < max_y; block_y += 2)
       for (int block_x = min_x & ~1; block_x < max_x; block_x += 2) {
+        const unsigned mask = detail::coverage_mask(edges, block_x, block_y);
+        if (!mask)
+          continue;
+        // Surviving quads still evaluate every helper lane in the same order:
+        // uncovered lanes can contribute derivatives to a covered fragment.
         std::array<std::array<std::array<std::array<float, 2>, 8>, 2>, 2> block{};
         for (int iy = 0; iy < 2; ++iy)
           for (int ix = 0; ix < 2; ++ix) {
@@ -476,7 +477,8 @@ void Rasterizer::rasterize(const ScreenVertex &a, const ScreenVertex &b, const S
         for (int iy = 0; iy < 2; ++iy)
           for (int ix = 0; ix < 2; ++ix) {
             const int px = block_x + ix, py = block_y + iy;
-            if (px < min_x || px >= max_x || py < min_y || py >= max_y || !covered(px, py))
+            if (px < min_x || px >= max_x || py < min_y || py >= max_y ||
+                !(mask & (1u << (iy * 2 + ix))))
               continue;
             FragmentInputs inputs;
             inputs.x = static_cast<unsigned>(px);

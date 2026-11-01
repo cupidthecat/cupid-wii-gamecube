@@ -411,3 +411,14 @@ and `sthbrx`, plus their instruction table entries. The product uses its own
 scalar loop and guarded native emitter. Loads publish their destination after
 successful access; stores preserve the original source when registers alias.
 The existing exception path handles accesses declined by RAM admission.
+
+
+The update-form native extension uses the same
+`2c805fee8f232d090c454381bb1b8422242345e1` source revision. It follows the
+`lwzu`/`lwzux`, `lbzu`/`lbzux`, `lhzu`/`lhzux`, `lhau`/`lhaux`,
+`stwu`/`stwux`, `stbu`/`stbux`, and `sthu`/`sthux` handlers in
+`Interpreter_LoadStore.cpp`, including effective-address calculation and
+fault-dependent base writeback. `Jit_LoadStore.cpp` supplies the corresponding
+`lXXx`, `stX`, and `stXx` callers and invalid-update admission constraints.
+The product retains its own guarded backing context and ordinary fallback
+for excluded encodings.

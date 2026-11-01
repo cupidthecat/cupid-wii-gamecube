@@ -1128,3 +1128,45 @@ not establish a universal CPU speedup. Earlier versions had larger control
 regressions; the retained caller reuses the already decoded transfer width.
 All passes, benchmark source and binary hashes remain in
 `.cache/native-indexed-20261027/`. Whole-game gains require matched game runs.
+
+
+## Native update-form transfers
+
+A frozen GCC Release comparison against `3b0ffe8` executes ten million
+resident eight-word packets per sample. The update workload alternates
+base-dependent word, byte and signed-halfword transfers. A separate ordinary
+transfer workload retains the same widths without base updates. Both select
+the native backend explicitly, warm dispatch before timing, and exclude setup
+and final hashing from the timed interval.
+
+Each console/workload pair runs three A/B/B/A quartets. All complete serialized
+CPU-state and 65,536-byte RAM hashes match within each workload's twelve
+samples. Baseline update packets execute through the scalar loop; the candidate
+executes ten million native blocks.
+
+| Configuration | Baseline median seconds | Candidate median seconds |
+| --- | ---: | ---: |
+| GameCube, update transfers | 0.977824 | 0.418295 |
+| Wii, update transfers | 0.992424 | 0.413628 |
+| GameCube, ordinary transfers | 0.451953 | 0.447176 |
+| Wii, ordinary transfers | 0.414467 | 0.421130 |
+
+The Wii ordinary-transfer control is 1.6 percent slower in this pass. Other
+builds and sanitizer checks share the host. These synthetic component results
+do not establish whole-game gains or sustained gameplay speed. Every sample,
+exit status, frozen library and benchmark source remains under the ignored
+`build/update-evidence-20261031/` directory.
+
+
+Eight ordinary GCC CLI children then compare the frozen baseline and candidate
+in A/B/B/A order for each local game, with one billion attempts, software
+graphics, headless output, disabled host audio, validated IPL fonts and copied
+storage. Sunshine reaches 72 fields and Galaxy reaches 76. Every guest report
+field except revision metadata and native diagnostics agrees; final frame bytes
+and persisted files match. Sunshine's mean times are 3.994518/3.968803 seconds
+and Galaxy's are 32.921846/32.656764 seconds (baseline/candidate). Each title's
+forward pair is slower and reverse pair faster; this shared-host spread
+establishes no whole-game gain. These are startup prefixes, not completed
+levels or gameplay FPS. Terminal records remain under `runtime-v2/` in the
+same evidence directory. The first attempt without fonts is preserved as a
+failed input-dependent run in `runtime-v1/`.

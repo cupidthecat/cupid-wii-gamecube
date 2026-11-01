@@ -14,7 +14,8 @@ u64 direct_cases = 0, runtime_cases = 0, rejected = 0, fenv_cases = 0, context_c
 u64 activation_assertions = 0, native_activations = 0;
 
 void direct(NativeInteger &native, std::span<const u32> words, State initial, unsigned wanted,
-            bool translated = false, unsigned view_size = 65536, u32 bad_entry = 0) {
+            bool translated = false, unsigned view_size = 65536, u32 bad_entry = 0,
+            u32 physical_base = 0) {
   MixedMemory expected, actual;
   for (unsigned n = 0; n < actual.bytes.size(); ++n)
     actual.bytes[n] = u8((n * 37) ^ (n >> 7));
@@ -43,7 +44,8 @@ void direct(NativeInteger &native, std::span<const u32> words, State initial, un
   golden.instructions = initial.instructions;
   golden.timebase = initial.timebase;
   auto state = initial;
-  NativeRamContext context{actual.bytes.data(), translated ? bat.data() : nullptr, 0, view_size};
+  NativeRamContext context{actual.bytes.data() + physical_base, translated ? bat.data() : nullptr,
+                           physical_base, view_size - physical_base};
   u32 retired = 0x1234;
   CHECK(native.execute_ram_sequence(state, words, context, retired));
   if (retired != wanted) {
@@ -116,7 +118,7 @@ void guards() {
                                : 0);
           }
         }
-  for (u32 word : {0x48000004u, 0x4182fff8u, dform(33, 4, 3), dform(48, 4, 3), xform(55, 4, 3, 5),
+  for (u32 word : {0x48000004u, 0x4182fff8u, dform(33, 3, 3), dform(48, 4, 3), xform(55, 3, 3, 5),
                    dform(7, 4, 3), 0u}) {
     const std::array<u32, 2> words{dform(32, 4, 3), word};
     auto initial = mixed_seed();
@@ -196,6 +198,114 @@ void indexed_semantics() {
     const std::array<u32, 2> words{xform(operation, 5, 3, 4), dform(14, 8, 8, 1)};
     direct(native, words, initial, 2);
   }
+}
+
+void invalid_updates() {
+  NativeInteger native;
+  unsigned checked = 0;
+  for (unsigned operation :
+       {33u, 35u, 37u, 39u, 41u, 43u, 45u, 55u, 119u, 183u, 247u, 311u, 375u, 439u})
+    for (unsigned base : {0u, 3u}) {
+      const bool indexed = operation > 45;
+      const unsigned primary = indexed ? 32 + (operation >> 5) : operation;
+      const bool load = (primary & ~1u) == 32 || (primary & ~1u) == 34 || (primary & ~1u) == 40 ||
+                        (primary & ~1u) == 42;
+      if (base && !load)
+        continue;
+      const u32 invalid = indexed ? xform(operation, 3, base, 7) : dform(operation, 3, base, 4);
+      CHECK(NativeInteger::ram_access_primary(invalid) == 0);
+      CHECK(NativeInteger::ram_access_bytes(invalid) == 0);
+      MixedMemory ram;
+      auto state = mixed_seed();
+      const auto original = state;
+      const auto original_ram = ram.bytes;
+      const auto before = native.statistics();
+      const NativeRamContext context{ram.bytes.data(), nullptr, 0, unsigned(ram.bytes.size())};
+      std::array<u32, 8> words;
+      words.fill(dform(14, 8, 8, 1));
+      words[0] = dform(32, 4, 3);
+      words[1] = invalid;
+      u32 retired = 0x1234;
+      CHECK(!native.execute_ram_sequence(state, words, context, retired));
+      CHECK(retired == 0x1234);
+      for (unsigned length : {6u, 7u, 8u}) {
+        words[length - 1] = 0x41820040;
+        NativeRamControlRun result{0x1234, true};
+        const auto packet = std::span(words).first(length);
+        if (length == 8)
+          CHECK(!native.execute_ram_control_sequence(state, packet, context, result));
+        else
+          CHECK(!native.execute_short_ram_control_sequence(state, packet, context, result));
+        CHECK(result.instructions == 0x1234 && result.taken);
+        words[length - 1] = dform(14, 8, 8, 1);
+      }
+      mixed_equal(state, original);
+      CHECK(ram.bytes == original_ram);
+      const auto after = native.statistics();
+      CHECK(std::memcmp(&before, &after, sizeof(before)) == 0);
+      ++checked;
+    }
+  CHECK(checked == 22);
+}
+
+void update_semantics() {
+  NativeInteger native(8, 8, 262144);
+  for (unsigned operation :
+       {33u, 35u, 37u, 39u, 41u, 43u, 45u, 55u, 119u, 183u, 247u, 311u, 375u, 439u})
+    for (unsigned count = 2; count <= 8; ++count)
+      for (unsigned position = 0; position < count; ++position)
+        for (unsigned reg : {0u, 3u, 4u, 7u, 31u})
+          for (bool translated : {false, true}) {
+            const bool indexed = operation > 45;
+            const unsigned primary = indexed ? 32 + (operation >> 5) : operation;
+            const unsigned kind = primary & ~1u;
+            const bool load = kind == 32 || kind == 34 || kind == 40 || kind == 42;
+            if (load && reg == 3)
+              continue;
+            auto initial = mixed_seed(reg);
+            initial.gpr[3] = translated ? 0x80002000 : 0x2000;
+            initial.gpr[7] = 4;
+            std::array<u32, 8> words;
+            words.fill(dform(14, 8, 8, 1));
+            words[position] = indexed ? xform(operation, reg, 3, 7) : dform(operation, reg, 3, 4);
+            direct(native, std::span(words).first(count), initial, count, translated, 65536, 0,
+                   0x1000);
+          }
+  // Successful updates feed the next access; a later guard preserves that prefix.
+  for (bool translated : {false, true})
+    for (unsigned operation : {33u, 35u, 37u, 39u, 41u, 43u, 45u})
+      for (unsigned address : {0xffcu, 0x2000u, 0x2001u, 0xfffeu, 0x10000u, 0x20000u}) {
+        auto initial = mixed_seed();
+        initial.gpr[3] = (translated ? 0x80000000u : 0u) | address;
+        initial.gpr[7] = (translated ? 0x80000000u : 0u) | 0x2800;
+        const std::array<u32, 4> words{dform(37, 6, 7, 4), dform(operation, 4, 3), dform(32, 9, 7),
+                                       dform(14, 10, 7, 1)};
+        const unsigned width = NativeInteger::ram_access_bytes(words[1]);
+        const bool valid =
+            address >= 0x1000 && address <= 65536u - width && !(address & (width - 1));
+        for (u32 bad_entry : {0u, 4u, 5u})
+          direct(native, words, initial, valid ? 4 : 1, translated, 65536, bad_entry, 0x1000);
+      }
+  // Signed immediates and modular address wrap must update the effective base.
+  for (unsigned operation : {33u, 35u, 37u, 39u, 41u, 43u, 45u})
+    for (unsigned displacement : {0u, 4u, 0xfffcu}) {
+      auto initial = mixed_seed();
+      initial.gpr[3] = displacement == 4 ? 0xfffffffc : 0x2004;
+      const std::array<u32, 2> words{dform(operation, 4, 3, displacement), dform(14, 8, 3, 1)};
+      direct(native, words, initial, 2);
+    }
+  // Indexed aliases snapshot the original source/index before publishing RA.
+  for (unsigned operation : {55u, 119u, 183u, 247u, 311u, 375u, 439u})
+    for (unsigned reg : {3u, 4u, 7u})
+      for (unsigned index : {3u, 4u, 7u}) {
+        auto initial = mixed_seed();
+        initial.gpr[3] = initial.gpr[4] = initial.gpr[7] = 0x1000;
+        const auto word = xform(operation, reg, 3, index);
+        if (!NativeInteger::ram_access_bytes(word))
+          continue;
+        const std::array<u32, 2> words{word, dform(14, 8, 3, 1)};
+        direct(native, words, initial, 2);
+      }
 }
 
 void narrow_boundaries() {
@@ -630,6 +740,8 @@ int main() {
   return run_tests([] {
     semantics();
     indexed_semantics();
+    update_semantics();
+    invalid_updates();
     narrow_boundaries();
     narrow_runtime();
     reversed_runtime();

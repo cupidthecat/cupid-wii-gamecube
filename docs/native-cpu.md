@@ -313,7 +313,7 @@ its own transfer width before reading or writing. Halfwords swap guest byte
 order before signed extension. Narrow stores modify only their addressed bytes.
 A declined later access publishes only the completed prefix, with no early
 branch effects. Register aliases, fresh backing contexts, event cuts and cache
-retirement retain their existing contracts. Update, reservation and floating transfers remain outside emitted RAM blocks. The default execution backend is unchanged.
+retirement retain their existing contracts. Reservation and floating transfers remain outside emitted RAM blocks. The default execution backend is unchanged.
 
 Instruction-cache fills also record which resident words can use native RAM
 blocks. The caller combines these masks across resident line boundaries instead
@@ -354,3 +354,26 @@ ordinary stepping and native execution, excluding backend diagnostics. Stored
 files match. Sunshine uses copies of identical seeded cards because fresh
 cards receive random identities and host timestamps. Neither startup prefix
 presents a video field, so these checks establish no gameplay or speed result.
+
+
+## Update-form integer transfers
+
+Native RAM blocks also compile immediate and indexed update forms of word,
+byte, unsigned-halfword and signed-halfword loads, plus word, byte and
+halfword stores. The effective address survives translation in a separate
+scratch register. The emitter publishes the base register only after the
+access succeeds. Store aliases use their original source value, including
+stack-frame stores whose source and base are the same register.
+
+Each access retains its alignment, BAT/cache-policy and backing-range guards.
+A later decline keeps earlier completed updates and leaves the declined
+instruction's registers and memory untouched. Invalid update encodings with
+zero base, or loads whose destination equals their base, retain ordinary
+stepping. These admission rules do not change interpreter exception behavior.
+
+Public checks cover all fourteen update forms, aliases, signed and zero
+immediates, address wrap, translated virtual-address writeback, nonzero backing
+bases, and partial retirement. Twenty-two independent invalid-encoding cases
+check State, RAM, results and statistics across all three native RAM entries.
+The expanded indexed control matrices cover 3,888 direct cases and 864 cold/warm
+runtime cases across both consoles.

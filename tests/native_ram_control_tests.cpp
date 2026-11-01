@@ -238,18 +238,23 @@ void indexed_matrix() {
   unsigned checked = 0;
   NativeInteger native(8, 8, 262144);
   for (unsigned length : {6u, 7u, 8u})
-    for (unsigned operation : {23u, 87u, 151u, 215u, 279u, 343u, 407u, 534u, 662u, 790u, 918u})
+    for (unsigned operation : {23u, 87u, 151u, 215u, 279u, 343u, 407u, 534u, 662u, 790u, 918u, 55u,
+                               119u, 183u, 247u, 311u, 375u, 439u})
       for (unsigned position = 0; position + 1 < length; ++position)
         for (unsigned address : {0x2000u, 0x2001u, 0x2002u, 0xfffeu, 0xffffu, 0x10000u})
           for (bool condition : {false, true}) {
             std::array<u32, 8> words;
             for (unsigned n = 0; n < length; ++n)
               words[n] = dform(14, 5, 5, n + 1);
-            words[position] = xform(operation, 4, 0, 3);
+            const bool update = operation == 55 || operation == 119 || operation == 183 ||
+                                operation == 247 || operation == 311 || operation == 375 ||
+                                operation == 439;
+            words[position] = update ? xform(operation, 4, 3, 0) : xform(operation, 4, 0, 3);
             words[length - 1] = branch_word(12, 0, 64);
             const unsigned width = NativeInteger::ram_access_bytes(words[position]);
             auto state = initial_state(checked, 0, condition);
             state.gpr[3] = address;
+            state.gpr[0] = 0;
             MixedMemory ram;
             initialize(ram, checked);
             NativeRamContext context{ram.bytes.data(), nullptr, 0, unsigned(ram.bytes.size())};
@@ -259,7 +264,7 @@ void indexed_matrix() {
                          accepted ? length : position, context);
             ++checked;
           }
-  CHECK(checked == 2376);
+  CHECK(checked == 3888);
   std::cout << "Indexed RAM/control comparisons: " << checked << '\n';
 }
 
@@ -387,10 +392,10 @@ void declines() {
         words[2] = dform(7, 4, 3, 1);
         break;
       case 5:
-        words[2] = dform(33, 4, 3);
+        words[2] = dform(33, 3, 3);
         break;
       case 6:
-        words[2] = xform(55, 4, 3, 5);
+        words[2] = xform(55, 3, 3, 5);
         break;
       case 7:
         words[2] = 0;
@@ -576,7 +581,8 @@ void indexed_runtime_matrix() {
   unsigned checked = 0;
   for (auto console : {Console::GameCube, Console::Wii})
     for (unsigned length : {6u, 7u, 8u})
-      for (unsigned operation : {23u, 87u, 151u, 215u, 279u, 343u, 407u, 534u, 662u, 790u, 918u})
+      for (unsigned operation : {23u, 87u, 151u, 215u, 279u, 343u, 407u, 534u, 662u, 790u, 918u,
+                                 55u, 119u, 183u, 247u, 311u, 375u, 439u})
         for (unsigned offset : {0u, 6u})
           for (bool condition : {false, true}) {
             std::array<u32, 8> words;
@@ -600,7 +606,7 @@ void indexed_runtime_matrix() {
               ++checked;
             }
           }
-  CHECK(checked == 528);
+  CHECK(checked == 864);
   std::cout << "Indexed RAM/control runtime comparisons: " << checked << '\n';
 }
 

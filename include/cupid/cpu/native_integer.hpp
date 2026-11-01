@@ -50,30 +50,50 @@ public:
   static bool supported() noexcept;
   static bool can_execute(u32 opcode) noexcept;
 
-  // Normalize immediate/indexed non-update transfers to the same access kind.
+  // Normalize immediate/indexed integer transfers to the same access kind.
   static constexpr unsigned ram_access_primary(u32 opcode) noexcept {
-    if ((opcode >> 26) != 31)
-      return opcode >> 26;
-    switch ((opcode >> 1) & 1023) {
-    case 534:
-      return 32;
-    case 662:
-      return 36;
-    case 790:
-      return 40;
-    case 918:
-      return 44;
-    case 23:
-    case 87:
-    case 151:
-    case 215:
-    case 279:
-    case 343:
-    case 407:
-      return 32 + ((opcode >> 6) & 31);
-    default:
-      return 0;
+    unsigned primary = opcode >> 26;
+    if (primary != 31) {
+      if (primary < 32 || primary > 45)
+        return 0;
+    } else
+      switch ((opcode >> 1) & 1023) {
+      case 534:
+        return 32;
+      case 662:
+        return 36;
+      case 790:
+        return 40;
+      case 918:
+        return 44;
+      case 23:
+      case 87:
+      case 151:
+      case 215:
+      case 279:
+      case 343:
+      case 407:
+      case 55:
+      case 119:
+      case 183:
+      case 247:
+      case 311:
+      case 375:
+      case 439:
+        primary = 32 + ((opcode >> 6) & 31);
+        break;
+      default:
+        return 0;
+      }
+    if (primary & 1) {
+      const unsigned base = (opcode >> 16) & 31, reg = (opcode >> 21) & 31;
+      const unsigned kind = primary & ~1u;
+      const bool load = kind == 32 || kind == 34 || kind == 40 || kind == 42;
+      // Invalid update encodings retain the ordinary instruction path.
+      if (!base || (load && base == reg))
+        return 0;
     }
+    return primary;
   }
 
   static constexpr bool ram_access_reversed(u32 opcode) noexcept {
@@ -86,7 +106,7 @@ public:
   static constexpr unsigned ram_access_bytes(u32 opcode) noexcept {
     if (((opcode >> 26) & ~4u) == 32)
       return 4;
-    const unsigned primary = ram_access_primary(opcode);
+    const unsigned primary = ram_access_primary(opcode) & ~1u;
     if ((primary & ~4u) == 32)
       return 4;
     if ((primary & ~4u) == 34)
@@ -160,9 +180,9 @@ public:
   bool execute_control_sequence(State &state, std::span<const u32> opcodes,
                                 NativeControlRun &result);
 
-  // Integer operations plus immediate byte and aligned halfword/word transfers. Every runtime guard
-  // precedes its word's effects; completed earlier words are not rolled back.
-  // False leaves guest state and result unchanged before invoking any word.
+  // Integer operations plus immediate/indexed byte and aligned halfword/word transfers. Every
+  // runtime guard precedes its word's effects; completed earlier words are not rolled back. False
+  // leaves guest state and result unchanged before invoking any word.
   bool execute_ram_sequence(State &state, std::span<const u32> opcodes,
                             const NativeRamContext &context, u32 &retired);
 

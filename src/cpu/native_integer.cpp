@@ -615,25 +615,29 @@ Encoder<maximum_sequence_bytes> encode_control_sequence(std::span<const u32> wor
 // and earlier completed register writes are already visible on every exit.
 void encode_ram_access(Encoder<maximum_sequence_bytes> &code, u32 opcode,
                        std::array<std::size_t, 4> &exits) {
-  const unsigned primary = NativeInteger::ram_access_primary(opcode);
+  const unsigned access = NativeInteger::ram_access_primary(opcode);
+  const unsigned primary = access & ~1u;
+  const bool update = access & 1;
   const unsigned bytes = NativeInteger::ram_access_bytes(opcode);
   const bool reversed = NativeInteger::ram_access_reversed(opcode);
   const unsigned reg = (opcode >> 21) & 31, address = (opcode >> 16) & 31;
   if ((opcode >> 26) == 31) {
     const unsigned index = (opcode >> 11) & 31;
     code.load(0, index);
-    if (address) {
+    if (address || update) {
       code.load(1, address);
       code.bytes({0x01, 0xc8}); // EAX=RB+RA with 32-bit wrap, before any guest write.
     }
   } else {
     const u32 immediate = static_cast<u32>(static_cast<s32>(static_cast<s16>(opcode)));
-    if (address) {
+    if (address || update) {
       code.load(0, address);
       code.accumulator(0x05, immediate);
     } else
       code.accumulator(0xb8, immediate);
   }
+  if (update)
+    code.bytes({0x41, 0x89, 0xc0});  // R8D retains the effective address across translation/guards.
   code.bytes({0xa8, u8(bytes - 1)}); // TEST AL,width-1; preserve modular 32-bit effective address.
   exits[0] = code.jump_if(0x85);
   code.bytes({0x49, 0x8b, 0x53, u8(offsetof(NativeRamContext, bat_entries))});
@@ -684,6 +688,10 @@ void encode_ram_access(Encoder<maximum_sequence_bytes> &code, u32 opcode,
         code.bytes({0x66, 0xc1, 0xc0, 8});
       code.bytes({0x66, 0x89, 0x04, 0x0a});
     }
+  }
+  if (update) {
+    code.bytes({0x44, 0x89, 0xc0}); // Publish the effective address only after successful access.
+    code.store(address);
   }
 }
 

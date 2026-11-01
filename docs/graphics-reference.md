@@ -26,3 +26,29 @@ The texture comparison covers all implemented encodings and palette formats, RAM
 Some source edge paths perform undefined host operations. The rasterizer retains a valid prior plane for a zero-area setup instead of converting a non-finite slope to an integer. Indirect coordinate arithmetic uses wider signed multiplication and explicit low-bit wrapping. Texture-copy padding beyond the physical EFB fails explicitly. Each decision is recorded alongside the owning module's test scope.
 
 Invalid graphics RAM ranges stop with an explicit graphics diagnostic. This is the product's checked-range policy for malformed GPU commands, rather than a claim that the behavioral reference uses the same host error handling. A nested graphics memory fault is kept separate from the CPU store that supplied FIFO bytes, so it cannot create a false guest DSI.
+
+
+## Fixed texture coordinates
+
+The guarded coordinate conversion was checked against revision
+`2c805fee8f232d090c454381bb1b8422242345e1`:
+`VideoBackends/Software/Rasterizer.cpp`, `Draw`, scales UVs by 128 before
+integer conversion; `Tev.cpp`, `Draw` and `Indirect`, consume those fixed
+coordinates. The product retains its explicit signed-24 wrapping and defined
+fallback for finite values outside the direct conversion range.
+
+`src/gfx/fixed_coordinate.hpp` keeps the existing double scaling and truncation.
+When the truncated value is within one signed modulus, the remainder is
+unnecessary and conversion is safe. Wrapped values still use the original
+modular call, preserving its host floating-point status behavior. An initial
+wider guard produced identical coordinate values but changed MSVC inexact
+flags; it was rejected rather than weakening the floating-environment checks.
+
+The public `fixed_coordinate` suite compares 1,051,833 raw/structured inputs
+against the retained earlier algorithm, checks 104,224 rounding/flush/sticky-flag
+combinations, and checks 3,240 complete coordinate pairs through the actual
+fragment shader. It covers fractional values, signed zeros, subnormals, modulus
+and conversion seams, maximum finite values, infinities and NaNs. These checks
+pass under MSVC Release, GCC Release and Clang 18 ASan/UBSan. The retained
+algorithm is a product regression oracle; these results are distinct from
+external-source or physical-device comparisons.

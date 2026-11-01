@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cupid/gfx/fragment.hpp"
+#include "fixed_coordinate.hpp"
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -7,15 +8,6 @@
 
 namespace cupid::gfx {
 namespace {
-s32 fixed_coordinate(float value) {
-  if (!std::isfinite(value))
-    throw VertexError("Non-finite texture coordinate");
-  const double truncated = std::trunc(static_cast<double>(value) * 128);
-  const double modulo = std::fmod(truncated, 16777216.0);
-  const auto bits = static_cast<u32>(static_cast<s64>(modulo)) & 0xffffff;
-  return static_cast<s32>(bits ^ 0x800000) - 0x800000;
-}
-
 s32 signed_field(u32 value, unsigned bits) {
   const u32 sign = 1u << (bits - 1);
   return static_cast<s32>((value & ((sign << 1) - 1)) ^ sign) - static_cast<s32>(sign);
@@ -165,7 +157,7 @@ std::optional<Color> FragmentShader::shade(const FragmentInputs &input, u32 *dep
   std::array<std::array<s32, 2>, 8> coordinates{};
   for (unsigned i = 0; i < texgens; ++i)
     for (unsigned c = 0; c < 2; ++c)
-      coordinates[i][c] = fixed_coordinate(input.uv[i][c]);
+      coordinates[i][c] = detail::fixed_coordinate(input.uv[i][c]);
   for (unsigned stage = 0; stage < ((bp_[0] >> 16) & 7); ++stage) {
     const u32 order = bp_[0x27] >> (stage * 6);
     const unsigned unit = order & 7, selected = (order >> 3) & 7;

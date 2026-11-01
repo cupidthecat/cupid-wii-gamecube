@@ -1170,3 +1170,43 @@ establishes no whole-game gain. These are startup prefixes, not completed
 levels or gameplay FPS. Terminal records remain under `runtime-v2/` in the
 same evidence directory. The first attempt without fonts is preserved as a
 failed input-dependent run in `runtime-v1/`.
+
+
+## Software fixed-coordinate conversion
+
+A source-scoped Galaxy software-rendering profile attributes about 20 percent
+of sampled self CPU time to fragment shading. This identifies the shader as a
+candidate for reducing repeated coordinate work; the profile does not isolate
+the modular call's cost or measure gameplay speed.
+
+Forty-eight frozen GCC Release shader processes compare the guarded coordinate
+conversion with `f02cad6`. Each four-million-fragment sample includes varying
+UV setup and a color checksum inside the timer; fixture setup, warm-up and final
+retained-state hashing are outside. Each configuration runs three A/B/B/A
+quartets. All color and retained texture/indirect-coordinate hashes match.
+
+| Configuration | Baseline median seconds | Candidate median seconds |
+| --- | ---: | ---: |
+| One texture coordinate pair | 0.284818 | 0.240187 |
+| Eight texture coordinate pairs | 0.725443 | 0.332614 |
+| Zero-coordinate control | 0.175316 | 0.175915 |
+| Wrapped-coordinate control | 0.318053 | 0.317682 |
+
+These are software shader component results on a shared WSL host. They do not
+measure hardware rendering or establish whole-game FPS. The zero-coordinate
+control is 0.34 percent slower in this pass. Raw samples, frozen libraries and
+benchmark source remain under `build/fragment-coordinate-20261031/`. The
+rejected wider-range attempt and its host-flag failure remain separate.
+
+
+Eight normal GCC CLI children then run in A/B/B/A order per local title with
+native CPU, software graphics, headless output, disabled host audio, validated
+fonts and identical copied storage. Each reaches one billion attempts:
+Sunshine at 72 fields and Galaxy at 76. Every report field except revision
+metadata matches, including every native counter. Final raw frames and stored
+files match. Sunshine's baseline/candidate means are 3.894705/4.063902 seconds;
+Galaxy's are 31.008348/29.550227 seconds. Builds, checks and other samples share
+the host. Sunshine is slower in this pass, so the shader component improvement
+does not establish a uniform runtime gain. These startup prefixes do not
+qualify sustained gameplay speed, audio output or completed levels. Complete
+records remain in `runtime-v1/` in the same evidence directory.

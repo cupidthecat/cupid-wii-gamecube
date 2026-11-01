@@ -173,7 +173,7 @@ void guards() {
 
 void indexed_semantics() {
   NativeInteger native(8, 8, 262144);
-  for (unsigned operation : {23u, 87u, 151u, 215u, 279u, 343u, 407u})
+  for (unsigned operation : {23u, 87u, 151u, 215u, 279u, 343u, 407u, 534u, 662u, 790u, 918u})
     for (unsigned destination : {0u, 3u, 4u, 7u, 31u})
       for (unsigned base : {0u, 3u, 4u, 7u})
         for (unsigned index : {0u, 3u, 4u, 7u})
@@ -189,7 +189,7 @@ void indexed_semantics() {
             const unsigned expected = translated && base && base == index ? 1 : 4;
             direct(native, words, initial, expected, translated);
           }
-  for (unsigned operation : {23u, 87u, 151u, 215u, 279u, 343u, 407u}) {
+  for (unsigned operation : {23u, 87u, 151u, 215u, 279u, 343u, 407u, 534u, 662u, 790u, 918u}) {
     auto initial = mixed_seed();
     initial.gpr[3] = 0xfffffff0;
     initial.gpr[4] = 0x2010;
@@ -541,6 +541,42 @@ void narrow_runtime() {
         }
 }
 
+void reversed_runtime() {
+  for (auto console : {Console::GameCube, Console::Wii})
+    for (unsigned operation : {534u, 662u, 790u, 918u})
+      for (unsigned offset : {0u, 6u})
+        for (unsigned alignment : {0u, 1u, 2u, 3u})
+          for (unsigned quota : {4u, 8u}) {
+            RuntimePair pair(console);
+            pair.initial.gpr[3] = 0x2000 + alignment;
+            pair.initial.gpr[7] = 0;
+            pair.initial.gpr[4] = 0x123480ff;
+            pair.expected.write32(0x2000, 0x123480ff);
+            std::array<u32, 8> words;
+            words.fill(dform(14, 8, 8, 1));
+            words[0] = xform(operation, 4, 3, 7);
+            pair.prepare(words, offset);
+            const auto before = pair.native.native_statistics();
+            CHECK(pair.attempt(quota, quota).instructions == quota);
+            const unsigned width = operation == 534 || operation == 662 ? 4 : 2;
+            if (quota == 8 && !(alignment & (width - 1)))
+              activation(pair, before, 1, 1);
+            else
+              CHECK(pair.native.native_statistics().block_runs == before.block_runs);
+            // Independent byte-order witnesses supplement the stepping comparison.
+            if (!alignment) {
+              if (operation == 534)
+                CHECK(pair.native.state().gpr[4] == 0xff803412);
+              if (operation == 790)
+                CHECK(pair.native.state().gpr[4] == 0x3412);
+              if (operation == 662)
+                CHECK(pair.actual.read32(0x2000) == 0xff803412);
+              if (operation == 918)
+                CHECK(pair.actual.read32(0x2000) == 0xff8080ff);
+            }
+          }
+}
+
 void environment() {
 #if defined(_M_X64) || defined(__x86_64__)
   const auto old_simd = _mm_getcsr();
@@ -596,6 +632,7 @@ int main() {
     indexed_semantics();
     narrow_boundaries();
     narrow_runtime();
+    reversed_runtime();
     guards();
     arithmetic_context_survival();
     context_and_hints();

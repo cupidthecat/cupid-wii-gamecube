@@ -165,11 +165,12 @@ InstructionCache::Line *InstructionCache::obtain_other(Bus &bus, u32 physical, u
       if ((loaded.integer_mask & (1u << n)) || NativeInteger::ram_access_bytes(loaded.words[n]))
         loaded.native_ram_mask |= static_cast<u8>(1u << n);
       const unsigned primary = loaded.words[n] >> 26, operation = (loaded.words[n] >> 1) & 1023;
-      // Indexed scalar types share the immediate transfer core. Keep reversed,
+      // Indexed scalar types share the immediate transfer core. Keep
       // reservation, string and integer-word FP stores on ordinary stepping.
       const bool indexed_scalar = primary == 31 && (operation & 31) == 23 &&
                                   (operation <= 439 || (operation >= 535 && operation <= 759));
-      if ((primary >= 32 && primary <= 45) || (primary >= 48 && primary <= 55) || indexed_scalar)
+      if ((primary >= 32 && primary <= 45) || (primary >= 48 && primary <= 55) || indexed_scalar ||
+          NativeInteger::ram_access_reversed(loaded.words[n]))
         loaded.scalar_mask |= static_cast<u8>(1u << n);
       if (primary == 16 || primary == 18 ||
           (primary == 19 &&

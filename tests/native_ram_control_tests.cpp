@@ -238,7 +238,7 @@ void indexed_matrix() {
   unsigned checked = 0;
   NativeInteger native(8, 8, 262144);
   for (unsigned length : {6u, 7u, 8u})
-    for (unsigned operation : {23u, 87u, 151u, 215u, 279u, 343u, 407u})
+    for (unsigned operation : {23u, 87u, 151u, 215u, 279u, 343u, 407u, 534u, 662u, 790u, 918u})
       for (unsigned position = 0; position + 1 < length; ++position)
         for (unsigned address : {0x2000u, 0x2001u, 0x2002u, 0xfffeu, 0xffffu, 0x10000u})
           for (bool condition : {false, true}) {
@@ -259,7 +259,7 @@ void indexed_matrix() {
                          accepted ? length : position, context);
             ++checked;
           }
-  CHECK(checked == 1512);
+  CHECK(checked == 2376);
   std::cout << "Indexed RAM/control comparisons: " << checked << '\n';
 }
 
@@ -576,7 +576,7 @@ void indexed_runtime_matrix() {
   unsigned checked = 0;
   for (auto console : {Console::GameCube, Console::Wii})
     for (unsigned length : {6u, 7u, 8u})
-      for (unsigned operation : {23u, 87u, 151u, 215u, 279u, 343u, 407u})
+      for (unsigned operation : {23u, 87u, 151u, 215u, 279u, 343u, 407u, 534u, 662u, 790u, 918u})
         for (unsigned offset : {0u, 6u})
           for (bool condition : {false, true}) {
             std::array<u32, 8> words;
@@ -600,7 +600,7 @@ void indexed_runtime_matrix() {
               ++checked;
             }
           }
-  CHECK(checked == 336);
+  CHECK(checked == 528);
   std::cout << "Indexed RAM/control runtime comparisons: " << checked << '\n';
 }
 

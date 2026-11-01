@@ -135,6 +135,10 @@ void indexed_ram_classification() {
       if (NativeInteger::can_group(words[n]) || NativeInteger::ram_access_bytes(words[n]))
         mask |= 1u << n;
     CHECK(resident.native_ram_mask == mask);
+    if (operation == 534 || operation == 662 || operation == 790 || operation == 918) {
+      CHECK(resident.native_ram_mask == 255);
+      CHECK(resident.scalar_mask == 255);
+    }
   }
 }
 

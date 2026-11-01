@@ -617,6 +617,7 @@ void encode_ram_access(Encoder<maximum_sequence_bytes> &code, u32 opcode,
                        std::array<std::size_t, 4> &exits) {
   const unsigned primary = NativeInteger::ram_access_primary(opcode);
   const unsigned bytes = NativeInteger::ram_access_bytes(opcode);
+  const bool reversed = NativeInteger::ram_access_reversed(opcode);
   const unsigned reg = (opcode >> 21) & 31, address = (opcode >> 16) & 31;
   if ((opcode >> 26) == 31) {
     const unsigned index = (opcode >> 11) & 31;
@@ -655,12 +656,16 @@ void encode_ram_access(Encoder<maximum_sequence_bytes> &code, u32 opcode,
   exits[3] = code.jump_if(0x87);
   code.bytes({0x49, 0x8b, 0x13}); // RDX=host backing, EAX is a zero-extended offset.
   if (primary == 32 || primary == 34 || primary == 40 || primary == 42) {
-    if (bytes == 4)
-      code.bytes({0x8b, 0x04, 0x02, 0x0f, 0xc8}); // Load word, BSWAP EAX.
-    else if (bytes == 1)
+    if (bytes == 4) {
+      code.bytes({0x8b, 0x04, 0x02}); // Load word in host byte order.
+      if (!reversed)
+        code.bytes({0x0f, 0xc8}); // BSWAP EAX for ordinary guest byte order.
+    } else if (bytes == 1)
       code.bytes({0x0f, 0xb6, 0x04, 0x02}); // Zero-extend one guest byte.
     else {
-      code.bytes({0x0f, 0xb7, 0x04, 0x02, 0x66, 0xc1, 0xc0, 8}); // Load and swap AX.
+      code.bytes({0x0f, 0xb7, 0x04, 0x02}); // Zero-extend the loaded halfword.
+      if (!reversed)
+        code.bytes({0x66, 0xc1, 0xc0, 8}); // Swap AX for ordinary guest byte order.
       if (primary == 42)
         code.bytes({0x0f, 0xbf, 0xc0}); // Sign extension follows guest byte order.
     }
@@ -668,12 +673,17 @@ void encode_ram_access(Encoder<maximum_sequence_bytes> &code, u32 opcode,
   } else {
     code.bytes({0x89, 0xc1}); // Preserve checked offset before reading source GPR.
     code.load(0, reg);
-    if (bytes == 4)
-      code.bytes({0x0f, 0xc8, 0x89, 0x04, 0x0a});
-    else if (bytes == 1)
+    if (bytes == 4) {
+      if (!reversed)
+        code.bytes({0x0f, 0xc8});
+      code.bytes({0x89, 0x04, 0x0a});
+    } else if (bytes == 1)
       code.bytes({0x88, 0x04, 0x0a});
-    else
-      code.bytes({0x66, 0xc1, 0xc0, 8, 0x66, 0x89, 0x04, 0x0a});
+    else {
+      if (!reversed)
+        code.bytes({0x66, 0xc1, 0xc0, 8});
+      code.bytes({0x66, 0x89, 0x04, 0x0a});
+    }
   }
 }
 

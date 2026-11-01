@@ -19,6 +19,8 @@ u32 signed_immediate(u32 opcode) {
 // Indexed scalar transfers use the same type/update ordering as their immediate
 // forms. Admission only calls this for the corresponding indexed load/store set.
 unsigned scalar_primary(u32 opcode) {
+  if (NativeInteger::ram_access_reversed(opcode))
+    return NativeInteger::ram_access_primary(opcode);
   return (opcode >> 26) == 31 ? 32 + ((opcode >> 6) & 31) : opcode >> 26;
 }
 
@@ -730,12 +732,17 @@ void Interpreter::execute_scalar_ram(u32 opcode, unsigned primary, u32 effective
     return;
   }
   const bool write = (primary >= 36 && primary <= 39) || primary >= 44;
+  const bool reversed = NativeInteger::ram_access_reversed(opcode);
   u32 value = write ? state_.gpr[destination] : 0;
   if (bytes.size() == 4) {
     if (!write)
       std::memcpy(&value, bytes.data(), 4);
     if constexpr (std::endian::native == std::endian::little)
-      value = swap32(value);
+      if (!reversed)
+        value = swap32(value);
+    if constexpr (std::endian::native == std::endian::big)
+      if (reversed)
+        value = swap32(value);
     if (write)
       std::memcpy(bytes.data(), &value, 4);
   } else if (bytes.size() == 2) {
@@ -743,7 +750,11 @@ void Interpreter::execute_scalar_ram(u32 opcode, unsigned primary, u32 effective
     if (!write)
       std::memcpy(&half, bytes.data(), 2);
     if constexpr (std::endian::native == std::endian::little)
-      half = swap16(half);
+      if (!reversed)
+        half = swap16(half);
+    if constexpr (std::endian::native == std::endian::big)
+      if (reversed)
+        half = swap16(half);
     if (write)
       std::memcpy(bytes.data(), &half, 2);
     value = half;

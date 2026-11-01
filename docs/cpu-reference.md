@@ -402,3 +402,12 @@ new direct full-state/RAM comparisons, 1,512 indexed RAM/control cases and
 336 cold/warm runtime cases across both consoles. All 1,024 extended-opcode
 values also exercise resident native-eligibility classification. Existing
 unsupported update-form tests remain rejection cases rather than being removed.
+
+
+The byte-reversed indexed extension was checked at revision
+`2c805fee8f232d090c454381bb1b8422242345e1` against
+`Interpreter_LoadStore.cpp`: `Helper_Get_EA_X`, `lwbrx`, `lhbrx`, `stwbrx`,
+and `sthbrx`, plus their instruction table entries. The product uses its own
+scalar loop and guarded native emitter. Loads publish their destination after
+successful access; stores preserve the original source when registers alias.
+The existing exception path handles accesses declined by RAM admission.

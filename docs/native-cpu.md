@@ -313,8 +313,7 @@ its own transfer width before reading or writing. Halfwords swap guest byte
 order before signed extension. Narrow stores modify only their addressed bytes.
 A declined later access publishes only the completed prefix, with no early
 branch effects. Register aliases, fresh backing contexts, event cuts and cache
-retirement retain their existing contracts. Update, reversed, reservation and floating transfers remain outside emitted RAM
-blocks. The default execution backend is unchanged.
+retirement retain their existing contracts. Update, reservation and floating transfers remain outside emitted RAM blocks. The default execution backend is unchanged.
 
 Instruction-cache fills also record which resident words can use native RAM
 blocks. The caller combines these masks across resident line boundaries instead
@@ -329,3 +328,29 @@ and 32-bit wrap, before any destination changes. Loads may overwrite either
 address register without changing that access; stores read the original source
 register even when it aliases the base or index. The caller still requires
 resident instructions and an event-free budget.
+
+
+## Byte-reversed indexed transfers
+
+Resident RAM blocks and the scalar RAM loop admit `lwbrx`, `lhbrx`, `stwbrx`,
+and `sthbrx`. These operations reverse the normal guest byte order without
+updating the base register. Halfword loads zero-extend; halfword stores use
+only the source register's low sixteen bits. On x64 the emitted access omits
+the ordinary byte swap. The scalar loop also accounts for host byte order.
+
+The existing per-access guards, completed-prefix exits and cache retirement
+apply. Unaligned accesses stay on the scalar path, and accesses outside the
+granted RAM interval return to ordinary stepping. Public tests cover aliases,
+zero base, address wrap, translated backing, explicit byte-order witnesses,
+both consoles and four/eight-instruction quotas. The indexed control matrix
+now checks 2,376 direct cases and 528 cold/warm runtime cases, including all
+four reversed operations. These are correctness checks, not gameplay timing.
+
+
+The three targeted suites pass under MSVC Release, GCC Release, and Clang 18
+ASan/UBSan. Separate normal Windows CLI checks run 100 million step attempts
+per backend for each local game. Every guest report field matches between
+ordinary stepping and native execution, excluding backend diagnostics. Stored
+files match. Sunshine uses copies of identical seeded cards because fresh
+cards receive random identities and host timestamps. Neither startup prefix
+presents a video field, so these checks establish no gameplay or speed result.

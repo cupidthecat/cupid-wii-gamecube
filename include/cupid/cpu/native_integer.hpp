@@ -55,6 +55,14 @@ public:
     if ((opcode >> 26) != 31)
       return opcode >> 26;
     switch ((opcode >> 1) & 1023) {
+    case 534:
+      return 32;
+    case 662:
+      return 36;
+    case 790:
+      return 40;
+    case 918:
+      return 44;
     case 23:
     case 87:
     case 151:
@@ -66,6 +74,13 @@ public:
     default:
       return 0;
     }
+  }
+
+  static constexpr bool ram_access_reversed(u32 opcode) noexcept {
+    if ((opcode >> 26) != 31)
+      return false;
+    const unsigned operation = (opcode >> 1) & 1023;
+    return operation == 534 || operation == 662 || operation == 790 || operation == 918;
   }
 
   static constexpr unsigned ram_access_bytes(u32 opcode) noexcept {

@@ -80,3 +80,24 @@ This test passed Windows MSVC and Linux GCC/Clang with warnings treated as error
 `tests/output_tests.cpp` separately checks fitted presentation in all three display modes, window resizing, exact projected mouse IR coordinates, and exclusion of the black bars using SDL's dummy driver. These checks establish the host coordinate transform. The pure pointer suite and opt-in exact camera comparison are documented in [pointer camera](pointer-camera.md); physical controller calibration and commercial live mouse acceptance remain unverified.
 
 `tests/input_replay_tests.cpp` checks parsing, range failures, instruction/field ordering, reset behavior, and simultaneous events. Its authored DOL runs real CPU instructions to request SI reports before and after a replay event on both consoles. The focused Linux GCC run passed; other current build results are recorded in [testing](testing.md).
+
+## Controller reset chord
+
+Holding B, X and Start for more than three emulated seconds queues a console
+reset-button tap. The comparison uses the upper button byte, so D-pad bits do
+not cancel the chord. Changing chords or reconnecting starts a fresh interval.
+The origin chord retains its separate calibration behavior.
+
+The tap clears PI's active-low button-state bit at the next device update,
+notifies Wii system management, and schedules release after half a second.
+Multiple taps retain separate release events. It does not directly reset the
+CPU or erase RAM, cards or other persistent state; guest software handles the
+button and system-management event.
+
+This follows `SI_DeviceGCController.cpp::HandleButtonCombos` and
+`ProcessorInterface.cpp::ResetButton_Tap`, `SetResetButton`, and the reset
+notification callback at source revision
+`2c805fee8f232d090c454381bb1b8422242345e1`. Public device checks cover the exact
+hold threshold, both consoles, chord changes, reconnection, queued delivery and
+overlapping releases. An integrated Wii guest loop installs an STM event hook
+and receives reset event `00020000` without losing CPU or RAM state.

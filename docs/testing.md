@@ -1956,3 +1956,18 @@ regression rejects the preserved pre-change core. Source-dispatch comparisons
 cover the actual gather-buffer functions and privileged instruction callers;
 see [CPU execution](cpu-reference.md#write-gather-register). These checks do
 not establish commercial-game completion or full-speed rendering.
+
+## Reset-button delivery
+
+The controller reset chord and queued PI/STM delivery pass the 87 enabled
+Linux Release/LTO tests, with the same ten capability-dependent skips. Device,
+runtime and event-budget suites pass ASan/UBSan with leak detection disabled
+under this host's tracing restriction. Targeted Clang analysis reports no
+finding. A separate ordinary-controller regression fails against the preserved
+preceding core and passes against the changed core.
+
+The Windows main hardware-renderer test now has a twenty-minute ceiling.
+A hosted software-driver run reached its previous ten-minute timeout during
+XFB-clear qualification after the preceding profiles passed. The following
+revision passed the complete suite. This is headroom for cold compilation and
+shared-runner variation; no pixel checks, cases or other timeouts were removed.

@@ -774,7 +774,7 @@ void Devices::video_halfline() {
 }
 
 u64 Devices::event_free_cycles() {
-  if ((pi_[0] & 0x70u) != level_interrupts_)
+  if (reset_presses_pending_ || (pi_[0] & 0x70u) != level_interrupts_)
     return 0;
   if (!next_deadline_)
     rebuild_deadline();
@@ -814,6 +814,8 @@ void Devices::advance_quiet(u64 amount) {
     di_remaining_ -= amount;
   if (aram_remaining_)
     aram_remaining_ -= amount;
+  for (u64 &remaining : reset_releases_)
+    remaining -= amount;
   for (u64 &remaining : audio_start_interrupts_)
     remaining -= amount;
   for (auto &card : cards_) {
@@ -831,6 +833,10 @@ void Devices::advance_quiet(u64 amount) {
 }
 
 void Devices::rebuild_deadline() {
+  if (reset_presses_pending_) {
+    next_deadline_ = 0;
+    return;
+  }
   const u64 vi_period = video_period();
   const auto remaining = [](u64 period, u64 elapsed) {
     return elapsed < period ? period - elapsed : 0;
@@ -848,6 +854,8 @@ void Devices::rebuild_deadline() {
   };
   countdown(di_remaining_);
   countdown(aram_remaining_);
+  for (u64 remaining : reset_releases_)
+    countdown(remaining);
   for (u64 interrupt_remaining : audio_start_interrupts_)
     countdown(interrupt_remaining);
   next_deadline_ = std::min(next_deadline_, disc_stream_.next_event());
@@ -859,6 +867,22 @@ void Devices::rebuild_deadline() {
 }
 
 void Devices::advance_state(u64 amount) {
+  while (reset_presses_pending_) {
+    --reset_presses_pending_;
+    pi_[0] &= ~0x10000u;
+    reset_releases_.push_back(clock_ / 2);
+    if (reset_button)
+      reset_button();
+  }
+  for (u64 &remaining : reset_releases_) {
+    if (amount >= remaining) {
+      remaining = 0;
+      pi_[0] |= 0x10000;
+    } else {
+      remaining -= amount;
+    }
+  }
+  std::erase(reset_releases_, u64(0));
   if (di_remaining_ != 0) {
     if (amount >= di_remaining_) {
       di_remaining_ = 0;
@@ -1007,10 +1031,18 @@ void Devices::set_pad(unsigned port, const PadState &pad) {
     throw std::out_of_range("Controller port must be 0 through 3");
   if (pad.connected != pads_[port].connected) {
     pad_origins_[port] = PadState{};
-    pad_origin_held_[port] = false;
+    pad_button_combo_[port] = 0;
     pad_modes_[port] = 3;
   }
   pads_[port] = pad;
+}
+
+void Devices::tap_reset_button() {
+  // Queue the zero-delay press and its half-second release. The guest handles
+  // the button state; this must not reset CPU, memory or storage directly.
+  flush_elapsed();
+  ++reset_presses_pending_;
+  next_deadline_ = 0;
 }
 
 void Devices::capture_pad_origin(unsigned port) {
@@ -1029,19 +1061,23 @@ std::array<u32, 2> Devices::pad_data(unsigned port) {
   u16 buttons = pad.buttons;
   if (buttons & 0x2000)
     capture_pad_origin(port);
-  // Holding X, Y and Start for more than three seconds captures the six analog
-  // origins. The request flag lasts for the response that captures them; the
-  // game then reads the calibration packet before resuming normal pad decoding.
-  const bool held = (buttons & 0xff00) == 0x1c00;
-  if (held != pad_origin_held_[port]) {
-    pad_origin_held_[port] = held;
-    if (held)
+  // X + Y + Start captures analog origins; B + X + Start taps reset.
+  // Both chords require more than three seconds. Only origin capture adds
+  // the transient request flag to the controller response.
+  const u8 combo = (buttons & 0xff00) == 0x1c00 ? 1 : (buttons & 0xff00) == 0x1600 ? 2 : 0;
+  if (combo != pad_button_combo_[port]) {
+    pad_button_combo_[port] = combo;
+    if (combo)
       pad_origin_started_[port] = cycles_;
   }
-  if (held && u32(cycles_ - pad_origin_started_[port]) > clock_ * 3) {
-    capture_pad_origin(port);
-    buttons |= 0x2000;
-    pad_origin_held_[port] = false;
+  if (combo && u32(cycles_ - pad_origin_started_[port]) > clock_ * 3) {
+    if (combo == 1) {
+      capture_pad_origin(port);
+      buttons |= 0x2000;
+    } else {
+      tap_reset_button();
+    }
+    pad_button_combo_[port] = 0;
   }
   const u32 high = (u32(buttons | 0x80) << 16) | (u32(pad.stick_x) << 8) | pad.stick_y;
   u32 low;

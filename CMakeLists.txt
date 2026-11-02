@@ -243,6 +243,11 @@ if(CUPID_BUILD_TESTS)
     # Direct invocation without selectors also includes program-cache checks.
     set_tests_properties(hardware_renderer hardware_renderer_program_cache hardware_renderer_batch hardware_renderer_ordered PROPERTIES TIMEOUT 600 LABELS "public;backend;graphics"
       SKIP_RETURN_CODE 77)
+    if(MSVC)
+      # Cold software-driver compilation exceeded ten minutes on a hosted runner.
+      # Preserve every profile and a finite timeout without treating it as a pixel failure.
+      set_tests_properties(hardware_renderer PROPERTIES TIMEOUT 1200)
+    endif()
     add_executable(cupid_gpu_texture_copy_tests tests/gpu_texture_copy_tests.cpp)
     target_include_directories(cupid_gpu_texture_copy_tests PRIVATE tests)
     target_link_libraries(cupid_gpu_texture_copy_tests PRIVATE cupid_core)

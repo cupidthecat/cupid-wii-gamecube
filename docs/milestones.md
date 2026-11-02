@@ -1,6 +1,6 @@
 # Implementation milestones
 
-The goal is playable gameplay in both supplied games on Windows and Linux. Every milestone needs executable behavior and a repeatable test.
+The goal is complete GameCube core behavior first, then Wii, with both software and hardware rendering. Playable games and sustained speed are acceptance checks, not substitutes for CPU, memory, graphics, audio and device coverage. Every milestone needs executable behavior and a repeatable test. Launcher and quality-of-life work is outside this scope.
 
 | Slice | Current evidence | Next completion condition |
 | --- | --- | --- |
@@ -14,3 +14,23 @@ The goal is playable gameplay in both supplied games on Windows and Linux. Every
 | Commercial playability | Frozen Windows runs show Sunshine FLUDD use, goop removal, a coin and save completion; Galaxy shows movement, jumping, a Star Bit and the attack cinematic. A later Sunshine depth-fix replay retains checkpoint images through field 49,620 but lacks final state and exit status. Linux gameplay remains unqualified. See compatibility for each source and run scope. | Completed levels, clean gameplay audio, restoration of saved level progress and full-speed demonstrations in both games on both platforms using the current implementation. |
 
 Continue from the first real divergence after each fix. Preserve unrelated work and private assets. Public CI must remain independent of console dumps and commercial discs.
+
+
+## Remaining core work
+
+The runtime is not a complete core implementation. Known gaps include:
+
+- Data-cache visibility, dirty writeback, eviction and locking. Instruction-cache
+  checks do not qualify these separate data-cache behaviors.
+- A general DSP instruction interpreter and broader audio-task coverage. Unknown
+  task hashes and task data-memory transfers still stop explicitly.
+- Remaining defined MMIO, device and IOS operations currently rejected by their
+  handlers. A successful startup does not exercise all those paths.
+- Complete timing and interrupt qualification across CPU, DMA, graphics, audio
+  and controllers, including event boundaries during grouped execution.
+- Current-source physical-GPU and audio-endpoint qualification on both host
+  platforms, followed by completed levels and saved-progress restoration.
+
+Continue in the same implementation PR. Compare each new behavior with its
+pinned source implementation and callers, retain regression evidence, and keep
+undefined source behavior separate from implemented compatibility choices.

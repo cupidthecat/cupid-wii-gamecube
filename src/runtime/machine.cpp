@@ -97,6 +97,10 @@ Machine::Machine(Console console)
   devices_.graphics_read = [this](u32 a, unsigned w) { return graphics_.read(a, w); };
   devices_.graphics_write = [this](u32 a, u32 v, unsigned w) { graphics_.write(a, v, w); };
   devices_.fifo_reset = [this] { graphics_.reset_fifo(); };
+  devices_.reset_button = [this] {
+    if (console_ == Console::Wii)
+      ios_.press_reset_button();
+  };
   devices_.dsp_read = [this](u32 a) { return dsp_.read16(a); };
   devices_.dsp_write = [this](u32 a, u16 v) { dsp_.write16(a, v); };
   dsp_.interrupt = [this] { devices_.dsp_interrupt(); };

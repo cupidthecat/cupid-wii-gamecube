@@ -75,6 +75,7 @@ public:
   DiscCommandResult disc_immediate(u32 command, u32 argument1 = 0, u32 argument2 = 0);
   void set_pad(unsigned port, const PadState &pad);
   void poll_controllers();
+  void tap_reset_button();
   Xfb xfb(unsigned field = 0) const;
   float video_aspect_ratio() const;
 
@@ -127,6 +128,7 @@ public:
   std::function<u16(u32)> dsp_read;
   std::function<void(u32, u16)> dsp_write;
   std::function<void()> fifo_reset;
+  std::function<void()> reset_button;
   std::function<u32(u32, unsigned)> graphics_read;
   std::function<void(u32, u32, unsigned)> graphics_write;
   std::function<void(unsigned, bool)> rumble;
@@ -189,7 +191,9 @@ private:
   std::array<PadState, 4> pads_{};
   std::array<PadState, 4> pad_origins_{};
   std::array<u64, 4> pad_origin_started_{};
-  std::array<bool, 4> pad_origin_held_{};
+  std::array<u8, 4> pad_button_combo_{};
+  unsigned reset_presses_pending_ = 0;
+  std::vector<u64> reset_releases_;
   std::array<u8, 4> pad_modes_{3, 3, 3, 3};
   std::array<std::array<u32, 3>, 4> si_channels_{};
   std::array<u8, 128> si_buffer_{};

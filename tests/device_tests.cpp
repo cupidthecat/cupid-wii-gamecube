@@ -475,6 +475,77 @@ void controller_calibration() {
   }
 }
 
+void controller_reset_chord() {
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    Devices devices(console);
+    devices.write(vi, 0, 2);
+    devices.write(vi + 0x0c, 0, 4);
+    devices.write(vi + 0x10, 0, 4);
+    unsigned notifications = 0;
+    devices.reset_button = [&] {
+      CHECK((devices.read(pi, 4) & 0x10000) == 0);
+      ++notifications;
+    };
+    const u64 second = devices.ticks_per_second();
+    PadState pad;
+    pad.connected = true;
+    pad.buttons = 0x1601; // B + X + Start; D-pad bits do not cancel the chord.
+    devices.set_pad(0, pad);
+    const auto poll = [&] {
+      devices.write(si + 0x80, 0x40000000, 4);
+      devices.write(si + 0x34, 0xc0010801, 4);
+      return devices.read(si + 0x80, 4);
+    };
+    CHECK(poll() == 0x16818080);
+    devices.advance(3 * second);
+    CHECK(poll() == 0x16818080);
+    CHECK(notifications == 0 && (devices.read(pi, 4) & 0x10000));
+    devices.advance(1);
+    CHECK(poll() == 0x16818080);
+    CHECK(devices.event_free_cycles() == 0);
+    CHECK(notifications == 0 && (devices.read(pi, 4) & 0x10000));
+    devices.advance(0);
+    CHECK(notifications == 1 && !(devices.read(pi, 4) & 0x10000));
+    devices.advance(second / 2 - 1);
+    CHECK(!(devices.read(pi, 4) & 0x10000));
+    CHECK(devices.event_free_cycles() == 0);
+    devices.advance(1);
+    CHECK(devices.read(pi, 4) & 0x10000);
+    // A new chord or disconnect starts a fresh three-second interval.
+    pad.buttons = 0x1c00;
+    devices.set_pad(0, pad);
+    poll();
+    devices.advance(2 * second);
+    pad.buttons = 0x1600;
+    devices.set_pad(0, pad);
+    poll();
+    devices.advance(second + 1);
+    poll();
+    devices.advance(0);
+    CHECK(notifications == 1);
+    pad.connected = false;
+    devices.set_pad(0, pad);
+    pad.connected = true;
+    devices.set_pad(0, pad);
+    poll();
+    devices.advance(3 * second + 1);
+    poll();
+    devices.advance(0);
+    CHECK(notifications == 2);
+    // Multiple taps retain their separately scheduled releases and notifications.
+    devices.advance(second / 4);
+    devices.tap_reset_button();
+    devices.advance(0);
+    CHECK(notifications == 3 && !(devices.read(pi, 4) & 0x10000));
+    devices.advance(second / 4);
+    CHECK(devices.read(pi, 4) & 0x10000);
+    devices.write(pi, 0x10000, 4);
+    CHECK(!(devices.read(pi, 4) & 0x10000));
+    devices.advance(second / 4);
+    CHECK(devices.read(pi, 4) & 0x10000);
+  }
+}
+
 void controller_analog_modes() {
   constexpr std::array<u32, 8> expected{0x56789bdf, 0x579abcdf, 0x579bdef0, 0x56789abc,
                                         0x5678def0, 0x56789bdf, 0x56789bdf, 0x56789bdf};
@@ -2097,6 +2168,7 @@ int main() {
     serial_interface();
     controller_calibration();
     controller_analog_modes();
+    controller_reset_chord();
     controller_poll_field_boundary();
     audio_scheduler_checks::pending_periods();
     audio_scheduler_checks::queued_start_interrupts();

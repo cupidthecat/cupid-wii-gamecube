@@ -208,9 +208,71 @@ void zero_step_limits(cupid::Console console) {
 }
 } // namespace
 
+void runtime_reset_button_notification() {
+  using namespace cupid;
+  runtime::Machine machine(Console::Wii);
+  machine.load_executable(runtime::self_test_dol());
+  machine.set_limits({1000000, 0, 0});
+  auto &memory = machine.memory();
+  auto &devices = machine.devices();
+  auto &state = machine.cpu().state();
+  state.pc = 0x4000;
+  state.msr = 0;
+  state.spr[cpu::spr::hid0] = 0;
+  memory.write32(0x4000, 0x48000000);
+  constexpr u32 ipc = 0x0d000000, request = 0x10000, output = 0x12000;
+  const auto wait = [&](const auto &ready) {
+    for (unsigned attempts = 0; attempts < 250000; ++attempts) {
+      if (ready())
+        return;
+      machine.step();
+    }
+    CHECK(false);
+  };
+  const auto submit = [&] {
+    devices.write(ipc, request, 4);
+    devices.write(ipc + 4, 0x31, 4);
+    wait([&] { return (devices.read(ipc + 4, 4) & 3) == 2; });
+    devices.write(ipc + 4, 0x32, 4);
+    devices.write(ipc + 0x30, 0x40000000, 4);
+  };
+  const std::string path = "/dev/stm/eventhook";
+  for (unsigned i = 0; i <= path.size(); ++i)
+    memory.write8(0x11000 + i, i == path.size() ? 0 : u8(path[i]));
+  memory.write32(request, 1);
+  memory.write32(request + 12, 0x11000);
+  memory.write32(request + 16, 3);
+  submit();
+  wait([&] { return memory.read32(request) == 8; });
+  const u32 fd = memory.read32(request + 4);
+  CHECK(s32(fd) >= 0);
+  devices.write(ipc + 4, 0x34, 4);
+  devices.write(ipc + 0x30, 0x40000000, 4);
+  std::fill(memory.range(request, 64).begin(), memory.range(request, 64).end(), 0);
+  memory.write32(request, 6);
+  memory.write32(request + 8, fd);
+  memory.write32(request + 12, 0x1000);
+  memory.write32(request + 24, output);
+  memory.write32(request + 28, 4);
+  memory.write32(output, 0xaabbccdd);
+  submit();
+  for (unsigned i = 0; i < 50000; ++i)
+    machine.step();
+  CHECK(memory.read32(request) == 6 && memory.read32(output) == 0xaabbccdd);
+  const auto gprs = state.gpr;
+  devices.tap_reset_button();
+  wait([&] { return memory.read32(request) == 8; });
+  CHECK(memory.read32(output) == 0x20000);
+  CHECK(memory.read32(request + 4) == 0);
+  CHECK(state.pc == 0x4000 && state.gpr == gprs);
+  CHECK(memory.read32(0x4000) == 0x48000000);
+  CHECK(!(devices.read(0x0c003000, 4) & 0x10000));
+}
+
 int main() {
   return run_tests([] {
     using namespace cupid;
+    runtime_reset_button_notification();
     trace_fetch_status(Console::GameCube);
     trace_fetch_status(Console::Wii);
     memory_error_interrupt(Console::GameCube);

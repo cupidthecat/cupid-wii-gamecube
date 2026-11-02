@@ -24,6 +24,8 @@ host. It does not establish full-speed execution.
 an 8,192-byte program ROM and a 4,096-byte coefficient ROM. Both are required;
 without them the task-level backend remains active. No ROM files are bundled.
 See [instruction DSP](dsp-instructions.md) for timing, scope and validation.
+`--dsp-coeff PATH` alone supplies the optional 4,096-byte polyphase table to
+[command-list task audio](dsp-command-audio.md), without selecting instruction execution.
 
 `--audio sdl` resamples and mixes guest PCM into a 48 kHz stereo stream; `--audio none` leaves host audio disabled. `--remote-speakers on` includes decoded Remote packets and requires SDL audio; the default is `off`. Headless runs can enable audio. See [host audio](host-audio.md) for buffering and verified scope.
 

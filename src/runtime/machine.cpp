@@ -222,6 +222,10 @@ void Machine::install_fonts(const IplFonts &fonts) {
   devices_.set_ipl_fonts(fonts.shift_jis.bytes, fonts.western.bytes);
 }
 
+void Machine::install_dsp_audio_coefficients(std::span<const u8> coefficients) {
+  dsp_.install_audio_coefficients(coefficients);
+}
+
 void Machine::install_dsp_roms(std::span<const u8> program, std::span<const u8> coefficients) {
   dsp_.install_instruction_roms(program, coefficients);
 }

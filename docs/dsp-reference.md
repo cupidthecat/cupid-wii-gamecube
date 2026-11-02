@@ -174,3 +174,10 @@ units, `DSPAccelerator.cpp` and `DSPHWInterface.cpp`. Runtime scheduling and CPU
 mailbox/control integration were checked against `DSP.cpp`, `DSPLLE.cpp` and
 `SystemTimers.cpp`. Compiled comparison scope, host adapters and arithmetic build
 qualifications are recorded on the instruction backend page.
+
+## Command-list task family
+
+The later GameCube command-list implementation uses pin
+`2c805fee8f232d090c454381bb1b8422242345e1`. Its command, voice, resampling,
+mailbox and timing comparisons are recorded in [command-list audio](dsp-command-audio.md).
+These checks are separate from the older DAC-family observations above.

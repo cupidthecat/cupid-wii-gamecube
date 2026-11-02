@@ -110,6 +110,9 @@ set(cupid_sources
   src/dsp/instruction/extension.cpp
   src/dsp/instruction/accelerator.cpp
   src/dsp/instruction/hardware.cpp
+  src/dsp/command_audio/protocol.cpp
+  src/dsp/command_audio/commands.cpp
+  src/dsp/command_audio/voice.cpp
   src/dsp/audio.cpp
   src/dsp/handheld.cpp
   src/dsp/handheld_task.cpp
@@ -135,7 +138,7 @@ include(cmake/DeveloperChecks.cmake)
 
 if(CUPID_BUILD_TESTS)
   enable_testing()
-  foreach(suite IN ITEMS cpu data_cache native_integer cpu_integer_run floating_binary instruction_cache_hint core disc disc_stream device event_budget remote remote_speaker host_mixer extension_cipher sdp sdp_transport runtime runtime_group runtime_gather runtime_boot_cache elf fonts dsp dsp_instruction handheld ios network sysconf gfx fifo_environment vertex texture fragment fixed_coordinate rasterizer raster_coverage efb_copy xfb_copy efb_access guest_video input_replay input_replay_follow input_replay_follow_guest audio_stats pointer)
+  foreach(suite IN ITEMS cpu data_cache native_integer cpu_integer_run floating_binary instruction_cache_hint core disc disc_stream device event_budget remote remote_speaker host_mixer extension_cipher sdp sdp_transport runtime runtime_group runtime_gather runtime_boot_cache elf fonts dsp dsp_instruction command_audio handheld ios network sysconf gfx fifo_environment vertex texture fragment fixed_coordinate rasterizer raster_coverage efb_copy xfb_copy efb_access guest_video input_replay input_replay_follow input_replay_follow_guest audio_stats pointer)
     add_executable(cupid_${suite}_tests tests/${suite}_tests.cpp)
     target_include_directories(cupid_${suite}_tests PRIVATE tests)
     target_link_libraries(cupid_${suite}_tests PRIVATE cupid_core)

@@ -60,6 +60,97 @@ void mail_tests() {
   CHECK(!queue.pending() && queue.read_high() == 0x09ab && queue.read_low() == 0xcdef);
 }
 
+void command_audio_timing_tests(Console console) {
+  Memory memory(console);
+  dsp::Engine engine(memory, console);
+  unsigned interrupts = 0;
+  engine.interrupt = [&] { ++interrupts; };
+  engine.write16(0x0a, 0x800);
+  CHECK(receive(engine) == 0x8071feed);
+  const auto code = synthetic_hash_fixture(0x3ad3b7ac);
+  memory.copy_in(0x2000, code);
+  parameter(engine, 0x80f3a001, 0x2000);
+  parameter(engine, 0x80f3a002, u32(code.size()));
+  parameter(engine, 0x80f3d001, 0);
+  CHECK(engine.program_hash() == 0x3ad3b7ac && interrupts == 1);
+  CHECK(receive(engine) == 0xdcd10000);
+  memory.write16(0x1000, 15);
+  send(engine, 0xbabe0001);
+  send(engine, 0x1000);
+  CHECK(interrupts == 1 && engine.event_free_cycles() == 2499);
+  CHECK(receive(engine) == 0xdcd10002);
+  engine.advance(2499);
+  CHECK(interrupts == 1 && engine.event_free_cycles() == 0);
+  engine.advance(1);
+  CHECK(interrupts == 2);
+  send(engine, 0xcdd10003);
+  send(engine, 0xbabe0001);
+  send(engine, 0x1000);
+  // Clearing the mailbox through a reset must not remove the scheduled IRQ.
+  engine.write16(0x0a, 0x801);
+  CHECK(engine.program_hash() == 0);
+  engine.advance(2500);
+  CHECK(interrupts == 3);
+
+  dsp::MailQueue queue;
+  unsigned immediate = 0, delayed = 0;
+  queue.interrupt = [&] { ++immediate; };
+  queue.delayed_interrupt = [&](u32 cycles) {
+    CHECK(cycles == 2500);
+    ++delayed;
+  };
+  queue.push(0x80000001, true, 2500);
+  CHECK(delayed == 1 && immediate == 0);
+  queue.push(0x80000002, true, 2500);
+  CHECK(delayed == 1 && immediate == 0);
+  CHECK(queue.read_low() == 1 && immediate == 1);
+  CHECK(queue.read_low() == 2 && immediate == 1);
+}
+
+void command_audio_resume_tests() {
+  Memory memory(Console::GameCube);
+  dsp::Engine engine(memory, Console::GameCube);
+  CHECK_THROWS(engine.install_audio_coefficients(std::array<u8, 1>{}));
+  engine.install_audio_coefficients(std::array<u8, 4096>{});
+  engine.write16(0x0a, 0x800);
+  receive(engine);
+  memory.copy_in(0x2100, synthetic_hash_fixture(0x3ad3b7ac));
+  parameter(engine, 0x80f3a001, 0x2100);
+  parameter(engine, 0x80f3a002, 32);
+  parameter(engine, 0x80f3d001, 0);
+  CHECK(receive(engine) == 0xdcd10000);
+  CHECK_THROWS(engine.install_audio_coefficients(std::array<u8, 4096>{}));
+  memory.write32(0x3000, 12345);
+  for (unsigned i = 0; u16 word : {u16(0), u16(0), u16(0x3000), u16(15)})
+    memory.write16(0x1000 + 2 * i++, word);
+  send(engine, 0xbabe0004);
+  send(engine, 0x1000);
+  CHECK(receive(engine) == 0xdcd10002);
+  const auto swap = [&](u32 hash) {
+    memory.copy_in(0x2100, synthetic_hash_fixture(hash));
+    send(engine, 0xcdd10001);
+    for (u32 mail : std::array<u32, 10>{0, 0, 0, 0x2100, 32, 0, 0, 0, 0, 0})
+      send(engine, mail);
+    CHECK(engine.program_hash() == hash);
+  };
+  swap(0x3daf59b9);
+  CHECK(receive(engine) == 0xdcd10000);
+  memory.write16(0x1000, 15);
+  send(engine, 0xbabe0001);
+  send(engine, 0x1000);
+  CHECK(receive(engine) == 0xdcd10002);
+  swap(0x3ad3b7ac);
+  CHECK((engine.read16(4) & 0x8000) == 0);
+  engine.advance(486000);
+  CHECK(receive(engine) == 0xdcd10001);
+  for (unsigned i = 0; u16 word : {u16(6), u16(0), u16(0x5000), u16(15)})
+    memory.write16(0x1000 + 2 * i++, word);
+  send(engine, 0xbabe0004);
+  send(engine, 0x1000);
+  CHECK(memory.read32(0x5000) == 12345);
+  CHECK(memory.read32(0x527c) == 12345);
+}
+
 void bootstrap_tests(Console console) {
   Memory memory(console);
   dsp::Engine engine(memory, console);
@@ -890,6 +981,9 @@ void guest_audio_dma_tests(Console console) {
 int main() {
   return run_tests([] {
     mail_tests();
+    command_audio_resume_tests();
+    command_audio_timing_tests(Console::GameCube);
+    command_audio_timing_tests(Console::Wii);
     bootstrap_tests(Console::GameCube);
     bootstrap_tests(Console::Wii);
     upload_tests(Console::GameCube);

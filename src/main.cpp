@@ -151,7 +151,7 @@ Options parse(int argc, char **argv) {
   }
   if (o.console != "auto" && o.console != "gamecube" && o.console != "wii")
     throw UsageError("Console must be auto, gamecube or wii");
-  if (o.dsp_rom.empty() != o.dsp_coeff.empty())
+  if (!o.dsp_rom.empty() && o.dsp_coeff.empty())
     throw UsageError("DSP instruction execution requires both --dsp-rom and --dsp-coeff");
   if (o.cpu != "interpreter" && o.cpu != "native")
     throw UsageError("CPU backend must be interpreter or native");
@@ -187,8 +187,11 @@ Options parse(int argc, char **argv) {
 }
 
 void configure_dsp(runtime::Machine &machine, const Options &options) {
-  if (options.dsp_rom.empty())
+  if (options.dsp_rom.empty()) {
+    if (!options.dsp_coeff.empty())
+      machine.install_dsp_audio_coefficients(runtime::read_file(options.dsp_coeff, 4096));
     return;
+  }
   const auto program = runtime::read_file(options.dsp_rom, 8192);
   const auto coefficients = runtime::read_file(options.dsp_coeff, 4096);
   machine.install_dsp_roms(program, coefficients);
@@ -204,7 +207,7 @@ Usage: cupid-wii-gamecube --game PATH [options]
   --cpu interpreter|native   Interpreter or experimental native integers (default interpreter)
   --data-cache               Enable emulated data-cache visibility and writeback
   --dsp-rom PATH              Enable instruction DSP using an 8192-byte program ROM
-  --dsp-coeff PATH            Required 4096-byte coefficient ROM for instruction DSP
+  --dsp-coeff PATH            4096-byte table for task audio, or ROM with --dsp-rom
   --headless                  Disable the game-output window
   --bios PATH                 Validate and load GameCube IPL for EXI reads
   --validate-bios             Check --bios without running software

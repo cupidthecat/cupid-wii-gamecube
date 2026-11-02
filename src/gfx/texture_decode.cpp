@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cupid/gfx/texture.hpp"
+#include "manual_mip.hpp"
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -88,7 +89,7 @@ void decode_cmpr_tile(std::span<const u8> source, std::span<u32> destination, un
 struct TextureSampler::DecodeLayout {
   unsigned format, width, height;
   Layout tile;
-  bool manual;
+  bool manual, split;
   u64 mip_offset, base, odd_base;
   u32 palette;
 };
@@ -105,19 +106,24 @@ TextureSampler::DecodeLayout TextureSampler::decode_layout(unsigned unit, unsign
   const auto tile = layout(format);
   if (mip > 10)
     throw VertexError("Texture mip level exceeds hardware range");
+  const bool manual = (mode1 & (1 << 21)) != 0;
+  const auto selected = manual ? detail::manual_mip(original_width, original_height, mip,
+                                                    tile.width, tile.height, tile.bytes)
+                               : detail::ManualMip{};
   u64 mip_offset = 0;
-  for (unsigned level = 0; level < mip; ++level) {
+  for (unsigned level = 0; !manual && level < mip; ++level) {
     const auto mw = std::max(tile.width, original_width >> level),
                mh = std::max(tile.height, original_height >> level);
     mip_offset += u64(mw) * mh * tile.bytes / (tile.width * tile.height);
   }
-  const bool manual = (mode1 & (1 << 21)) != 0;
-  const u64 base = (manual ? u64(mode1 & 0x7fff) * 32 : u64(image_register(5)) << 5) + mip_offset;
+  const u64 base = manual ? u64((selected.bank ? mode2 : mode1) & 0x7fff) * 32 + selected.offset
+                          : (u64(image_register(5)) << 5) + mip_offset;
   return {format,
-          ((original_width - 1) >> mip) + 1,
-          ((original_height - 1) >> mip) + 1,
+          manual ? selected.width : ((original_width - 1) >> mip) + 1,
+          manual ? selected.height : ((original_height - 1) >> mip) + 1,
           tile,
           manual,
+          manual && selected.level == 0 && format == 6,
           mip_offset,
           base,
           u64(mode2 & 0x7fff) * 32,
@@ -132,8 +138,6 @@ void TextureSampler::decode(unsigned unit, unsigned mip, std::span<const u8> sou
   const unsigned width = image.width, height = image.height;
   if (destination.size() != std::size_t(width) * height)
     throw VertexError("Texture decode destination has the wrong extent");
-  if (image.manual && mip)
-    throw VertexError("Manually managed mip textures are not implemented");
   if (image.format == 14 && !overlaps(source, destination) && !overlaps(tmem_, destination)) {
     const auto &tile = image.tile;
     u64 block = 0;
@@ -183,7 +187,7 @@ Color TextureSampler::decode_texel(const DecodeLayout &image, u64 block, unsigne
   const unsigned format = image.format;
   const bool manual = image.manual;
   auto byte = [&](u64 offset, bool odd = false) -> u8 {
-    const u64 address = (odd && manual ? image.odd_base : image.base) + offset;
+    const u64 address = (odd && image.split ? image.odd_base : image.base) + offset;
     if (manual) {
       if (address >= tmem_.size())
         throw VertexError("Texture-memory fetch is out of bounds");
@@ -249,9 +253,9 @@ Color TextureSampler::decode_texel(const DecodeLayout &image, u64 block, unsigne
   case 10:
     return palette(half(block + local * 2) & 0x3fff);
   case 6: {
-    const auto offset = manual ? block / 2 : block;
-    return {byte(offset + local * 2 + 1), byte(offset + local * 2 + (manual ? 0 : 32), true),
-            byte(offset + local * 2 + (manual ? 1 : 33), true), byte(offset + local * 2)};
+    const auto offset = image.split ? block / 2 : block;
+    return {byte(offset + local * 2 + 1), byte(offset + local * 2 + (image.split ? 0 : 32), true),
+            byte(offset + local * 2 + (image.split ? 1 : 33), true), byte(offset + local * 2)};
   }
   case 14: {
     const u64 offset = block + ((y & 4) ? 16 : 0) + ((x & 4) ? 8 : 0);

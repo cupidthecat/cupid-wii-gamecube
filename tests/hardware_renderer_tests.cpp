@@ -1943,6 +1943,114 @@ void texture_cache_checks(bool measure) {
   }
 }
 
+void manual_texture_mip_checks() {
+  Memory memory{Console::GameCube};
+  std::vector<u8> tmem(1024 * 1024);
+  for (unsigned n = 0; n < tmem.size(); ++n)
+    tmem[n] = static_cast<u8>((n * 57 + (n >> 4)) ^ (n >> 9));
+  std::array<u32, 256> bp{};
+  gfx::TevRegisters colors{}, konst{};
+  gfx::HardwareRenderer renderer(memory, tmem);
+  gfx::FragmentShader software(memory, bp, colors, konst, tmem);
+  std::vector<u32> pixels(640 * 528), depths(pixels.size()), expected(pixels.size());
+  renderer.upload(pixels, depths);
+  bp[0] = 1;
+  bp[0x28] = 64;
+  bp[0x41] = 24;
+  bp[0xf6] = 4;
+  bp[0xf7] = 14;
+  bp[0xf3] = (7 << 16) | (7 << 19);
+  bp[0xc0] = 0xfff8 | (1 << 19);
+  bp[0xc1] = (7 << 13) | (7 << 10) | (7 << 7) | (4 << 4) | (1 << 19);
+  bp[0x8c] = (1u << 21) | (0x2000 / 32);
+  bp[0x90] = 0x22000 / 32;
+  bp[0x98] = (1 << 10) | (0x40000 / 512);
+  gfx::RasterWork work{};
+  work.edges.fill({0, 0, 1});
+  work.textures[0][0].value = -0.5f;
+  work.textures[0][1].value = 5.25f;
+  work.textures[0][2].value = 0;
+  unsigned index = 0;
+  const auto submit = [&](bool large = false) {
+    work.left = large ? 0 : int(index);
+    work.right = large ? 65 : work.left + 1;
+    work.top = large ? 1 : 0;
+    work.bottom = large ? 66 : 1;
+    CHECK(renderer.begin(bp, colors, konst));
+    CHECK(renderer.draw(work));
+    gfx::FragmentInputs input;
+    input.x = index;
+    input.uv[0] = {work.textures[0][0].value, work.textures[0][1].value};
+    u32 depth = 0;
+    const auto result = software.shade(input, &depth);
+    CHECK(result.has_value());
+    const u32 color = (u32((*result)[0]) << 16) | (u32((*result)[1]) << 8) | (*result)[2];
+    if (large)
+      for (unsigned y = 1; y < 66; ++y)
+        std::fill_n(expected.begin() + y * 640, 65, color);
+    else
+      expected[index] = color;
+    ++index;
+    const auto stats = renderer.synchronize(pixels, depths);
+    CHECK(stats.fallback_rectangles == 0);
+    if (pixels != expected)
+      std::cerr << "Manual mip profile=" << index - 1 << " image=" << std::hex << bp[0x88]
+                << " mode=" << bp[0x80] << " lod=" << bp[0x84] << " actual=" << pixels[index - 1]
+                << " expected=" << expected[index - 1] << std::dec << '\n';
+    CHECK(pixels == expected);
+    CHECK(std::all_of(depths.begin(), depths.end(), [](u32 value) { return value == 0; }));
+    return stats;
+  };
+  constexpr std::array<std::array<unsigned, 2>, 2> sizes{{{8, 8}, {7, 9}}};
+  for (unsigned format : {0u, 1u, 2u, 3u, 4u, 5u, 6u, 8u, 9u, 10u, 14u})
+    for (const auto &size : sizes)
+      for (unsigned lod : {0u, 16u, 24u, 40u, 56u, 255u})
+        for (bool linear : {false, true}) {
+          const unsigned wrap = index % 3;
+          bp[0x88] = (format << 20) | (size[0] - 1) | ((size[1] - 1) << 10);
+          bp[0x80] = (2 << 5) | (linear ? 16 | 128 : 0) | wrap | (((wrap + 1) % 3) << 2);
+          bp[0x84] = lod | (lod << 8);
+          submit();
+        }
+  // Rectangles above the batching limit also exercise the separate compute
+  // shader; ordinary small rectangles cover the batched/ordered shader.
+  for (unsigned format : {0u, 6u, 14u})
+    for (unsigned lod : {24u, 255u}) {
+      bp[0x88] = (format << 20) | 6 | (8 << 10);
+      bp[0x80] = (2 << 5) | 16 | 128;
+      bp[0x84] = lod | (lod << 8);
+      submit(true);
+    }
+  // Cache snapshots include each alternating bank's reachable tail, without
+  // turning unrelated bytes beyond the last level into invalidation sources.
+  bp[0x88] = (1 << 20) | 6 | (4 << 10);
+  bp[0x80] = 2 << 5;
+  bp[0x84] = 32 | (32 << 8);
+  auto stats = submit();
+  tmem[0x22000 + 31] ^= 0x33;
+  CHECK(submit().texture_decodes == stats.texture_decodes + 1);
+  stats = renderer.synchronize(pixels, depths);
+  tmem[0x22000 + 32] ^= 0x55;
+  CHECK(submit().texture_decodes == stats.texture_decodes);
+  tmem[0x2000 + 95] ^= 0x77;
+  CHECK(submit().texture_decodes == stats.texture_decodes + 1);
+  stats = renderer.synchronize(pixels, depths);
+  tmem[0x2000 + 96] ^= 0x99;
+  CHECK(submit().texture_decodes == stats.texture_decodes);
+  bp[0x90] += 1;
+  CHECK(submit().texture_decodes == stats.texture_decodes + 1);
+  // A required bank range beyond TMEM declines before a GPU submission.
+  bp[0x88] = (1 << 20) | 15 | (15 << 10);
+  bp[0x90] = 32767;
+  stats = renderer.synchronize(pixels, depths);
+  CHECK(renderer.begin(bp, colors, konst));
+  CHECK(!renderer.draw(work));
+  CHECK(renderer.synchronize(pixels, depths).dispatches == stats.dispatches);
+  CHECK(pixels == expected);
+  std::cout << "Verified " << index
+            << " manual mip GPU/CPU samples, bank invalidation and bounds\n";
+}
+
 void texture_partial_upload_checks() {
   Memory memory{Console::GameCube};
   std::vector<u8> tmem(1024 * 1024);
@@ -3707,6 +3815,7 @@ int main(int argc, char **argv) {
     if (texture_cache_only) {
       renderer_stage("texture_cache_checks", [&] { texture_cache_checks(measure); });
       renderer_stage("texture_cache_bank_checks", [&] { texture_cache_bank_checks(); });
+      renderer_stage("manual_texture_mip_checks", [&] { manual_texture_mip_checks(); });
       renderer_stage("texture_partial_upload_checks", [&] { texture_partial_upload_checks(); });
       return;
     }
@@ -3739,6 +3848,7 @@ int main(int argc, char **argv) {
       renderer_stage("wide_depth_origin_checks", [&] { wide_depth_origin_checks(); });
       renderer_stage("texture_cache_checks", [&] { texture_cache_checks(false); });
       renderer_stage("texture_cache_bank_checks", [&] { texture_cache_bank_checks(); });
+      renderer_stage("manual_texture_mip_checks", [&] { manual_texture_mip_checks(); });
       renderer_stage("texture_partial_upload_checks", [&] { texture_partial_upload_checks(); });
       renderer_stage("xfb_checks", [&] { xfb_checks(false); });
       renderer_stage("buffer_fragment_fallback_checks", [&] { buffer_fragment_fallback_checks(); });

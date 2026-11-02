@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cupid/gfx/texture.hpp"
+#include "manual_mip.hpp"
 #include <algorithm>
 
 namespace cupid::gfx {
@@ -79,14 +80,17 @@ Color TextureSampler::texel(unsigned unit, unsigned x, unsigned y, unsigned mip)
   const auto tile = layout(format);
   if (mip > 10)
     throw VertexError("Texture mip level exceeds hardware range");
-  const unsigned w = ((original_width - 1) >> mip) + 1, h = ((original_height - 1) >> mip) + 1;
+  const bool manual = (mode1 & (1 << 21)) != 0;
+  const auto selected = manual ? detail::manual_mip(original_width, original_height, mip,
+                                                    tile.width, tile.height, tile.bytes)
+                               : detail::ManualMip{};
+  const unsigned w = manual ? selected.width : ((original_width - 1) >> mip) + 1;
+  const unsigned h = manual ? selected.height : ((original_height - 1) >> mip) + 1;
   if (x >= w || y >= h)
     throw VertexError("Texture coordinates are outside the selected mip");
-  const bool manual = (mode1 & (1 << 21)) != 0;
-  if (manual && mip)
-    throw VertexError("Manually managed mip textures are not implemented");
+  const bool split = manual && selected.level == 0 && format == 6;
   u64 mip_offset = 0;
-  for (unsigned level = 0; level < mip; ++level) {
+  for (unsigned level = 0; !manual && level < mip; ++level) {
     const auto mw = std::max(tile.width, original_width >> level),
                mh = std::max(tile.height, original_height >> level);
     mip_offset += u64(mw) * mh * tile.bytes / (tile.width * tile.height);
@@ -94,9 +98,10 @@ Color TextureSampler::texel(unsigned unit, unsigned x, unsigned y, unsigned mip)
   const u64 block =
       (u64(y / tile.height) * ((w + tile.width - 1) / tile.width) + x / tile.width) * tile.bytes;
   const unsigned local = (y % tile.height) * tile.width + x % tile.width;
-  const u64 base = (manual ? u64(mode1 & 0x7fff) * 32 : u64(reg(unit, 5)) << 5) + mip_offset;
+  const u64 base = manual ? u64((selected.bank ? mode2 : mode1) & 0x7fff) * 32 + selected.offset
+                          : (u64(reg(unit, 5)) << 5) + mip_offset;
   auto byte = [&](u64 offset, bool odd = false) -> u8 {
-    const u64 address = (odd && manual ? u64(mode2 & 0x7fff) * 32 : base) + offset;
+    const u64 address = (odd && split ? u64(mode2 & 0x7fff) * 32 : base) + offset;
     if (manual) {
       if (address >= tmem_.size())
         throw VertexError("Texture-memory fetch is out of bounds");
@@ -159,9 +164,9 @@ Color TextureSampler::texel(unsigned unit, unsigned x, unsigned y, unsigned mip)
   case 10:
     return palette(half(block + local * 2) & 0x3fff);
   case 6: {
-    const auto offset = manual ? block / 2 : block;
-    return {byte(offset + local * 2 + 1), byte(offset + local * 2 + (manual ? 0 : 32), true),
-            byte(offset + local * 2 + (manual ? 1 : 33), true), byte(offset + local * 2)};
+    const auto offset = split ? block / 2 : block;
+    return {byte(offset + local * 2 + 1), byte(offset + local * 2 + (split ? 0 : 32), true),
+            byte(offset + local * 2 + (split ? 1 : 33), true), byte(offset + local * 2)};
   }
   case 14: {
     const u64 offset = block + ((y & 4) ? 16 : 0) + ((x & 4) ? 8 : 0);
@@ -192,10 +197,15 @@ Color TextureSampler::sample(unsigned unit, s32 s, s32 t, s32 lod, bool linear) 
   if (mip_mode == 1 && (lod & 15) >= 8 && lod > 0)
     ++mip;
   const bool mip_linear = mip_mode == 2 && lod > 0 && (lod & 15) != 0;
+  const bool manual = (reg(unit, 3) & (1u << 21)) != 0;
+  const unsigned width = (image & 1023) + 1, height = ((image >> 10) & 1023) + 1;
   auto sample_mip = [&](unsigned level) {
+    if (manual)
+      level = detail::manual_mip_level(width, height, level);
     if (level > 10)
       throw VertexError("Texture sampler mip exceeds hardware range");
-    const unsigned w = ((image & 1023) >> level) + 1, h = (((image >> 10) & 1023) >> level) + 1;
+    const unsigned w = manual ? std::max(1u, width >> level) : ((width - 1) >> level) + 1;
+    const unsigned h = manual ? std::max(1u, height >> level) : ((height - 1) >> level) + 1;
     const s64 ss = (s64(s) >> level) - (linear ? 64 : 0),
               tt = (s64(t) >> level) - (linear ? 64 : 0);
     const int px = static_cast<int>(ss >> 7), py = static_cast<int>(tt >> 7);

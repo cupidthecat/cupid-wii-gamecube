@@ -52,3 +52,45 @@ and conversion seams, maximum finite values, infinities and NaNs. These checks
 pass under MSVC Release, GCC Release and Clang 18 ASan/UBSan. The retained
 algorithm is a product regression oracle; these results are distinct from
 external-source or physical-device comparisons.
+
+## Manual texture-memory mipmaps
+
+The manual-mip layout follows the accelerated texture path at revision
+`2c805fee8f232d090c454381bb1b8422242345e1`:
+`VideoCommon/TextureInfo.cpp`, its constructor, `GetMipMapLevels`, `MipLevel`
+constructor and iterator; `VideoCommon/TextureCacheBase.cpp`, the base-level
+and subsequent mip decode/upload calls; and the existing
+`VideoCommon/TextureDecoder_Common.cpp` decoders.
+
+Level zero starts at the even-bank address. Subsequent levels alternate banks,
+advancing each bank by its preceding full, tile-aligned source levels. Dimensions
+halve with a floor and stop at one; the final level is bounded by the largest
+base dimension. RGBA8 splits only its base level between AR and GB banks. Later
+levels use ordinary interleaved RGBA8 tiles. In particular, the even-bank iterator
+advances past the full encoded base size before level two, not half that size.
+
+This is an explicit compatibility choice for both product renderers. The pinned
+standalone software sampler instead advances its first source span consecutively
+and does not advance the separate RGBA8 odd span. Its non-base manual-mip behavior
+is not the target here. Existing RAM mip and base-level manual sampling behavior
+is unchanged.
+
+The optional texture comparison compiles the actual layout constructor and mip
+iterator against their original class declaration, then compares demanded and
+prepared texels with the actual decoder. All 944,064 new comparisons pass across
+all eleven encodings, eight units, three palette encodings, power-of-two and
+uneven dimensions, and three generated input patterns. Digest:
+`5341134971038465509`. Existing 2,741,760 texel and 3,290,112 sampling comparisons
+also pass. Layout diagnostics are excluded from these valid-source comparisons;
+public tests separately check bank bounds, partial writes and maximum-level
+clamping. They reject the preceding implementation's unsupported-mip path.
+
+The OpenGL fixture compares 276 manual-mip samples and cache transitions with
+software output, without CPU fallback for the valid draws. It covers small
+batched rectangles and rectangles above the direct-compute threshold, nearest
+and bilinear filtering, trilinear blending, terminal LOD, uneven sizes, all
+encodings, odd-bank address changes and each bank's invalidation boundaries.
+It also checks that an out-of-range bank declines before GPU submission. The
+local run and the full renderer suite pass using an offscreen Mesa llvmpipe
+context. Fragment interlock was unavailable, so this validates compute execution,
+not a physical GPU's speed or ordered-raster execution.

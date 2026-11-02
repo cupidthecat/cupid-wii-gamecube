@@ -4,6 +4,7 @@
 #include "cupid/gfx/xfb_copy.hpp"
 #include "hardware_batch.hpp"
 #include "hardware_projection.hpp"
+#include "manual_mip.hpp"
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -555,24 +556,38 @@ struct HardwareRenderer::Impl {
         const unsigned mip_mode = (bp[address] >> 5) & 3;
         const unsigned maximum = (bp[address + 4] >> 8) & 255;
         unsigned levels = mip_mode ? (maximum + (mip_mode == 1 ? 8 : 15)) / 16 : 0;
-        if (levels > 10 || ((bp[address + 12] & (1u << 21)) && levels)) {
+        const bool manual = (bp[address + 12] & (1u << 21)) != 0;
+        if (manual)
+          levels = detail::manual_mip_level(width, height, levels);
+        if (levels > 10) {
           fallback = "Texture mip range requires the CPU fragment path";
           return false;
         }
-        const bool manual = (bp[address + 12] & (1u << 21)) != 0;
         const bool indexed = format == 8 || format == 9 || format == 10;
         // Filter, wrap and LOD bias affect sampling, not decoded source pixels.
         // Only the reachable mip count belongs to the decoder's cache key.
-        const std::array<u32, 6> signature{levels,
-                                           bp[address + 8],
-                                           manual ? bp[address + 12] & 0x207fff : 0,
-                                           manual && format == 6 ? bp[address + 16] & 0x7fff : 0,
-                                           manual ? 0 : bp[address + 20],
-                                           indexed ? bp[address + 24] & 0xfff : 0};
+        const std::array<u32, 6> signature{
+            levels,
+            bp[address + 8],
+            manual ? bp[address + 12] & 0x207fff : 0,
+            manual && (format == 6 || levels) ? bp[address + 16] & 0x7fff : 0,
+            manual ? 0 : bp[address + 20],
+            indexed ? bp[address + 24] & 0xfff : 0};
         std::span<const u8> ram_bytes;
         std::array<std::span<const u8>, 3> texture_memory_bytes{};
         u64 offset = 0, extent = 0;
+        std::array<u64, 2> bank_extents{};
         for (unsigned level = 0; level <= levels; ++level) {
+          if (manual) {
+            const auto selected =
+                detail::manual_mip(width, height, level, tile_w, tile_h, tile_bytes);
+            if (format == 6 && level == 0)
+              bank_extents[0] = bank_extents[1] = selected.bytes / 2;
+            else
+              bank_extents[selected.bank] =
+                  std::max(bank_extents[selected.bank], selected.offset + selected.bytes);
+            continue;
+          }
           const unsigned w = ((width - 1) >> level) + 1, h = ((height - 1) >> level) + 1;
           extent = std::max(extent, offset + u64((w + tile_w - 1) / tile_w) *
                                                  ((h + tile_h - 1) / tile_h) * tile_bytes);
@@ -585,10 +600,11 @@ struct HardwareRenderer::Impl {
           return texture_memory.subspan(start, length);
         };
         if (manual) {
-          const auto bank_bytes = static_cast<std::size_t>(format == 6 ? extent / 2 : extent);
-          texture_memory_bytes[0] = tmem_range((bp[address + 12] & 0x7fff) * 32, bank_bytes);
-          if (format == 6)
-            texture_memory_bytes[1] = tmem_range((bp[address + 16] & 0x7fff) * 32, bank_bytes);
+          texture_memory_bytes[0] = tmem_range((bp[address + 12] & 0x7fff) * 32,
+                                               static_cast<std::size_t>(bank_extents[0]));
+          if (bank_extents[1])
+            texture_memory_bytes[1] = tmem_range((bp[address + 16] & 0x7fff) * 32,
+                                                 static_cast<std::size_t>(bank_extents[1]));
         } else {
           ram_bytes = memory.range(bp[address + 20] << 5, static_cast<std::size_t>(extent));
         }
@@ -613,7 +629,8 @@ struct HardwareRenderer::Impl {
           cached.valid = false;
           for (unsigned level = 0; level <= levels; ++level) {
             cached.offsets[level] = static_cast<u32>(cached.texels.size());
-            const unsigned w = ((width - 1) >> level) + 1, h = ((height - 1) >> level) + 1;
+            const unsigned w = manual ? std::max(1u, width >> level) : ((width - 1) >> level) + 1;
+            const unsigned h = manual ? std::max(1u, height >> level) : ((height - 1) >> level) + 1;
             const auto start = cached.texels.size();
             cached.texels.resize(start + std::size_t(w) * h);
             sampler.decode(unit, level, ram_bytes, std::span(cached.texels).subspan(start));

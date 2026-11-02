@@ -12,7 +12,7 @@ Invalid memory ranges inside a graphics command or FIFO transfer produce an expl
 
 Vertices can use direct or indexed attributes. The vertex stage applies transforms, lighting, projection, and texture-coordinate generation. The rasterizer assembles triangles, strips, fans, quads, lines, and points, clips them, applies culling and scissoring, and interpolates fragment inputs. Multisample rendering is still unsupported.
 
-The texture stage decodes I4, I8, IA4, IA8, RGB565, RGB5A3, RGBA8, C4, C8, C14X2, and CMPR. Paletted formats use uploaded TLUT data. RAM textures support mip layouts and point or bilinear sampling; manual TMEM supports base-level sampling and split RGBA8 banks. Manual mip chains remain unsupported.
+The texture stage decodes I4, I8, IA4, IA8, RGB565, RGB5A3, RGBA8, C4, C8, C14X2, and CMPR. Paletted formats use uploaded TLUT data. RAM textures support mip layouts and point or bilinear sampling; manual TMEM supports alternating-bank mip chains and split RGBA8 base levels. Both rendering paths use the accelerated texture-layout rules described in [the behavior map](graphics-reference.md#manual-texture-memory-mipmaps).
 
 Prepared CMPR textures decode each complete 8 by 8 tile through four local
 color tables. Each 4 by 4 subblock expands its two RGB565 endpoints once and
@@ -45,7 +45,7 @@ The EFB stores 24 raw color bits per pixel. RGBA6 reads expand each six-bit comp
 
 [XFB copies](xfb-copy.md) perform the vertical filter, gamma correction, RGB-to-YUV conversion, horizontal chroma filtering, and nearest-row vertical scaling. Direct and inverted scale registers are supported for defined source and staging footprints. Odd widths, nonzero horizontal origins, and footprints that would expose unwritten intermediate bytes fail before sampling or destination writes. Copy-triggered clearing remains part of the command processor.
 
-VI presents YUYV data according to its field and framebuffer registers and derives the display aspect from active signal timing. The SDL window fits that aspect to the available area. Raw field dimensions do not determine the standard display shape. The CLI also offers explicit widescreen and raw-pixel display modes; captures preserve guest pixels. Multisampling and manual mip chains remain unfinished.
+VI presents YUYV data according to its field and framebuffer registers and derives the display aspect from active signal timing. The SDL window fits that aspect to the available area. Raw field dimensions do not determine the standard display shape. The CLI also offers explicit widescreen and raw-pixel display modes; captures preserve guest pixels. Multisampling remains unfinished.
 
 ## Evidence
 

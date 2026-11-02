@@ -1,5 +1,22 @@
 # Tests
 
+## Manual texture-memory mip checks
+
+The manual-mip implementation passes the full 86-enabled-test Release/LTO
+headless suite, with ten explicit hardware/output/private-integration skips.
+The texture suite also passes GCC ASan/UBSan with leak detection disabled under
+the environment restriction described below. Its new regressions reject the
+preceding implementation. The optional source comparison adds 944,064 checks
+against the actual accelerated-layout methods and decoder, separate from the
+unchanged base-level software sampling comparison.
+
+An SDL-enabled offscreen build passes the full OpenGL renderer suite on Mesa
+llvmpipe, including 276 new manual-mip profiles and cache/bounds checks. Both
+small batched and larger direct-compute rectangles are covered. Fragment
+interlock is unavailable on that driver; these results are not physical-GPU
+performance or ordered-raster qualification. See [the graphics mapping](graphics-reference.md#manual-texture-memory-mipmaps)
+for the source pin, compatibility decision and detailed scope.
+
 ## November 2 software fragment and exhausted-audio checks
 
 The GCC 14.2 Release/LTO headless build passes all 86 enabled tests, including

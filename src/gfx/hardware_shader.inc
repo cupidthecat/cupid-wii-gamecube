@@ -179,12 +179,17 @@ int wrap_coord(int coordinate, int size, uint mode) {
 }
 ivec4 fetch_texture(uint unit, ivec2 pixel, uint level) {
   uint image=texture_register(unit,2u),mode=texture_register(unit,0u);
-  int width=int(((image&1023u)>>level)+1u);
-  int height=int((((image>>10u)&1023u)>>level)+1u);
+  bool manual=(texture_register(unit,3u)&(1u<<21u))!=0u;
+  int width=manual ? int(max(1u,((image&1023u)+1u)>>level)) : int(((image&1023u)>>level)+1u);
+  int height=manual ? int(max(1u,(((image>>10u)&1023u)+1u)>>level)) : int((((image>>10u)&1023u)>>level)+1u);
   pixel=ivec2(wrap_coord(pixel.x,width,mode&3u),wrap_coord(pixel.y,height,(mode>>2u)&3u));
   return unpack_rgba(textures[textures[unit*11u+level]+uint(pixel.y*width+pixel.x)]);
 }
 ivec4 sample_mip(uint unit, ivec2 coordinate, uint level, bool linear) {
+  if ((texture_register(unit,3u)&(1u<<21u))!=0u) {
+    uint image=texture_register(unit,2u);
+    level=min(level,uint(findMSB(max((image&1023u)+1u,((image>>10u)&1023u)+1u))));
+  }
   ivec2 scaled=(coordinate>>int(level))-(linear ? ivec2(64) : ivec2(0));
   ivec2 pixel=scaled>>7;
   if (!linear) return fetch_texture(unit,pixel,level);
@@ -306,7 +311,7 @@ uint pack_rgba(ivec4 value) {
   return (uint(value.r)<<24u)|(uint(value.g)<<16u)|(uint(value.b)<<8u)|uint(value.a);
 }
 )glsl"
-R"glsl(bool shade(ivec2 pixel, inout uint depth, out ivec4 result) {
+    R"glsl(bool shade(ivec2 pixel, inout uint depth, out ivec4 result) {
   RegisterFile registers;
   registers.r0=ivec4(state[256],state[257],state[258],state[259]);
   registers.r1=ivec4(state[260],state[261],state[262],state[263]);

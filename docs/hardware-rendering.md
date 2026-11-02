@@ -57,8 +57,9 @@ Textures use the existing checked tile decoder for I4, I8, IA4, IA8, RGB565,
 RGB5A3, RGBA8, C4, C8, C14X2 and CMPR. Decoded pixels and mip offsets are uploaded
 to shader storage. GPU sampling applies the console's fixed-point coordinates,
 wrap rules, seven-bit bilinear weights, derivative-based LOD, point mip
-selection and trilinear blending. Base-level manual TMEM textures and split-bank
-RGBA8 preloads use the same path. Cache hits require exact decoding-state and
+selection and trilinear blending. Manual TMEM mip chains and split-bank RGBA8
+base levels use the same path. Mip levels alternate banks, use tile-aligned
+source footprints and clamp to the final geometric level. Cache hits require exact decoding-state and
 source-byte equality. Filter, wrap and LOD-bias changes update GPU sampling
 state without decoding or uploading unchanged texels. A changed reachable mip
 count still invalidates the decode. Cache revisions control GPU uploads.
@@ -124,7 +125,7 @@ texture unit still applies its own filtering, wrap and LOD state to the
 retained arithmetic inputs.
 
 Source snapshots cover the checked RAM mip extent, the selected manual TMEM
-bank or both RGBA8 banks, and the selected palette. C4, C8 and C14X2 compare
+bank extents for all reachable mip levels, and the selected palette. C4, C8 and C14X2 compare
 32, 512 and 32,768 palette bytes respectively. Unrelated TMEM writes do not
 invalidate those snapshots. Every relevant byte is compared directly; cache
 validity does not depend on a hash or a sample of the source data.
@@ -133,9 +134,8 @@ Retained texture operands before an enabled sample use the CPU path. So do
 first-stage indirect add-previous
 coordinates, which depend on the previous fragment, and indirect operations
 that need a map retained from a previous draw. Reserved indirect wraps and
-matrix selectors retain CPU diagnostics. Other fallbacks include manual mip
-chains, mip ranges beyond the checked
-ten-level limit, interpolation poles, non-finite planes, and triangles whose
+matrix selectors retain CPU diagnostics. Other fallbacks include RAM mip ranges
+beyond the checked maximum level index of ten, interpolation poles, non-finite planes, and triangles whose
 edge equations exceed the shader's checked 32-bit range. Prefetching an unmapped
 texture falls back to demand sampling, which preserves the CPU diagnostic if a
 fragment actually accesses those bytes. Existing unsupported software states,

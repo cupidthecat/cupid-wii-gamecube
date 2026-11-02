@@ -130,6 +130,64 @@ void filtering() {
   CHECK(f.sampler.sample(0, 0, 0, 24, false)[0] == 150);
 }
 
+void manual_mipmaps() {
+  Fixture f;
+  f.image(1, 7, 5);
+  f.bp[0x8c] = (1u << 21) | (0x1000 / 32);
+  f.bp[0x90] = 0x2000 / 32;
+  std::fill_n(f.tmem.begin() + 0x1000, 64, u8(10));
+  std::fill_n(f.tmem.begin() + 0x2000, 32, u8(90));
+  std::fill_n(f.tmem.begin() + 0x1040, 32, u8(170));
+  CHECK(f.sampler.texel(0, 6, 4, 0)[0] == 10);
+  CHECK(f.sampler.texel(0, 2, 1, 1)[0] == 90);
+  CHECK_THROWS(f.sampler.texel(0, 3, 0, 1));
+  CHECK(f.sampler.texel(0, 0, 0, 2)[0] == 170);
+  CHECK(f.sampler.texel(0, 0, 0, 10)[0] == 170);
+  f.bp[0x80] = 1u << 5;
+  CHECK(f.sampler.sample(0, 0, 0, 16, false)[0] == 90);
+  CHECK(f.sampler.sample(0, 0, 0, 24, false)[0] == 170);
+  CHECK(f.sampler.sample(0, 0, 0, 255, false)[0] == 170);
+  f.bp[0x80] = 2u << 5;
+  CHECK(f.sampler.sample(0, 0, 0, 24, false)[0] == 130);
+  CHECK(f.sampler.sample(0, 0, 0, 255, true)[0] == 170);
+  std::array<u32, 6> decoded{};
+  f.sampler.decode(0, 1, {}, decoded);
+  CHECK(std::all_of(decoded.begin(), decoded.end(), [](u32 value) { return value == 0x5a5a5a5a; }));
+  // RGBA8 splits only its base level. Later levels contain ordinary complete
+  // tiles in alternating banks; even level two follows the full base size.
+  f.image(6, 8, 8);
+  const auto pair = [&](unsigned at, u8 a, u8 b) {
+    f.tmem[at] = a;
+    f.tmem[at + 1] = b;
+  };
+  pair(0x1000, 11, 22);
+  pair(0x2000, 33, 44);
+  pair(0x2020, 55, 66);
+  pair(0x1100, 77, 88);
+  pair(0x1120, 99, 111);
+  pair(0x2040, 12, 34);
+  pair(0x2060, 56, 78);
+  CHECK((f.sampler.texel(0, 0, 0, 0) == gfx::Color{22, 33, 44, 11}));
+  CHECK((f.sampler.texel(0, 0, 0, 1) == gfx::Color{44, 55, 66, 33}));
+  CHECK((f.sampler.texel(0, 0, 0, 2) == gfx::Color{88, 99, 111, 77}));
+  CHECK((f.sampler.texel(0, 0, 0, 3) == gfx::Color{34, 56, 78, 12}));
+  std::array<u32, 4> rgba{};
+  f.sampler.decode(0, 2, {}, rgba);
+  CHECK(rgba[0] == 0x58636f4d);
+  // A complete final odd-bank tile is valid. Truncation preserves the exact
+  // decoded prefix and fails at the first missing byte.
+  f.image(1, 16, 8);
+  f.bp[0x90] = 32767;
+  std::fill(f.tmem.end() - 32, f.tmem.end(), u8(123));
+  std::array<u32, 32> final{};
+  f.sampler.decode(0, 1, {}, final);
+  CHECK(std::all_of(final.begin(), final.end(), [](u32 value) { return value == 0x7b7b7b7b; }));
+  gfx::TextureSampler short_bank(f.memory, f.bp, std::span(f.tmem).first(f.tmem.size() - 1));
+  final.fill(0xdeadbeef);
+  CHECK_THROWS(short_bank.decode(0, 1, {}, final));
+  CHECK(final[30] == 0x7b7b7b7b && final[31] == 0xdeadbeef);
+}
+
 void prepared_decode() {
   Fixture f;
   auto source = f.memory.range(0x2000, 65536);
@@ -188,7 +246,13 @@ void prepared_decode() {
   CHECK_THROWS(f.sampler.decode(0, 11, source, decoded));
   f.bp[0x8c] = 1 << 21;
   std::array<u32, 16> mip{};
-  CHECK_THROWS(f.sampler.decode(0, 1, {}, mip));
+  f.sampler.decode(0, 1, {}, mip);
+  for (unsigned y = 0; y < 4; ++y)
+    for (unsigned x = 0; x < 4; ++x) {
+      const auto color = f.sampler.texel(0, x, y, 1);
+      CHECK(mip[y * 4 + x] ==
+            ((u32(color[0]) << 24) | (u32(color[1]) << 16) | (u32(color[2]) << 8) | color[3]));
+    }
   f.bp[0x8c] = 0;
   f.image(7);
   CHECK_THROWS(f.sampler.decode(0, 0, source, decoded));
@@ -371,7 +435,10 @@ void minimum_and_partial_writes() {
   actual.fill(poison);
   CHECK_THROWS(short_tail.decode(0, 0, {}, actual));
   CHECK(actual[59] != poison && actual[60] == poison);
-  CHECK_THROWS(tail.decode(0, 1, {}, std::span(actual).first(16)));
+  tail.decode(0, 1, {}, std::span(actual).first(16));
+  for (unsigned y = 0; y < 4; ++y)
+    for (unsigned x = 0; x < 4; ++x)
+      CHECK(actual[y * 4 + x] == literal_colors[0][(source[4 + y] >> (6 - x * 2)) & 3]);
 }
 
 std::span<const u8> bytes(const std::vector<u32> &values) {
@@ -526,6 +593,7 @@ int main() {
     compressed();
     filtering();
     prepared_decode();
+    manual_mipmaps();
     cmpr_bulk_checks::literals();
     cmpr_bulk_checks::layouts_and_limits();
     cmpr_bulk_checks::minimum_and_partial_writes();

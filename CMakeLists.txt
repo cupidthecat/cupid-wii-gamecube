@@ -634,6 +634,20 @@ if(CUPID_BUILD_TESTS)
     add_executable(cupid_pointer_reference_checks tests/pointer_reference_checks.cpp
       ${cupid_pointer_reference})
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    set(cupid_texture_mip_reference
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/texture_mip_reference_functions.inc")
+    add_custom_command(OUTPUT "${cupid_texture_mip_reference}"
+      COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/texture_mip_reference_extract.py"
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}" "${cupid_texture_mip_reference}"
+      DEPENDS tests/texture_mip_reference_extract.py
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/VideoCommon/TextureInfo.cpp"
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/VideoCommon/TextureInfo.h"
+      VERBATIM)
+    target_sources(cupid_texture_reference_checks PRIVATE
+      tests/texture_mip_reference_checks.cpp "${cupid_texture_mip_reference}")
+    target_include_directories(cupid_texture_reference_checks PRIVATE
+      "${CMAKE_CURRENT_BINARY_DIR}/generated")
     set(cupid_disc_schedule_reference
       "${CMAKE_CURRENT_BINARY_DIR}/generated/disc_stream_reference_functions.inc")
     add_custom_command(OUTPUT "${cupid_disc_schedule_reference}"

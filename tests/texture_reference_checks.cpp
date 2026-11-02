@@ -12,6 +12,8 @@
 #include <iostream>
 #include <type_traits>
 
+void texture_mip_reference_checks();
+
 BPMemory bpmem{};
 
 namespace Core {
@@ -189,4 +191,5 @@ int main() {
   std::cout << "Passed " << sampling_comparisons
             << " nearest/bilinear sampling comparisons across clamp/repeat/mirror modes, "
                "negative coordinates, fractional boundaries and manual texture banks\n";
+  texture_mip_reference_checks();
 }

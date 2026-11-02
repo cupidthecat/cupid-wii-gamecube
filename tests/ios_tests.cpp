@@ -1677,6 +1677,168 @@ void private_metadata(const std::filesystem::path &ticket_path,
       std::equal(tmd.begin(), tmd.end(), fixture.memory.range(output_buffer, tmd.size()).begin()));
 }
 
+void filesystem_reply_deadlines() {
+  const auto temporary = std::filesystem::canonical(std::filesystem::temp_directory_path());
+  const auto root =
+      temporary / ("cupid-ios-deadlines-" +
+                   std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  std::filesystem::create_directories(root);
+  for (u32 version : {9u, 28u, 30u, 80u}) {
+    Fixture fixture;
+    fixture.ipc.set_user_directory(root / std::to_string(version));
+    fixture.ipc.set_version(version);
+    const u32 fs = u32(fixture.open("/dev/fs"));
+    const auto exact = [&](u64 delay, s32 expected) {
+      fixture.submit();
+      fixture.clear_ack();
+      if (delay) {
+        fixture.ipc.advance(delay - 1);
+        CHECK((fixture.devices.read(ipc_base + 4, 4) & 4) == 0);
+        fixture.ipc.advance(1);
+      }
+      CHECK(fixture.devices.read(ipc_base + 4, 4) & 4);
+      CHECK(s32(fixture.memory.read32(request + 4)) == expected);
+      fixture.clear_reply();
+    };
+    const auto ioctl = [&](u32 operation, u32 input_size, u32 output_size) {
+      fixture.prepare(6, fs);
+      fixture.memory.write32(request + 12, operation);
+      fixture.memory.write32(request + 16, data_buffer);
+      fixture.memory.write32(request + 20, input_size);
+      fixture.memory.write32(request + 24, output_buffer);
+      fixture.memory.write32(request + 28, output_size);
+    };
+    fixture.text(data_buffer, "/missing");
+    ioctl(6, 64, 74);
+    exact((2700 + 1000 + 340) * 12, -106);
+    const std::string full_path =
+        "/aaaaaaaaaaaa/bbbbbbbbbbbb/cccccccccccc/dddddddddddd/eeeeeeeeeee";
+    CHECK(full_path.size() == 64);
+    fixture.memory.copy_in(data_buffer,
+                           {reinterpret_cast<const u8 *>(full_path.data()), full_path.size()});
+    ioctl(6, 64, 74);
+    exact((2700 + 1000 + 340 * 5) * 12, -106);
+    fixture.text(data_buffer, "/");
+    ioctl(6, 64, 74);
+    exact((2700 + 300) * 12, 0);
+    fixture.text(data_buffer, "/tmp/");
+    ioctl(6, 64, 74);
+    exact((2700 + 300) * 12, -101);
+    fixture.prepare(1);
+    fixture.text(path_buffer, "/tmp/");
+    fixture.memory.write32(request + 12, path_buffer);
+    fixture.memory.write32(request + 16, 3);
+    exact((2700 + 300) * 12, -101);
+    std::fill(fixture.memory.range(data_buffer, 74).begin(),
+              fixture.memory.range(data_buffer, 74).end(), u8(0));
+    ioctl(9, 73, 0);
+    exact(2700 * 12, -101);
+    ioctl(9, 74, 0);
+    exact(0, -101);
+    ioctl(3, 74, 0);
+    exact(2700 * 12, -101);
+    ioctl(13, 0, 0);
+    exact(2700 * 12, 0);
+    const u64 superblock = version == 28 || version == 80 ? 3350000
+                           : version < 28                 ? 4100000
+                                                          : 3170000;
+    fixture.text(data_buffer, "/missing");
+    ioctl(7, 64, 0);
+    exact((2700 + superblock) * 12, -106);
+    fixture.text(data_buffer, "/");
+    fixture.text(data_buffer + 64, "/bad");
+    ioctl(8, 128, 0);
+    exact((2700 + superblock) * 12, -101);
+  }
+  CHECK(root.parent_path() == temporary &&
+        root.filename().string().starts_with("cupid-ios-deadlines-"));
+  std::filesystem::remove_all(root);
+}
+
+void filesystem_controls() {
+  const auto temporary = std::filesystem::canonical(std::filesystem::temp_directory_path());
+  const auto root =
+      temporary / ("cupid-ios-format-" +
+                   std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  std::filesystem::create_directories(root);
+  std::ofstream(root / "outside-marker") << "preserve";
+  Fixture fixture;
+  fixture.ipc.set_user_directory(root);
+  const u32 fs = u32(fixture.open("/dev/fs"));
+  std::ofstream(root / "wii" / "tmp" / "old") << "old data";
+  const u32 old = u32(fixture.open("/tmp/old"));
+  const auto ioctl = [&](u32 descriptor, u32 operation, u32 input_size = 0, u32 output_size = 0) {
+    fixture.prepare(6, descriptor);
+    fixture.memory.write32(request + 12, operation);
+    fixture.memory.write32(request + 16, data_buffer);
+    fixture.memory.write32(request + 20, input_size);
+    fixture.memory.write32(request + 24, output_buffer);
+    fixture.memory.write32(request + 28, output_size);
+    return fixture.complete();
+  };
+  bool stopped = false;
+  fixture.ipc.set_shutdown_handler([&] { stopped = true; });
+  CHECK(ioctl(fs, 13) == 0 && !stopped);
+  CHECK(ioctl(fs, 0x1234) == -101);
+  CHECK(fixture.ioctlv(fs, 0x1234, {}, {}) == -101);
+  fixture.text(data_buffer + 6, "/tmp/old");
+  fixture.memory.write8(data_buffer + 73, 0x99);
+  CHECK(ioctl(fs, 10, 73) == -101);
+  CHECK(ioctl(fs, 10, 74) == 0);
+  CHECK(std::filesystem::file_size(root / "wii" / "tmp" / "old") == 8);
+  CHECK(ioctl(old, 11, 0, 8) == 0 && fixture.memory.read32(output_buffer) == 8);
+  // A title-owned descriptor cannot format the filesystem.
+  auto ticket = fixture.memory.range(0x16000, 0x2a4);
+  auto metadata = fixture.memory.range(0x17000, 0x1e4);
+  std::fill(ticket.begin(), ticket.end(), u8(0));
+  std::fill(metadata.begin(), metadata.end(), u8(0));
+  fixture.memory.write32(0x16000, 0x10001);
+  fixture.memory.write32(0x17000, 0x10001);
+  fixture.memory.write64(0x161dc, 0x0001000046544553ull);
+  fixture.memory.write64(0x1718c, 0x0001000046544553ull);
+  fixture.memory.write16(0x17198, 0x4444);
+  CHECK(fixture.ipc.set_title_context(ticket, metadata));
+  const u32 title_fs = u32(fixture.open("/dev/fs"));
+  CHECK(ioctl(title_fs, 1) == -102);
+  CHECK(ioctl(fs, 1) == 0);
+  CHECK(std::filesystem::is_empty(root / "wii"));
+  CHECK(std::filesystem::file_size(root / "outside-marker") == 8);
+  CHECK(ioctl(old, 11, 0, 8) == -101);
+  fixture.prepare(3, old);
+  fixture.memory.write32(request + 12, data_buffer);
+  fixture.memory.write32(request + 16, 1);
+  CHECK(fixture.complete() == -101);
+  std::fill(fixture.memory.range(data_buffer, 74).begin(),
+            fixture.memory.range(data_buffer, 74).end(), u8(0));
+  fixture.text(data_buffer + 6, "/new");
+  for (unsigned i = 0; i < 3; ++i)
+    fixture.memory.write8(data_buffer + 70 + i, 3);
+  CHECK(ioctl(fs, 9, 74) == 0);
+  const u32 fresh = u32(fixture.open("/new"));
+  CHECK(fresh != old);
+  // The backend slot was reused after format, while both IPC descriptors remain.
+  fixture.prepare(4, old);
+  fixture.memory.write32(request + 12, data_buffer);
+  fixture.memory.write32(request + 16, 3);
+  fixture.text(data_buffer, "new");
+  CHECK(fixture.complete() == 3);
+  CHECK(ioctl(fresh, 11, 0, 8) == 0);
+  CHECK(fixture.memory.read32(output_buffer) == 3 && fixture.memory.read32(output_buffer + 4) == 3);
+  fixture.prepare(2, old);
+  CHECK(fixture.complete() == 0);
+  CHECK(ioctl(fresh, 11, 0, 8) == -101);
+  fixture.prepare(2, fresh);
+  CHECK(fixture.complete() == -101);
+  CHECK(ioctl(fs, 13) == 0 && !stopped);
+  CHECK(ioctl(fs, 2, 0, 28) == 0);
+  // Root-only files are excluded from the selected source usage model.
+  CHECK(fixture.memory.read32(output_buffer + 8) == 0);
+  CHECK(fixture.memory.read32(output_buffer + 24) == 1);
+  CHECK(root.parent_path() == temporary &&
+        root.filename().string().starts_with("cupid-ios-format-"));
+  std::filesystem::remove_all(root);
+}
+
 void filesystem_metadata() {
   const auto task_temp = std::filesystem::canonical(std::filesystem::temp_directory_path());
   const auto task_root =
@@ -1881,6 +2043,8 @@ int main(int argc, char **argv) {
     unfinished_service();
     title_metadata();
     filesystem_metadata();
+    filesystem_controls();
+    filesystem_reply_deadlines();
     if (argc == 3 || argc == 4)
       private_metadata(argv[1], argv[2], argc == 4 ? std::stoull(argv[3], nullptr, 0) : 0);
   });

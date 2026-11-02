@@ -38,7 +38,7 @@ DSP program protocols produce planar PCM in guest RAM. Guest code can interleave
 
 The host output module polls keyboard, mouse, and mapped controller state. GameCube SI reports pads to guest software and forwards motor commands. Wii host mappings supply Remote and Nunchuk buttons, stick state, accelerometers, and infrared points; IPC carries their HID reports through USB/Bluetooth transport. [Input](input.md) records current behavior and unverified motion requirements. The product has no launcher or settings GUI.
 
-GameCube SRAM and memory cards live in the selected user directory. Wii files live below its `wii/` directory with persistent metadata and title ownership. SRAM and card updates use temporary files and replacement after successful writes. Input discs, firmware, and the behavioral checkout are read-only inputs.
+GameCube SRAM and memory cards live in the selected user directory. Wii files live below its `wii/` directory with persistent metadata and title ownership. [Filesystem controls](ios-filesystem.md) retain separate backend file slots and IPC descriptors, including format and reply timing. SRAM and card updates use temporary files and replacement after successful writes. Input discs, firmware, and the behavioral checkout are read-only inputs.
 
 GameCube and Wii [command-list audio tasks](dsp-command-audio.md) use guest voice blocks,
 ARAM samples and scheduled completion interrupts. Task selection uses guest-uploaded

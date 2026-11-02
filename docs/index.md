@@ -24,6 +24,7 @@
 - [Disc audio](disc-audio.md): drive commands, streamed ADPCM, timing and separate host mixing.
 - [ELF loader](elf-loader.md) and [ELF mappings](elf-reference.md).
 - [Devices and system-service mappings](device-reference.md).
+- [IOS filesystem controls](ios-filesystem.md): format, backend handle lifetime and reply timing.
 - [Wii system configuration](system-config.md): checked settings and controller registration.
 - [Network services](network.md) and [network mappings](network-reference.md).
 - [DSP audio](dsp.md), [command-list tasks](dsp-command-audio.md), [buffer tasks](dsp-buffer-audio.md), [instruction execution](dsp-instructions.md) and [DSP mappings](dsp-reference.md).

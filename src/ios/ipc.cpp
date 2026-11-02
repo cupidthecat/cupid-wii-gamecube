@@ -173,6 +173,12 @@ struct Ipc::Impl {
     bool flush = false;
     u32 uid = 0;
     u16 gid = 0;
+    unsigned file_index = 16;
+  };
+
+  struct FileState {
+    std::filesystem::path path;
+    u32 mode = 0, offset = 0;
   };
 
   struct Metadata {
@@ -195,6 +201,7 @@ struct Ipc::Impl {
   bool partition_open = false, disc_busy = false;
   std::filesystem::path root;
   std::array<std::optional<Handle>, 24> handles;
+  std::array<std::optional<FileState>, 16> files;
   std::priority_queue<Event, std::vector<Event>, Later> events;
   std::deque<u32> requests, replies, disc_requests;
   std::optional<unsigned> cache_fd;
@@ -323,7 +330,7 @@ struct Ipc::Impl {
     devices.set_interrupt(irq_pi, (flags & mask) != 0);
   }
 
-  std::string string(u32 address, u32 maximum) {
+  std::string string(u32 address, u32 maximum, bool require_terminator = true) {
     std::string result;
     for (u32 i = 0; i < maximum; ++i) {
       const u8 byte = memory.read8(address + i);
@@ -331,7 +338,9 @@ struct Ipc::Impl {
         return result;
       result.push_back(char(byte));
     }
-    throw std::invalid_argument("IOS string is not terminated");
+    if (require_terminator)
+      throw std::invalid_argument("IOS string is not terminated");
+    return result;
   }
 
   static bool safe_component(std::string_view name) {
@@ -354,7 +363,7 @@ struct Ipc::Impl {
   std::optional<std::filesystem::path> host_path(const std::string &path) const {
     if (path == "/" && !root.empty())
       return root;
-    if (root.empty() || path.empty() || path.front() != '/' || path.size() >= 64 ||
+    if (root.empty() || path.empty() || path.front() != '/' || path.size() > 64 ||
         path.back() == '/' || path.find_first_of("\\:") != std::string::npos)
       return std::nullopt;
     std::filesystem::path relative;
@@ -605,9 +614,23 @@ struct Ipc::Impl {
     return tb_ratio * (version < 28 ? 370000ull : 300000ull);
   }
 
+  FileState *file_state(unsigned fd) {
+    const auto index = handles[fd]->file_index;
+    return index < files.size() && files[index] ? &*files[index] : nullptr;
+  }
+
+  static u64 lookup_ticks(const std::string &path, bool split) {
+    const auto components = u64(std::count(path.begin(), path.end(), '/'));
+    if (!components)
+      return 0;
+    if (path.back() == '/')
+      return 300 * tb_ratio;
+    return tb_ratio * (split ? 1000 + 340 * components : 680 * components);
+  }
+
   u64 file_timing(unsigned fd, u32 count, bool writing, u32 file_size) {
     u64 delay = 0;
-    u32 offset = handles[fd]->offset;
+    u32 offset = file_state(fd)->offset;
     while (count != 0) {
       const bool cached = cache_fd == fd && cache_cluster == offset / 0x4000;
       u32 copied;
@@ -694,7 +717,9 @@ struct Ipc::Impl {
     }
     if (path.empty() || path.front() != '/')
       return {not_found, 3700 * tb_ratio};
-    const u64 delay = fs_overhead + 680 * tb_ratio * u64(std::count(path.begin(), path.end(), '/'));
+    if (path.size() >= 64)
+      return {fs_invalid, fs_overhead};
+    const u64 delay = fs_overhead + lookup_ticks(path, false);
     const auto target = host_path(path);
     if (!target)
       return {fs_invalid, delay};
@@ -708,14 +733,21 @@ struct Ipc::Impl {
     std::fstream probe(*target, std::ios::in | std::ios::out | std::ios::binary);
     if (!probe)
       return {fs_access, delay};
-    handles[fd] = Handle{Device::File, *target, mode, 0, false, ppc_uid, ppc_gid};
+    const auto available =
+        std::find_if(files.begin(), files.end(), [](const auto &file) { return !file; });
+    if (available == files.end())
+      return {fs_full, delay};
+    const unsigned index = unsigned(available - files.begin());
+    files[index] = FileState{*target, mode, 0};
+    handles[fd] = Handle{Device::File, *target, mode, 0, false, ppc_uid, ppc_gid, index};
     return {s32(fd), delay};
   }
 
   Reply file(unsigned fd, u32 address, u32 command) {
-    auto &handle = *handles[fd];
-    if (handle.device != Device::File)
+    auto *state = file_state(fd);
+    if (handles[fd]->device != Device::File || !state)
       return {fs_invalid, fs_overhead};
+    auto &handle = *state;
     std::error_code error;
     const auto host_size = std::filesystem::file_size(handle.path, error);
     if (error || host_size > 0xffffffffull)
@@ -765,18 +797,47 @@ struct Ipc::Impl {
     const u32 input_size = memory.read32(address + 20), output = memory.read32(address + 24);
     const u32 output_size = memory.read32(address + 28);
     if (operation == 11) {
-      if (handles[fd]->device != Device::File || output_size < 8)
+      auto *state = file_state(fd);
+      if (handles[fd]->device != Device::File || !state || output_size < 8)
         return {fs_invalid, fs_overhead};
       std::error_code error;
-      const auto size = std::filesystem::file_size(handles[fd]->path, error);
+      const auto size = std::filesystem::file_size(state->path, error);
       if (error || size > 0xffffffffull)
         return {fs_access, fs_overhead};
       memory.write32(output, u32(size));
-      memory.write32(output + 4, handles[fd]->offset);
+      memory.write32(output + 4, state->offset);
       return {0, fs_overhead};
     }
     if (handles[fd]->device != Device::Filesystem && handles[fd]->device != Device::File)
       return {fs_invalid, fs_overhead};
+    if (operation == 1) {
+      if (handles[fd]->uid != 0 || root.empty() || root == root.root_path())
+        return {fs_access, fs_overhead};
+      std::error_code error;
+      std::filesystem::remove_all(root, error);
+      if (error)
+        return {-117, fs_overhead};
+      if (!std::filesystem::create_directory(root, error) || error)
+        return {-117, fs_overhead};
+      // Formatting closes backend files but retains the IPC descriptor map.
+      // Reused backend slots remain observable through older descriptors.
+      files.fill(std::nullopt);
+      nodes.clear();
+      next_node = 1;
+      metadata("/").modes = {0, 1, 1};
+      save_metadata();
+      return {0, fs_overhead + superblock_ticks()};
+    }
+    if (operation == 10) {
+      if (input_size < 74)
+        return {fs_invalid, fs_overhead};
+      // The selected FS implementation validates the block, then acknowledges
+      // version control without changing metadata or file contents.
+      memory.range(input, 74);
+      return {0, fs_overhead};
+    }
+    if (operation == 13)
+      return {0, fs_overhead};
     if (operation == 2) {
       if (output_size < 28)
         return {fs_invalid, fs_overhead};
@@ -795,13 +856,14 @@ struct Ipc::Impl {
       if ((operation == 5 && input_size < 74) ||
           (operation == 6 && (input_size < 64 || output_size < 74)))
         return {fs_invalid, fs_overhead};
-      const auto path = string(input + (operation == 5 ? 6 : 0), 64);
+      const auto path = string(input + (operation == 5 ? 6 : 0), 64, operation == 5);
+      const u64 delay = fs_overhead + (operation == 6 ? lookup_ticks(path, true) : 0);
       const auto target = host_path(path);
       if (!target)
-        return {fs_invalid, fs_overhead};
+        return {fs_invalid, delay};
       std::error_code error;
       if (!std::filesystem::exists(*target, error))
-        return {fs_missing, fs_overhead};
+        return {fs_missing, delay};
       auto &entry = metadata(path);
       if (operation == 5) {
         const u32 uid = memory.read32(input);
@@ -825,7 +887,7 @@ struct Ipc::Impl {
         return {0, fs_overhead + superblock_ticks()};
       }
       if (path != "/" && !permission(parent_path(path), handle.uid, handle.gid, 1))
-        return {fs_access, fs_overhead};
+        return {fs_access, delay};
       auto bytes = memory.range(output, 74);
       std::fill(bytes.begin(), bytes.end(), u8(0));
       memory.write32(output, entry.uid);
@@ -833,27 +895,30 @@ struct Ipc::Impl {
       for (unsigned i = 0; i < 3; ++i)
         memory.write8(output + 70 + i, entry.modes[i]);
       memory.write8(output + 73, entry.attribute);
-      return {0, fs_overhead};
+      return {0, delay};
     }
     if (operation == 3 || operation == 9) {
       if (input_size < 74)
         return {fs_invalid, fs_overhead};
+      // The selected create-file wrapper does not forward its tick tracker.
+      // Valid parameter blocks therefore return with zero modeled reply delay.
+      const u64 failure_delay = operation == 9 ? 0 : fs_overhead;
       const auto path = string(input + 6, 64);
       const auto target = host_path(path);
       if (!target)
-        return {fs_invalid, fs_overhead};
+        return {fs_invalid, failure_delay};
       for (u32 i = 0; i < 3; ++i)
         if (memory.read8(input + 70 + i) > 3)
-          return {fs_invalid, fs_overhead};
+          return {fs_invalid, failure_delay};
       std::error_code error;
       if (std::filesystem::exists(*target, error))
-        return {fs_exists, fs_overhead};
+        return {fs_exists, failure_delay};
       if (!std::filesystem::is_directory(target->parent_path(), error))
-        return {fs_missing, fs_overhead};
+        return {fs_missing, failure_delay};
       if (!permission(parent_path(path), handle.uid, handle.gid, 2))
-        return {fs_access, fs_overhead};
+        return {fs_access, failure_delay};
       if (operation == 3 && std::count(path.begin(), path.end(), '/') > 8)
-        return {-110, fs_overhead};
+        return {-110, failure_delay};
       bool created;
       if (operation == 3)
         created = std::filesystem::create_directory(*target, error);
@@ -870,30 +935,31 @@ struct Ipc::Impl {
           entry.modes[i] = memory.read8(input + 70 + i);
         save_metadata();
       }
-      return {created ? 0 : fs_access, fs_overhead + (created ? superblock_ticks() : 0)};
+      return {created ? 0 : fs_access,
+              operation == 9 ? 0 : fs_overhead + (created ? superblock_ticks() : 0)};
     }
     if (operation == 7) {
       if (input_size < 64)
         return {fs_invalid, fs_overhead};
-      const auto path = string(input, 64);
+      const u64 delay = fs_overhead + superblock_ticks();
+      const auto path = string(input, 64, false);
       const auto target = host_path(path);
       if (!target || path == "/")
-        return {fs_invalid, fs_overhead};
-      for (const auto &opened : handles)
-        if (opened && opened->device == Device::File &&
-            (opened->path == *target ||
-             opened->path.generic_string().starts_with(target->generic_string() + "/")))
-          return {fs_busy, fs_overhead};
+        return {fs_invalid, delay};
+      for (const auto &opened : files)
+        if (opened && (opened->path == *target ||
+                       opened->path.generic_string().starts_with(target->generic_string() + "/")))
+          return {fs_busy, delay};
       if (!permission(parent_path(path), handle.uid, handle.gid, 2))
-        return {fs_access, fs_overhead};
+        return {fs_access, delay};
       std::error_code error;
       if (!std::filesystem::exists(*target, error))
-        return {fs_missing, fs_overhead};
+        return {fs_missing, delay};
       if (std::filesystem::is_directory(*target, error))
         for (const auto &child : std::filesystem::recursive_directory_iterator(*target)) {
           const auto relative = child.path().lexically_relative(root).generic_string();
           if (!host_path("/" + relative))
-            return {fs_access, fs_overhead};
+            return {fs_access, delay};
         }
       const bool removed = std::filesystem::remove_all(*target, error) != 0 && !error;
       if (removed) {
@@ -902,17 +968,17 @@ struct Ipc::Impl {
         });
         save_metadata();
       }
-      return {removed ? 0 : fs_access, fs_overhead + (removed ? superblock_ticks() : 0)};
+      return {removed ? 0 : fs_access, delay};
     }
     if (operation == 8) {
       if (input_size < 128)
         return {fs_invalid, fs_overhead};
-      const auto old_path = string(input, 64), new_path = string(input + 64, 64);
+      const u64 delay = fs_overhead + superblock_ticks();
+      const auto old_path = string(input, 64, false), new_path = string(input + 64, 64, false);
       const auto original = host_path(old_path), destination = host_path(new_path);
       if (!original || !destination || old_path == "/" || new_path == "/" ||
           new_path.starts_with(old_path + "/"))
-        return {fs_invalid, fs_overhead};
-      const u64 delay = fs_overhead + superblock_ticks();
+        return {fs_invalid, delay};
       std::error_code error;
       if (!std::filesystem::exists(*original, error) ||
           !std::filesystem::is_directory(destination->parent_path(), error))
@@ -923,10 +989,9 @@ struct Ipc::Impl {
       const bool original_file = std::filesystem::is_regular_file(*original, error);
       if (original_file && original->filename() != destination->filename())
         return {fs_invalid, delay};
-      for (const auto &opened : handles)
-        if (opened && opened->device == Device::File &&
-            (opened->path == *original ||
-             opened->path.generic_string().starts_with(original->generic_string() + "/")))
+      for (const auto &opened : files)
+        if (opened && (opened->path == *original ||
+                       opened->path.generic_string().starts_with(original->generic_string() + "/")))
           return {fs_busy, delay};
       if (old_path == new_path)
         return {0, delay};
@@ -934,8 +999,8 @@ struct Ipc::Impl {
         const bool destination_file = std::filesystem::is_regular_file(*destination, error);
         if (original_file != destination_file)
           return {fs_invalid, delay};
-        for (const auto &opened : handles)
-          if (opened && opened->device == Device::File && opened->path == *destination)
+        for (const auto &opened : files)
+          if (opened && opened->path == *destination)
             return {fs_busy, delay};
         if (!destination_file)
           for (const auto &child : std::filesystem::recursive_directory_iterator(*destination))
@@ -962,7 +1027,7 @@ struct Ipc::Impl {
       save_metadata();
       return {0, delay};
     }
-    unsupported(address, "filesystem ioctl " + std::to_string(operation));
+    return {fs_invalid, fs_overhead};
   }
 
   struct Vector {
@@ -1062,7 +1127,7 @@ struct Ipc::Impl {
       return {fs_invalid, fs_overhead};
     std::string path;
     try {
-      path = string(buffers.input[0].address, 64);
+      path = string(buffers.input[0].address, 64, false);
     } catch (const std::invalid_argument &) {
       return {fs_invalid, fs_overhead};
     }
@@ -1086,7 +1151,7 @@ struct Ipc::Impl {
     if (operation == 12)
       return fs_usage(*parsed);
     if (operation != 4)
-      unsupported(address, "filesystem ioctlv " + std::to_string(operation));
+      return {fs_invalid, fs_overhead};
     if (in.empty() || in.size() > 2 || in.size() != out.size() || in[0].size != 64 ||
         (in.size() == 1 && out[0].size != 4) ||
         (in.size() == 2 && (in[1].size != 4 || out[1].size != 4)))
@@ -1095,7 +1160,7 @@ struct Ipc::Impl {
     const u32 maximum = listing ? memory.read32(in[1].address) : 0;
     if (listing && (maximum > 0xffffffffu / 13 || out[0].size != maximum * 13))
       return {fs_invalid, fs_overhead};
-    const auto path = string(in[0].address, 64);
+    const auto path = string(in[0].address, 64, false);
     const auto target = host_path(path);
     if (!target)
       return {fs_invalid, fs_overhead};
@@ -2155,8 +2220,15 @@ struct Ipc::Impl {
         scan_enable = 0;
         received_packets.fill(0);
       }
+      s32 status = 0;
+      if (handles[fd]->device == Device::File) {
+        if (file_state(fd))
+          files[handles[fd]->file_index].reset();
+        else
+          status = fs_invalid;
+      }
       handles[fd].reset();
-      result = {0, delay};
+      result = {status, delay};
     } else if (handles[fd]->device == Device::Bluetooth) {
       if (command != 7)
         return enqueue_reply(address, Reply{invalid});

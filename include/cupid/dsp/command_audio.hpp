@@ -5,7 +5,7 @@
 #include <optional>
 
 namespace cupid::dsp {
-// Five-millisecond command-list audio tasks with guest-resident voice state.
+// Command-list audio tasks with guest-resident voice state.
 class CommandAudioProgram {
 public:
   static bool supports(u32 hash) noexcept;

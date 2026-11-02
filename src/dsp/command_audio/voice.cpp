@@ -113,7 +113,7 @@ void CommandAudioProgram::Impl::process_voices(u32 address) {
   }
 }
 
-void CommandAudioProgram::Impl::decode_samples(Voice &voice, std::span<s16, 32> samples) {
+void CommandAudioProgram::Impl::decode_samples(Voice &voice, std::span<s16> samples) {
   active_voice = &voice;
   accelerator.write(0xd4, voice[57]);
   accelerator.write(0xd5, voice[58]);
@@ -168,7 +168,7 @@ void CommandAudioProgram::Impl::decode_samples(Voice &voice, std::span<s16, 32> 
     for (auto &output_sample : samples)
       output_sample = sample();
     for (unsigned i = 0; i < 4; ++i)
-      voice[86 + i] = u16(samples[28 + i]);
+      voice[86 + i] = u16(samples[samples.size() - 4 + i]);
   }
   voice[85] = u16(position);
   const auto &decoded = accelerator.state();

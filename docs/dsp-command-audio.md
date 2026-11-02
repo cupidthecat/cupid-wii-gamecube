@@ -56,7 +56,7 @@ compressor attack/release, voice loops and stops, malformed chains and runtime
 interrupt deadlines. These observations do not establish audible playback,
 full-game compatibility or complete DSP parity.
 
-The Wii-specific command-audio family is not implemented by this module. Cyclic
+Cyclic
 voice lists, unbounded command chains, invalid backing ranges, out-of-range
 coefficient banks and unsupported task data-memory transfers stop with diagnostics.
 The old profile's unsupported compressor command and the undefined `abs(INT_MIN)`
@@ -70,3 +70,46 @@ except build revision, the raw frame and all persisted user-file bytes match.
 This checks that connecting the new family did not change those existing startup
 paths. Sunshine does not select this command-audio family in that observation,
 so the check is not game-level validation of the newly added profiles.
+
+## Wii command-audio profiles
+
+Profiles `fa450138`, `7699af32`, `d9c4bf34`, `adbc06bd`, `347112ba` and
+`4cc52064` process three-millisecond frames. They add twelve regular mixing buses,
+eight Remote buses, persistent main/auxiliary volume ramps, synchronization mail,
+three voice-block layouts and unsigned envelope volume. The older profiles apply
+per-millisecond updates when requested. Newer profiles include the biquad and
+Remote filter paths. Main-memory sample reads use the selected MEM1 or MEM2
+backing, including the accelerator's format-dependent addressing units.
+
+Remote mixing resamples each 96-sample frame to eighteen samples, or each older
+32-sample subframe to six. It writes four output buffers in guest memory. This
+is distinct from the Remote speaker packet decoder and host speaker output; it
+does not establish physical-controller playback.
+
+The implementation follows the same pinned source's `AXWii.cpp`, `AXWii.h`,
+`AXStructs.h` and Wii-selected paths in `AXVoice.h`, including callers and task
+selection. The middle voice-block layout preserves the source's gap before the
+Remote fields. Old high-pass parameters and initial-time-delay parameters remain
+retained without an added effect. DPL2 output uploads the additional auxiliary
+channel defined by the source; it does not invent the unmodeled phase effects.
+
+Actual source comparisons pass 768 command lists, 2,304 repeated command lists
+and 3,456 complete voice frames
+across all six profiles, both sample-memory banks and coefficient-table modes.
+The latter covers format and conversion combinations, loop/stop/stream behavior,
+voice updates, unsigned envelopes, filters and Remote mixing. Those complete-RAM
+results supply the public fixture digests. Repeating each voice fixture for three
+frames also passes 10,368 comparisons with retained decoder and volume state.
+Each comparison checks mail words and all 128 KiB of authored main RAM. Public
+integration tests boot every profile through normal DSP mailboxes and verify
+coefficient byte order, synchronization interrupts and RAM results.
+
+These are synthetic component and runtime-integration observations. No Wii title
+using this task family, audible output or physical Remote has been qualified by
+these tests. Full-system timing and complete DSP parity remain separate goals.
+
+After the Wii additions, bounded Sunshine and Galaxy startup pairs each execute
+one billion guest instructions on the prior `90131b1` binary and the candidate,
+using identical initial user files. All final state fields except build revision,
+raw frames and persisted file bytes match within each pair. These existing game
+paths do not establish use of the new command-audio profiles.

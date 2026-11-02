@@ -32,7 +32,7 @@ The standalone task selected by hash `0xdd7e72d5` implements that authentication
 
 Task switches retain the first suspended audio or standalone task. Returning to audio preserves its renderer state and deferred resume notification. Returning to the standalone task preserves its completed mailbox state, without restarting authentication or inventing a resume notification. Authored guest tests exercise DSP register writes and result reads, interrupt boundaries and both directions of task return on both consoles.
 
-The [command-list audio family](dsp-command-audio.md) adds five-millisecond GameCube processing, guest voice blocks, polyphase coefficient loading and delayed completion interrupts.
+The [command-list audio family](dsp-command-audio.md) adds five-millisecond GameCube and three-millisecond Wii processing, guest voice blocks, polyphase coefficient loading, Remote mixing and delayed completion interrupts.
 
 Unknown task hashes fail with the computed hash and upload descriptor in the task backend. The separate [instruction backend](dsp-instructions.md) executes supplied DSP programs, with its own documented limits. JoyBus program transfer, a physical handheld connection and DSP save-state serialization are not implemented by these task protocols. Task switches that request DSP data-memory transfers also fail explicitly. Positive main-memory PCM requests that outlast a nonzero remaining sample count are rejected because the behavioral reference's terminal-padding branch leaves part of the sample buffer undefined. These limitations can stop software that requests them; they are not replaced by silence or a completion acknowledgment.
 

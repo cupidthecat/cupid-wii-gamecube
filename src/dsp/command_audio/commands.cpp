@@ -116,10 +116,17 @@ void CommandAudioProgram::Impl::mix_aux_stereo(u32 upload_address, u32 download_
 }
 
 void CommandAudioProgram::Impl::compress(u16 threshold, u16 release, u32 address) {
+  compress_buffers(channels[0], channels[1], threshold, release, address);
+}
+
+void CommandAudioProgram::Impl::compress_buffers(std::span<s32> left, std::span<s32> right,
+                                                 u16 threshold, u16 release, u32 address) {
+  const unsigned count = unsigned(left.size());
+  const std::array<std::span<s32>, 2> buffers{left, right};
   bool triggered = false;
-  for (unsigned i = 0; i < frame_samples && !triggered; ++i)
+  for (unsigned i = 0; i < count && !triggered; ++i)
     for (unsigned channel = 0; channel < 2 && !triggered; ++channel) {
-      const s32 value = channels[channel][i];
+      const s32 value = buffers[channel][i];
       if (value == std::numeric_limits<s32>::min())
         throw std::runtime_error("DSP compressor magnitude has no defined source result");
       triggered |= value > threshold || value < -s32(threshold);
@@ -133,12 +140,12 @@ void CommandAudioProgram::Impl::compress(u16 threshold, u16 release, u32 address
   } else {
     return;
   }
-  address += entry * frame_samples * 2;
-  backing(address, frame_samples * 2);
-  for (unsigned i = 0; i < frame_samples; ++i) {
+  address += entry * count * 2;
+  backing(address, count * 2);
+  for (unsigned i = 0; i < count; ++i) {
     const u16 coefficient = read16(address + i * 2);
     for (unsigned channel = 0; channel < 2; ++channel)
-      channels[channel][i] = wrap32(u32((s64(channels[channel][i]) * coefficient) >> 15));
+      buffers[channel][i] = wrap32(u32((s64(buffers[channel][i]) * coefficient) >> 15));
   }
 }
 

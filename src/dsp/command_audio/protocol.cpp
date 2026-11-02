@@ -6,8 +6,9 @@
 
 namespace cupid::dsp {
 bool CommandAudioProgram::supports(u32 hash) noexcept {
-  constexpr std::array<u32, 6> profiles{0x3ad3b7ac, 0x3daf59b9, 0x4e8a8b21,
-                                        0x07f88145, 0xe2136399, 0x3389a79e};
+  constexpr std::array<u32, 12> profiles{0x3ad3b7ac, 0x3daf59b9, 0x4e8a8b21, 0x07f88145,
+                                         0xe2136399, 0x3389a79e, 0xfa450138, 0x7699af32,
+                                         0xd9c4bf34, 0xadbc06bd, 0x347112ba, 0x4cc52064};
   return std::find(profiles.begin(), profiles.end(), hash) != profiles.end();
 }
 
@@ -21,6 +22,9 @@ CommandAudioProgram::Impl::Impl(Memory &ram, Console mode, u32 hash,
     throw std::invalid_argument("Unsupported command-list audio profile");
   if (!table.empty() && table.size() != coefficients.size())
     throw std::invalid_argument("DSP resampling table must contain 2048 coefficients");
+  old_wii = hash == 0xfa450138 || hash == 0x7699af32;
+  new_filter = hash == 0x347112ba || hash == 0x4cc52064;
+  wii_profile = old_wii || new_filter || hash == 0xd9c4bf34 || hash == 0xadbc06bd;
   have_coefficients = !table.empty();
   if (have_coefficients)
     std::copy(table.begin(), table.end(), coefficients.begin());
@@ -107,7 +111,10 @@ std::optional<AudioProgram::Switch> CommandAudioProgram::handle_mail(u32 value) 
     break;
   case Impl::Phase::Address:
     state.copy_list(value, state.command_size);
-    state.execute_list();
+    if (state.wii_profile)
+      state.execute_wii_list();
+    else
+      state.execute_list();
     state.command_size = 0;
     state.send(0xdcd10002, true, 2500);
     state.phase = Impl::Phase::Task;

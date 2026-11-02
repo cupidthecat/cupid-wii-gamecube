@@ -11,6 +11,7 @@ namespace cupid::dsp {
 namespace command_audio {
 constexpr unsigned frame_samples = 160, voice_words = 122;
 using Voice = std::array<u16, voice_words>;
+using WiiVoice = std::array<u16, 155>;
 using Channels = std::array<std::array<s32, frame_samples>, 9>;
 
 inline s32 wrap32(u32 value) {
@@ -40,6 +41,10 @@ struct CommandAudioProgram::Impl {
   std::array<s16, 2048> coefficients{};
   bool have_coefficients = false;
   command_audio::Channels channels{};
+  std::array<std::array<s32, 96>, 20> wii_channels{};
+  u16 last_main_volume = 0x8000;
+  std::array<u16, 3> last_aux_volumes{0x8000, 0x8000, 0x8000};
+  bool wii_profile = false, old_wii = false, new_filter = false;
   std::array<u16, 512> commands{};
   enum class Phase { Size, Address, Task } phase = Phase::Size;
   u16 command_size = 0, compressor_position = 0;
@@ -58,6 +63,17 @@ struct CommandAudioProgram::Impl {
   void write32(u32 address, s32 value);
   void copy_list(u32 address, u16 words);
   void execute_list();
+  void execute_wii_list();
+  void initialize_wii_buffers(u32 address);
+  void wii_add_stereo(u32 address, unsigned mode);
+  void wii_mix_aux(unsigned group, u32 upload, u32 download, u16 volume);
+  void wii_upload_mix(unsigned group, const std::array<u32, 6> &addresses, u16 volume);
+  void wii_output(u32 stereo, u32 surround, u16 volume, bool extra);
+  void wii_output_remotes(const std::array<u32, 4> &addresses);
+  command_audio::WiiVoice read_wii_voice(u32 address);
+  void write_wii_voice(u32 address, const command_audio::WiiVoice &voice);
+  void process_wii_voices(u32 address);
+  void process_wii_voice(command_audio::WiiVoice &voice, unsigned offset, unsigned count);
   void initialize_buffers(u32 address);
   void download_volume(u32 address, std::array<u16, 3> volumes);
   void upload_channels(u32 address, unsigned first, unsigned count);
@@ -66,12 +82,14 @@ struct CommandAudioProgram::Impl {
   void mix_aux(unsigned group, u32 upload_address, u32 download_address);
   void mix_aux_stereo(u32 upload_address, u32 download_address);
   void compress(u16 threshold, u16 release, u32 address);
+  void compress_buffers(std::span<s32> left, std::span<s32> right, u16 threshold, u16 release,
+                        u32 address);
   void output(u32 stereo_address, u32 surround_address);
   u32 mix_control(u16 value) const;
   command_audio::Voice read_voice(u32 address);
   void write_voice(u32 address, const command_audio::Voice &voice);
   void process_voices(u32 address);
   void process_voice(command_audio::Voice &voice, unsigned offset);
-  void decode_samples(command_audio::Voice &voice, std::span<s16, 32> samples);
+  void decode_samples(command_audio::Voice &voice, std::span<s16> samples);
 };
 } // namespace cupid::dsp

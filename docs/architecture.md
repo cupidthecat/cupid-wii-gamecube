@@ -40,6 +40,6 @@ The host output module polls keyboard, mouse, and mapped controller state. GameC
 
 GameCube SRAM and memory cards live in the selected user directory. Wii files live below its `wii/` directory with persistent metadata and title ownership. SRAM and card updates use temporary files and replacement after successful writes. Input discs, firmware, and the behavioral checkout are read-only inputs.
 
-GameCube [command-list audio tasks](dsp-command-audio.md) use guest voice blocks,
+GameCube and Wii [command-list audio tasks](dsp-command-audio.md) use guest voice blocks,
 ARAM samples and scheduled completion interrupts. Task selection uses guest-uploaded
 program hashes, alongside the existing audio, card and handheld task families.

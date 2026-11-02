@@ -3,12 +3,17 @@
 #include "Common/Hash.h"
 #include "Common/Logging/Log.h"
 #include "Common/MsgHandler.h"
+#include "Core/CoreTiming.h"
 #include "Core/DSP/DSPCore.h"
 #include "Core/DSP/DSPHost.h"
+#include "Core/DSP/Interpreter/DSPInterpreter.h"
 #include "Core/DSP/Jit/DSPEmitterBase.h"
+#include "Core/HW/SystemTimers.h"
+#include "Core/System.h"
 #include "cupid/dsp/instruction_engine.hpp"
 #include <algorithm>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <sys/mman.h>
 #include <vector>
@@ -19,13 +24,63 @@
 namespace {
 std::vector<u8> host(24 * 1024 * 1024), aram(16 * 1024 * 1024), product_aram(16 * 1024 * 1024);
 unsigned interrupts = 0;
+u64 guest_ticks = 0;
+std::vector<s64> forced_checks;
 } // namespace
 
 // Texture hash dispatch is retained by sanitizer metadata but is not used here.
 CPUInfo::CPUInfo() = default;
 CPUInfo cpu_info;
 
+// Control-register methods use an ordinary system object with a controlled
+// timebase and recorded rescheduling requests. No host waiting is performed.
+namespace Core {
+struct System::Impl {
+  explicit Impl(System &system) : timers(system), timing(system) {
+  }
+
+  SystemTimers::SystemTimersManager timers;
+  CoreTiming::CoreTimingManager timing;
+};
+
+System::System() : m_impl(std::make_unique<Impl>(*this)) {
+}
+
+System::~System() = default;
+
+SystemTimers::SystemTimersManager &System::GetSystemTimers() const {
+  return m_impl->timers;
+}
+
+CoreTiming::CoreTimingManager &System::GetCoreTiming() const {
+  return m_impl->timing;
+}
+} // namespace Core
+
+namespace SystemTimers {
+SystemTimersManager::SystemTimersManager(Core::System &system) : m_system(system) {
+}
+
+SystemTimersManager::~SystemTimersManager() = default;
+
+u64 SystemTimersManager::GetFakeTimeBase() const {
+  return guest_ticks;
+}
+} // namespace SystemTimers
+
+namespace CoreTiming {
+CoreTimingManager::CoreTimingManager(Core::System &system) : m_system(system) {
+}
+
+void CoreTimingManager::ForceExceptionCheck(s64 cycles) {
+  forced_checks.push_back(cycles);
+}
+} // namespace CoreTiming
+
 namespace Common {
+PrecisionTimer::PrecisionTimer() = default;
+PrecisionTimer::~PrecisionTimer() = default;
+
 void *AllocateMemoryPages(size_t size) {
   void *p = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (p == MAP_FAILED)
@@ -195,6 +250,53 @@ int main() {
     if (aram != product_aram)
       throw std::runtime_error("Accelerator backing mismatch");
   }
+  DSP::Interpreter::Interpreter interpreter(*reference);
+  state.pc = product.core().state().pc = 0x8000;
+  state.exceptions = product.core().state().exceptions = 0;
+  state.r.sr = product.core().state().registers[19] = 0xa00;
+  product.guest_timebase = [] { return guest_ticks; };
+  for (unsigned i = 0; i < 4096; ++i)
+    host[0x1000000 + i] = i & 1 ? 0x21 : 0;
+  std::copy_n(host.begin() + 0x1000000, 4096, memory.range(0x1000000, 4096).begin());
+  unsigned controls = 0;
+  for (unsigned round = 0; round < 32; ++round)
+    for (u16 control : {u16(0x804), u16(0x800), u16(0), u16(4), u16(0x801), u16(0x802), u16(0xc04),
+                        u16(0xc00), u16(0xc03), u16(0xffff)}) {
+      if (control == 0x804 && (round & 3) == 3)
+        guest_ticks = std::numeric_limits<u64>::max() - 120;
+      guest_ticks += 17;
+      state.r.sr = product.core().state().registers[19] = round & 1 ? 0xa00 : 0;
+      interpreter.WriteControlRegister(control);
+      if (control & 2) {
+        reference->CheckExternalInterrupt();
+        reference->CheckExceptions();
+      }
+      product.write16(0x0a, control);
+      for (unsigned delay : {0u, 1u, 128u, 1u, 1u}) {
+        guest_ticks += delay;
+        if (interpreter.ReadControlRegister() != product.read16(0x0a))
+          throw std::runtime_error("Control read mismatch");
+        ++controls;
+      }
+      if (state.pc != product.core().state().pc ||
+          state.control_reg != product.core().state().control ||
+          state.exceptions != product.core().state().exceptions)
+        throw std::runtime_error("Control state mismatch");
+      for (unsigned r = 0; r < 32; ++r)
+        if (state.ReadRegister(r) != product.core().state().registers[r])
+          throw std::runtime_error("Control register mismatch");
+      for (unsigned st = 0; st < 4; ++st)
+        if (state.reg_stack_ptrs[st] != product.core().state().stack_positions[st] ||
+            !std::equal(std::begin(state.reg_stacks[st]), std::end(state.reg_stacks[st]),
+                        product.core().state().stacks[st].begin()))
+          throw std::runtime_error("Control stack mismatch");
+      if (!std::equal(state.iram, state.iram + 4096, product.core().instruction_ram().begin()))
+        throw std::runtime_error("Control IRAM mismatch");
+    }
+  if (forced_checks.empty() ||
+      std::any_of(forced_checks.begin(), forced_checks.end(), [](s64 n) { return n != 50; }))
+    throw std::runtime_error("Unexpected control timing requests");
+  std::cout << controls << " actual control/timebase observations passed\n";
   reference->Shutdown();
   std::cout << checked << " actual IFX mailbox/IRQ/DMA/accelerator cases passed\n";
 }

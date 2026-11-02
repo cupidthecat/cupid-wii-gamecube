@@ -13,6 +13,12 @@ tracing restriction. Source instruction and accelerator comparisons use the
 explicit wrap qualification documented in [instruction DSP](dsp-instructions.md).
 These are not leak checks or physical-console measurements.
 
+The hardware comparison also checks 1,600 observations through actual
+control-register methods, including initialization DMA, reset, interrupt
+stacking and status-clear deadlines across timebase wrap. Both Release and
+fatal ASan/UBSan runs pass. Timing services are controlled host adapters;
+whole-system event scheduling remains a separate qualification.
+
 Negative controls replacing unsigned multiplication with a signed operand and
 retaining consumed mailbox readiness both fail the public suite. Clang 19 core
 and allocation analysis reports no findings in the eight changed DSP product

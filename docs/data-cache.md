@@ -69,3 +69,18 @@ steps. Inspection finds an early storage exception during a cache-flush request
 for effective address zero with data relocation enabled. This mode is not
 qualified for Sunshine gameplay. Ordinary coherent-mode menu and intro captures
 do not establish that the optional mode works through the same sequence.
+
+A later full-source startup check reproduced the first storage exception with
+accurate caching and strict MMU handling enabled: exception vector `0x300`,
+`SRR0=0x803436ac`, `DAR=0` and `DSISR=0x42000000`. The faulting instruction is the
+same null-address cache flush. With accurate caching disabled, that instruction
+passes without generating the exception. No fault suppression was added here.
+
+This check used the supplied pinned runtime, its interpreter, a null video
+backend and a private frontend observer with an exception-vector breakpoint.
+Physical HID scanning was disabled through the source's existing no-HID backend
+because this host cannot initialize physical USB input. The source checkout was
+not edited; a generated force-include build flag was corrected, and relevant
+files matched the revision after line-ending normalization. This confirms the
+specific source-mode failure, not whole-game equivalence, rendered output or
+physical-console behavior.

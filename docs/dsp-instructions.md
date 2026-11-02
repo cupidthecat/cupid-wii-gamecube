@@ -67,8 +67,11 @@ editing the checkout:
   sample format, history and stop-state changes, memory callbacks and exceptions.
 - `dsp_hardware_reference_checks`: 34,208 IFX mailbox, interrupt, DMA and accelerator
   register cases using initialized source objects. This test requires Linux page
-  protection and compares independent memory stores. It does not test the complete
-  external scheduler or CPU control-register caller.
+  protection and compares independent memory stores. Another 1,600 observations
+  execute the actual control-register methods with a controlled timebase, checking
+  reset, initialization DMA, status-clear deadlines, external-interrupt delivery,
+  registers, stacks and instruction RAM. The surrounding timing services record
+  scheduling requests; this does not qualify the complete external scheduler.
 
 The instruction and accelerator comparisons compile source arithmetic with `-fwrapv` on GCC and
 Clang. Its unsigned 16-bit multiplication otherwise promotes to signed `int`
@@ -90,5 +93,21 @@ and the final raw frame matched. Both recorded zero unmapped DSP accesses
 and 62,270 nonzero sample values. OpenGL used Mesa llvmpipe, not a physical GPU;
 fragment interlock was unavailable. Independently created user directories had
 different memory-card identity bytes, so their RAM hashes were not comparable.
-Host audio was disabled. Longer gameplay, Wii titles and host-audible output
-remain separate qualification work.
+Host audio was disabled.
+
+A longer pre-publication DSP candidate completed 7,000 fields normally using the
+ordinary controller replay and software rendering. Its final frame shows Mario
+on the airstrip. It recorded 7,605,776 sample values, including 6,985,145 nonzero
+values, and 56,378,975,601 executed CPU instructions. The source snapshot, binary
+hash, replay, private inputs and final state were retained locally. This run does
+not establish a completed level, saved-progress restoration, host-audible output
+or full speed. Wii title qualification remains separate work.
+
+The subsequent OpenGL compute replay at `90131b1` also completed 7,000 fields
+normally. All common final-state fields matched the software candidate except
+build identity and hardware-renderer counters; the final raw frame and every
+persisted file were byte-identical. The OpenGL run executed 1,039,170,987 DSP
+instructions and recorded no unmapped DSP accesses. It dispatched 694,829 GPU
+operations and used 4,511 checked software-fallback rectangles. The driver was
+Mesa llvmpipe without fragment interlock. Its 1,698.46-second shared-host runtime
+is not an isolated performance benchmark or full-speed result.

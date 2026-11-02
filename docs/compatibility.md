@@ -529,3 +529,27 @@ This is a limited interactive observation on a software OpenGL device, with
 host audio disabled. It does not establish a completed level, saved level
 progress, full-speed operation or physical-GPU behavior. It also does not
 qualify the later optional data-cache mode.
+
+## Instruction DSP airstrip replay
+
+On November 2, a pre-publication instruction-DSP candidate completed the ordinary
+Sunshine controller replay to 7,000 presented VI fields and stopped normally at
+the frame bound. Software rendering was selected, with supplied DSP program and
+coefficient ROMs and validated font blocks. The final frame shows Mario on the
+airstrip. The run executed 56,378,975,601 CPU instructions and generated 7,605,776
+sample values, 6,985,145 of them nonzero. Host audio was disabled.
+
+The private source snapshot was based on `a9a50e9` plus the instruction-DSP work
+later published in `f1738f7`; its binary, source hashes, replay and final state are
+retained. This is a separate observation from earlier task-DSP captures and the
+short paired software/OpenGL startup. It does not prove completed-level play,
+saved-progress restoration, endpoint audio or full speed.
+
+The paired OpenGL compute replay at `90131b1` subsequently reached the same
+7,000-field bound with identical CPU/RAM state, audio, final raw frame and stored
+files. Only build identity and hardware-renderer counters differ among the common
+final-state fields. The OpenGL run reports zero unmapped DSP accesses and
+1,039,170,987 DSP instructions. Mesa llvmpipe handled 694,829 dispatches, with
+4,511 checked software-fallback rectangles. Fragment interlock and physical-GPU
+performance were not qualified. Both complete runs keep the gameplay and audio
+limits above.

@@ -452,7 +452,8 @@ Interpreter::BatMap &Interpreter::refresh_bat_map(bool instruction, unsigned cou
   return *map;
 }
 
-u32 Interpreter::translate_access(u32 effective, bool instruction, bool write, bool &uncached) {
+u32 Interpreter::translate_access(u32 effective, bool instruction, bool write, bool &uncached,
+                                  bool *direct_store) {
   uncached = false;
   if (!(state_.msr & (instruction ? msr::ir : msr::dr)))
     return effective;
@@ -483,8 +484,15 @@ u32 Interpreter::translate_access(u32 effective, bool instruction, bool write, b
       return entry.physical | (effective & 4095);
     }
   }
-  if (segment & 0x80000000)
+  if (segment & 0x80000000) {
+    // Cache-line zero treats this translation result as a completed no-op.
+    // BAT and resident TLB mappings still take precedence over the segment.
+    if (direct_store) {
+      *direct_store = true;
+      return 0;
+    }
     unsupported("Direct-store segment access is not implemented");
+  }
   if (instruction && (segment & 0x10000000))
     storage_fault(effective, true, false);
   const u32 hash = vsid ^ ((effective >> 12) & 0xffff);
@@ -632,7 +640,10 @@ void Interpreter::clear_cache_line(u32 effective) {
   effective &= ~31u;
   unsigned offset = 0;
   try {
-    const u32 physical = translate(effective, false, true);
+    bool uncached = false, direct_store = false;
+    const u32 physical = translate_access(effective, false, true, uncached, &direct_store);
+    if (direct_store)
+      return;
     if (bus_.try_clear_cpu_ram_line(physical))
       return;
     for (; offset < 32; offset += 4)

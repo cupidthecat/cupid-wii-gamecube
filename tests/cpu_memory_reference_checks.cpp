@@ -1451,8 +1451,101 @@ unsigned compare_mutable_bat_banks() {
   return comparisons;
 }
 
+unsigned compare_direct_store_cache_zero() {
+  auto &system = Core::System::GetInstance();
+  unsigned comparisons = 0;
+  for (bool wii : {false, true}) {
+    system.SetIsWii(wii);
+    for (unsigned primary : {31u, 4u})
+      for (unsigned offset = 0; offset < 32; ++offset)
+        for (unsigned mode = 0; mode < 5; ++mode) {
+          std::fill(physical_memory.begin(), physical_memory.end(), 0);
+          std::fill_n(physical_memory.begin() + 0x8000, 32, 0x5a);
+          auto memory = std::make_unique<Memory::MemoryManager>(system);
+          auto manager = std::make_unique<PowerPC::PowerPCManager>(system);
+          auto mmu = std::make_unique<PowerPC::MMU>(system, *memory, *manager);
+          auto &reference = manager->GetPPCState();
+          Interpreter executor(system, reference, *mmu, manager->GetBranchWatch(),
+                               manager->GetSymbolDB());
+          reference.pc = 0x1000;
+          reference.msr.Hex = cupid::cpu::msr::fp | (mode == 4 ? 0 : cupid::cpu::msr::dr);
+          reference.spr[SPR_HID0] = 0x4000;
+          reference.spr[SPR_HID2] = 0x30000000;
+          reference.spr[SPR_DAR] = 0x12345678;
+          reference.spr[SPR_DSISR] = 0x87654321;
+          reference.sr[4] = 0x123;
+          reference.m_enable_dcache = false;
+          reference.gpr[3] = (mode == 4 ? 0x8000 : 0x40008000) + offset;
+          reference.gpr[4] = 0x5a;
+          reference.pagetable_base = 0x20000;
+          reference.pagetable_mask = 0xffff;
+          memory->Write_U32(0x80000000 | (0x123 << 7), hash_group(8));
+          memory->Write_U32(0x8003, hash_group(8) + 4);
+          if (mode == 1) {
+            reference.spr[SPR_DBAT0U] = 0x40000002;
+            reference.spr[SPR_DBAT0L] = 2;
+          }
+          mmu->DBATUpdated();
+          GuestBus bus;
+          auto product = std::make_unique<cupid::cpu::Interpreter>(
+              bus, wii ? cupid::Console::Wii : cupid::Console::GameCube);
+          auto &state = product->state();
+          state.msr = reference.msr.Hex;
+          state.spr[cupid::cpu::spr::sdr1] = 0x20000;
+          state.spr[cupid::cpu::spr::hid0] = 0x4000;
+          state.spr[cupid::cpu::spr::hid2] = 0x30000000;
+          state.spr[cupid::cpu::spr::dar] = 0x12345678;
+          state.spr[cupid::cpu::spr::dsisr] = 0x87654321;
+          state.spr[536] = reference.spr[SPR_DBAT0U];
+          state.spr[537] = reference.spr[SPR_DBAT0L];
+          state.sr[4] = 0x123;
+          state.gpr[3] = reference.gpr[3];
+          state.gpr[4] = reference.gpr[4];
+          auto expected_memory = physical_memory;
+          auto actual_memory = physical_memory;
+          const auto step = [&](u32 opcode, Interpreter::Instruction handler) {
+            ++comparisons;
+            std::copy(expected_memory.begin(), expected_memory.end(), physical_memory.begin());
+            UGeckoInstruction decoded;
+            decoded.hex = opcode;
+            handler(executor, decoded);
+            expected_memory = physical_memory;
+            std::copy(actual_memory.begin(), actual_memory.end(), physical_memory.begin());
+            state.pc = 0x1000;
+            bus.write32(0x1000, opcode);
+            product->step();
+            actual_memory = physical_memory;
+            require(reference.Exceptions == 0 && state.pc == 0x1004, comparisons,
+                    "direct-store cache-zero completion");
+            require(state.spr[cupid::cpu::spr::dar] == reference.spr[SPR_DAR] &&
+                        state.spr[cupid::cpu::spr::dsisr] == reference.spr[SPR_DSISR],
+                    comparisons, "direct-store cache-zero fault fields");
+            require(std::equal(expected_memory.begin() + 0x8000, expected_memory.end(),
+                               actual_memory.begin() + 0x8000),
+                    comparisons, "direct-store cache-zero RAM and PTE state");
+            require(state.gpr[4] == reference.gpr[4], comparisons,
+                    "direct-store cache-zero warm-up destination");
+          };
+          // A resident translation wins, but a read-only TLB entry first tries
+          // to update C and encounters the newly installed direct-store flag.
+          if (mode == 2)
+            step((34u << 26) | (4u << 21) | (3u << 16), Interpreter::lbz);
+          if (mode == 3)
+            step((38u << 26) | (4u << 21) | (3u << 16), Interpreter::stb);
+          state.sr[4] = reference.sr[4] = 0x80000123;
+          const u32 zero = (primary << 26) | (3u << 11) | (1014u << 1);
+          const auto handler = primary == 31 ? Interpreter::dcbz : Interpreter::dcbz_l;
+          step(zero, handler);
+          step(zero, handler);
+        }
+  }
+  require(comparisons == 1536, comparisons, "direct-store cache-zero coverage");
+  return comparisons;
+}
+
 int main() {
   try {
+    const auto cache_zero = compare_direct_store_cache_zero();
     const auto loads = compare_loads();
     const auto stores =
         compare_stores() + compare_quantized_stores() + compare_bat_stores() + compare_tlb_stores();
@@ -1461,7 +1554,8 @@ int main() {
     const auto mutable_bats = compare_mutable_bat_banks();
     require(reference_warning_calls != 0 && !reference_warning_samples.empty(), bat_addresses,
             "BAT warning adapter exercised");
-    std::cout << loads << " direct source load comparisons and " << stores
+    std::cout << cache_zero << " direct-store cache-zero steps, " << loads
+              << " direct source load comparisons and " << stores
               << " store/BAT/TLB comparisons, plus " << bat_loads << " BAT load cases and "
               << bat_addresses << " BAT address cases and " << mutable_bats
               << " mutable IBAT/DBAT table cases passed\n";

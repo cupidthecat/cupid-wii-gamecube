@@ -180,7 +180,8 @@ private:
   void quantized(u32 opcode, bool indexed);
   u64 load(u32 effective, unsigned bytes);
   void store(u32 effective, u64 value, unsigned bytes);
-  u32 translate_access(u32 effective, bool instruction, bool write, bool &uncached);
+  u32 translate_access(u32 effective, bool instruction, bool write, bool &uncached,
+                       bool *direct_store = nullptr);
   void store_physical(u32 physical, u32 value, unsigned bytes, bool uncached);
   void clear_cache_line(u32 effective);
   void field(unsigned index, u32 value);

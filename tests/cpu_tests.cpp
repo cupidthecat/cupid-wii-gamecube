@@ -2511,6 +2511,63 @@ void decrementer_tests() {
   }
 }
 
+void direct_store_cache_zero_tests() {
+  for (Console console : {Console::GameCube, Console::Wii}) {
+    Memory memory;
+    Interpreter cpu(memory, console);
+    for (auto backend : {ExecutionBackend::Interpreter, ExecutionBackend::NativeInteger}) {
+      if (backend == ExecutionBackend::NativeInteger && !NativeInteger::supported())
+        continue;
+      cpu.set_execution_backend(backend);
+      for (unsigned primary : {31u, 4u})
+        for (unsigned segment = 0; segment < 16; ++segment)
+          for (unsigned offset = 0; offset < 32; ++offset) {
+            cpu.reset();
+            auto &state = cpu.state();
+            state.pc = 0x1000;
+            state.msr = msr::dr | msr::fp;
+            state.spr[spr::hid0] = 0x4000;
+            state.spr[spr::hid2] = 0x30000000;
+            state.spr[spr::dec] = 0xffffffff;
+            state.spr[spr::dar] = 0x12345678;
+            state.spr[spr::dsisr] = 0x87654321;
+            state.sr[segment] = 0x80000123;
+            state.gpr[3] = (segment << 28) | 0x8000 | offset;
+            const u32 opcode = (primary << 26) | (3u << 11) | (1014u << 1);
+            memory.write32(0x1000, opcode);
+            memory.write32(0, 0xabcdef01);
+            memory.write32(0x8000, 0x13579bdf);
+            cpu.step();
+            CHECK(state.pc == 0x1004);
+            CHECK(state.spr[spr::dar] == 0x12345678 && state.spr[spr::dsisr] == 0x87654321);
+            CHECK(memory.read32(0) == 0xabcdef01 && memory.read32(0x8000) == 0x13579bdf);
+            // Cache availability is checked before the ignored segment result.
+            state.pc = 0x1000;
+            state.spr[spr::hid0] = 0;
+            cpu.step();
+            CHECK(state.pc == 0x600 && state.spr[spr::dar] == state.gpr[3]);
+          }
+    }
+    // A BAT mapping wins over the direct-store segment attribute.
+    cpu.reset();
+    auto &state = cpu.state();
+    state.pc = 0x1000;
+    state.msr = msr::dr;
+    state.spr[spr::hid0] = 0x4000;
+    state.spr[spr::dec] = 0xffffffff;
+    state.sr[4] = 0x80000123;
+    state.spr[536] = 0x40000002;
+    state.spr[537] = 2;
+    state.gpr[3] = 0x4000801f;
+    memory.write32(0x1000, ext(1014, 0, 0, 3));
+    std::fill_n(memory.bytes.begin() + 0x8000, 32, 0xff);
+    cpu.step();
+    CHECK(state.pc == 0x1004);
+    CHECK(std::all_of(memory.bytes.begin() + 0x8000, memory.bytes.begin() + 0x8020,
+                      [](u8 byte) { return byte == 0; }));
+  }
+}
+
 void write_gather_register_tests() {
   class GatherBus final : public Bus {
   public:
@@ -3961,6 +4018,7 @@ int main() {
     performance_selector_tests();
     thermal_register_tests();
     write_gather_register_tests();
+    direct_store_cache_zero_tests();
     mmu_tests();
     bat_mapping_boundary_tests();
     bat_register_change_tests();

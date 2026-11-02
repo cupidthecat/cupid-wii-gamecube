@@ -54,3 +54,26 @@ A full rebuild exposed a lost byte/halfword narrowing step in the new CPU device
 The separate `cpu_dispatch_reference_checks` target executes 20 unchanged translation units and the real interpreter dispatch table. Its 5,632 controls cover 1,344 strict byte backing reads, 512 warm/cold byte-cache reads, 192 retained rejected fills and 3,584 selected aligned/odd guest steps. Native MSVC and strict GCC pass every value/state case; full GCC address/undefined-behavior instrumentation passes too. GNU/Linux additionally records and forwards the actual backing-copy calls, comparing their order with the product. Native keeps the same value/state cases and authored transfer-order assertions without claiming that source-call interception. Public core tests verify all supported byte widths, complete failure preservation, aliases, real RAM ends, excluded regions, reset and absence of device/PI callbacks. A separate runtime trace regression replaces the old prefetched alignment assumption with obtained odd-PC zero words and adds a decoded `lwarx` data-alignment fault. The original trace failure and corrected complete GCC runtime pass are retained.
 
 These are controlled software comparisons and authored integration tests. The memory comparison excludes data-cache visibility, complete MMIO/EFB width behavior, invalid locked-fetch opcode values, full interrupt scheduling and physical-console equivalence. [CPU mappings](cpu-reference.md) records the separate zero-word execution checks, and [tests](testing.md) records the broader toolchain matrix.
+
+## Cache-line zero and direct-store segments
+
+At source revision `2c805fee8f232d090c454381bb1b8422242345e1`,
+`Interpreter_LoadStore.cpp` (`dcbz`, `dcbz_l`) calls `MMU::ClearDCacheLine`.
+That caller ignores a direct-store segment result. The product now preserves
+this behavior without treating the segment as ordinary RAM or assigning it a
+physical address. Cache availability and locked-cache instruction checks still
+run first. Other direct-store accesses retain their explicit unsupported path.
+
+BAT mappings and resident TLB translations take precedence over the segment
+attribute. A resident read-only TLB entry first tries to update its change bit;
+if that lookup encounters a newly set direct-store attribute, this zero request
+is ignored. A subsequent request can use the retained changed entry. With data
+relocation disabled, the segment attribute has no effect.
+
+Public checks cover every segment and line offset, both zero instructions and
+both consoles with interpreter and native selection, plus alignment and BAT
+controls. A further 1,536 steps compare the actual source handlers and MMU with
+the product, including cold translations, BAT precedence, read/write-warmed
+TLBs, repeated requests and relocation disabled. They compare RAM, PTE updates,
+completion and fault fields. The new public regression fails on the preceding
+core. These checks do not implement general direct-store device transactions.

@@ -1307,10 +1307,10 @@ void Interpreter::monitor(u32 cycles, u32 opcode) {
   constexpr std::array<unsigned, 4> counters{spr::pmc1, spr::pmc2, spr::pmc3, spr::pmc4};
   for (unsigned index = 0; index < counters.size(); ++index) {
     const unsigned selection = selectors[index];
-    const u32 increment = selection == 1 ? cycles
-                          : selection == 11
-                              ? static_cast<u32>(index == 1 ? events.memory : events.floating)
-                              : 0;
+    const u32 increment = selection == 1                  ? cycles
+                          : selection == 11 && index == 1 ? static_cast<u32>(events.memory)
+                          : selection == 11 && index == 2 ? static_cast<u32>(events.floating)
+                                                          : 0;
     state_.spr[counters[index]] += increment;
     const bool interrupt = (first & (index == 0 ? 1u << 15 : 1u << 14)) != 0;
     if (interrupt && (state_.spr[counters[index]] & 0x80000000))
@@ -1569,16 +1569,8 @@ void Interpreter::write_spr(unsigned index, u32 value) {
     return;
   if (index == spr::tbl || index == spr::tbu)
     program(illegal);
-  if (index == spr::mmcr0) {
-    const unsigned first = (value >> 6) & 127, second = value & 63;
-    if ((first != 0 && first != 1) || (second != 0 && second != 1 && second != 11))
-      unsupported("Performance monitor event selector is not implemented");
-  }
-  if (index == spr::mmcr1) {
-    const unsigned third = (value >> 27) & 31, fourth = (value >> 22) & 31;
-    if ((third != 0 && third != 1 && third != 11) || (fourth != 0 && fourth != 1))
-      unsupported("Performance monitor event selector is not implemented");
-  }
+  // Unmodeled performance events remain selectable and leave their counters
+  // unchanged; the monitor still checks enabled overflow interrupt conditions.
   const u32 old = state_.spr[index];
   if (index == 284 || index == 285) {
     if (index == 284)
@@ -1616,6 +1608,22 @@ void Interpreter::write_spr(unsigned index, u32 value) {
     value &= ~2u;
   }
   state_.spr[index] = value;
+  if (index >= spr::thrm1 && index <= spr::thrm3) {
+    // The compatibility model uses a fixed sensor value, not the host CPU's
+    // temperature. Any thermal-control write reevaluates both comparators.
+    constexpr unsigned temperature = 42;
+    for (unsigned sensor : {spr::thrm1, spr::thrm2}) {
+      auto &control = state_.spr[sensor];
+      if (!(state_.spr[spr::thrm3] & 1) || !(control & 1)) {
+        // Invalid samples clear TIV but retain the previous TIN latch.
+        control &= ~0x40000000u;
+        continue;
+      }
+      const unsigned threshold = (control >> 23) & 127;
+      const bool active = control & 4 ? temperature < threshold : temperature > threshold;
+      control = (control & ~0x80000000u) | 0x40000000u | (active ? 0x80000000u : 0);
+    }
+  }
 }
 
 void Interpreter::execute_extended(u32 opcode) {

@@ -1,5 +1,15 @@
 # Tests
 
+## CPU system-register qualification
+
+Thermal and performance-register regressions pass in the public CPU suite and
+under GCC ASan/UBSan with the same local LeakSanitizer restriction noted below.
+The actual-source dispatch target adds 57,344 register sequences and 283,634
+steps on both console modes, comparing register/control state, instruction
+cycles and performance interrupt delivery. Both focused earlier-product
+negative controls fail. See [CPU behavior](cpu-reference.md) for the exact source
+pin, fixed-temperature compatibility behavior and unmodeled event limits.
+
 ## Manual texture-memory mip checks
 
 The manual-mip implementation passes the full 86-enabled-test Release/LTO

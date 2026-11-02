@@ -1242,6 +1242,8 @@ unsigned integer_dispatch_cases(Core::System &system, bool carry_only, bool rota
   return cases;
 }
 
+#include "cpu_system_register_reference_checks.inc"
+
 int main() {
   try {
     auto &system = Core::System::GetInstance();
@@ -1353,6 +1355,7 @@ int main() {
     std::cout
         << "Product transfer order checked; source call interception unavailable on this target\n";
 #endif
+    system_register_reference_cases(system);
     integer_dispatch_cases(system, true);
     integer_dispatch_cases(system, false);
     integer_dispatch_cases(system, false, true);

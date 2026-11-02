@@ -2511,6 +2511,98 @@ void decrementer_tests() {
   }
 }
 
+void thermal_register_tests() {
+  for (auto backend : {ExecutionBackend::Interpreter, ExecutionBackend::NativeInteger}) {
+    if (backend == ExecutionBackend::NativeInteger && !NativeInteger::supported())
+      continue;
+    Fixture f;
+    f.cpu.set_execution_backend(backend);
+    f.s.spr[spr::dec] = 0xffffffff;
+    const auto expected = [](u32 control, u32 master) {
+      if (!(control & 1) || !(master & 1))
+        return control & ~0x40000000u;
+      const unsigned threshold = (control >> 23) & 127;
+      const bool active = (control & 4) ? threshold > 42 : threshold < 42;
+      return (control & ~0xc0000000u) | 0x40000000u | (active ? 0x80000000u : 0);
+    };
+    for (unsigned target : {spr::thrm1, spr::thrm2, spr::thrm3})
+      for (unsigned threshold = 0; threshold < 128; ++threshold)
+        for (u32 flags = 0; flags < 8; ++flags)
+          for (u32 latched = 0; latched < 4; ++latched)
+            for (u32 enabled : {0u, 1u}) {
+              f.s.spr[spr::thrm1] = (threshold << 23) | 0x345678 | flags | (latched << 30);
+              f.s.spr[spr::thrm2] =
+                  ((127 - threshold) << 23) | 0x654320 | (flags ^ 5) | ((latched ^ 3) << 30);
+              f.s.spr[spr::thrm3] = 0xa5a50000 | enabled;
+              f.s.gpr[3] = target == spr::thrm3   ? 0x5a5a0000 | enabled
+                           : target == spr::thrm1 ? f.s.spr[spr::thrm1]
+                                                  : f.s.spr[spr::thrm2];
+              std::array<u32, 3> result{f.s.spr[spr::thrm1], f.s.spr[spr::thrm2],
+                                        f.s.spr[spr::thrm3]};
+              result[target - spr::thrm1] = f.s.gpr[3];
+              result[0] = expected(result[0], result[2]);
+              result[1] = expected(result[1], result[2]);
+              CHECK(f.run(special(467, 3, target)) == 2);
+              for (unsigned sensor = 0; sensor < result.size(); ++sensor) {
+                CHECK(f.s.spr[spr::thrm1 + sensor] == result[sensor]);
+                f.run(special(339, 4, spr::thrm1 + sensor));
+                CHECK(f.s.gpr[4] == result[sensor]);
+              }
+            }
+    const auto before = f.s.spr;
+    f.s.msr = msr::pr;
+    f.s.gpr[3] = 1;
+    f.run(special(467, 3, spr::thrm3));
+    CHECK(f.s.pc == 0x700);
+    for (unsigned reg : {spr::thrm1, spr::thrm2, spr::thrm3})
+      CHECK(f.s.spr[reg] == before[reg]);
+  }
+}
+
+void performance_selector_tests() {
+  constexpr std::array<unsigned, 4> counters{spr::pmc1, spr::pmc2, spr::pmc3, spr::pmc4};
+  constexpr std::array<unsigned, 4> widths{128, 64, 32, 32};
+  constexpr std::array<unsigned, 4> shifts{6, 0, 27, 22};
+  for (auto backend : {ExecutionBackend::Interpreter, ExecutionBackend::NativeInteger}) {
+    if (backend == ExecutionBackend::NativeInteger && !NativeInteger::supported())
+      continue;
+    Fixture f;
+    f.cpu.set_execution_backend(backend);
+    f.s.msr = msr::fp;
+    f.s.spr[spr::dec] = 0xffffffff;
+    f.s.gpr[4] = 0x2000;
+    f.memory.write32(0x2000, 0x3fc00000);
+    for (unsigned counter = 0; counter < counters.size(); ++counter)
+      for (unsigned selection = 0; selection < widths[counter]; ++selection) {
+        f.s.spr[spr::mmcr0] = f.s.spr[spr::mmcr1] = 0;
+        for (unsigned reg : counters)
+          f.s.spr[reg] = 0x12345678;
+        const unsigned control = counter < 2 ? spr::mmcr0 : spr::mmcr1;
+        f.s.gpr[3] = selection << shifts[counter];
+        CHECK(f.run(special(467, 3, control)) == 2);
+        CHECK(f.s.spr[control] == f.s.gpr[3]);
+        const u32 after_write = 0x12345678 + (selection == 1 ? 2 : 0);
+        CHECK(f.s.spr[counters[counter]] == after_write);
+        const u32 cycles = f.run(imm(48, 3, 4, 0));
+        const u32 increment = selection == 1                                      ? cycles
+                              : selection == 11 && (counter == 1 || counter == 2) ? 1
+                                                                                  : 0;
+        for (unsigned index = 0; index < counters.size(); ++index)
+          CHECK(f.s.spr[counters[index]] ==
+                (index == counter ? after_write + increment : 0x12345678));
+      }
+    // Even a selector with no modeled increment preserves the ordinary
+    // high-bit interrupt test. Writing MMCR itself is a monitored instruction.
+    f.s.spr[spr::mmcr0] = f.s.spr[spr::mmcr1] = 0;
+    f.s.spr[spr::pmc1] = 0x80000000;
+    f.s.gpr[3] = (2u << 6) | (1u << 15);
+    f.run(special(467, 3, spr::mmcr0));
+    f.s.msr |= msr::ee;
+    f.cpu.step();
+    CHECK(f.s.pc == 0xf00 && f.s.spr[spr::srr0] == 0x1004);
+  }
+}
+
 void performance_monitor_tests() {
   {
     Fixture f;
@@ -2592,13 +2684,13 @@ void performance_monitor_tests() {
     for (u32 control : {2u << 6, 2u, 12u}) {
       f.s.spr[spr::mmcr0] = 0;
       f.s.gpr[3] = control;
-      CHECK_THROWS(f.run(special(467, 3, spr::mmcr0)));
-      CHECK(f.s.spr[spr::mmcr0] == 0 && f.s.pc == 0x1000);
+      CHECK(f.run(special(467, 3, spr::mmcr0)) == 2);
+      CHECK(f.s.spr[spr::mmcr0] == control && f.s.pc == 0x1004);
     }
     for (u32 control : {2u << 27, 2u << 22, 11u << 22}) {
       f.s.gpr[3] = control;
-      CHECK_THROWS(f.run(special(467, 3, spr::mmcr1)));
-      CHECK(f.s.spr[spr::mmcr1] == 0 && f.s.pc == 0x1000);
+      CHECK(f.run(special(467, 3, spr::mmcr1)) == 2);
+      CHECK(f.s.spr[spr::mmcr1] == control && f.s.pc == 0x1004);
     }
   }
   for (unsigned counter : {spr::pmc1, spr::pmc2, spr::pmc3, spr::pmc4}) {
@@ -3815,6 +3907,8 @@ int main() {
     timebase_tests();
     decrementer_tests();
     performance_monitor_tests();
+    performance_selector_tests();
+    thermal_register_tests();
     mmu_tests();
     bat_mapping_boundary_tests();
     bat_register_change_tests();

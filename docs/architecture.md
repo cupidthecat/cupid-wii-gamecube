@@ -27,6 +27,11 @@ Wii boot selects the disc's requested IOS memory profile and establishes the tit
 
 CPU write-gather bytes enter the PI/CP FIFO ring. Graphics commands load CP, XF, and BP state, decode vertices, transform them, and assemble and clip primitives. The selected software or [OpenGL compute renderer](hardware-rendering.md) rasterizes covered pixels and runs TEV and pixel operations. The GPU path synchronizes raw EFB data for CPU pokes, reads, copies and checked software fallback. EFB copies write guest RAM. VI presentation reads guest YUYV framebuffer data; the SDL backend displays those bytes after color conversion.
 
+The default DSP backend executes supported program protocols; the optional
+[instruction backend](dsp-instructions.md) executes supplied ROM and uploaded
+code through its own instruction core, memories, register hardware and sample
+accelerator. Both share main RAM, ARAM, interrupt delivery and audio DMA.
+
 DSP program protocols produce planar PCM in guest RAM. Guest code can interleave it and configure audio DMA. The [host audio backend](host-audio.md) resamples main DMA, decoded [disc streaming](disc-audio.md) and optional Remote speaker packets into a fixed-rate SDL callback. Separate guest and host diagnostics retain the origin of the samples.
 
 ## Input and storage

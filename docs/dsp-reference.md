@@ -164,3 +164,13 @@ On an Intel Core i9-10900F, three interleaved GCC release measurements ran 200 m
 Public tests check known PCM/AFC sample values, decoder history, loop positions, smaller parameter blocks, deferred commands, skipped voices, reverb/filter state, task suspension/resume and invalid requests. The guest DMA regression executes an original PowerPC interleaving loop and register writes before checking the device's delivered audio samples. These are synthetic software tests, not commercial-game audio or real-hardware validation.
 
 The fixed-point mixer deliberately follows the behavioral reference's eighty-step volume ramp and sixteen-bit mixing-buffer wrap. The reference notes a different ramp step count on hardware. No hardware test was run here, and hardware equivalence is not claimed.
+
+## Instruction backend
+
+The separately selectable [instruction DSP](dsp-instructions.md) uses the same
+pinned revision. Its source map covers `DSPCore.cpp`, `DSPMemoryMap.cpp`,
+`DSPStacks.cpp`, `DSPTables.cpp`, `DSPAnalyzer.cpp`, the `Interpreter/` translation
+units, `DSPAccelerator.cpp` and `DSPHWInterface.cpp`. Runtime scheduling and CPU
+mailbox/control integration were checked against `DSP.cpp`, `DSPLLE.cpp` and
+`SystemTimers.cpp`. Compiled comparison scope, host adapters and arithmetic build
+qualifications are recorded on the instruction backend page.

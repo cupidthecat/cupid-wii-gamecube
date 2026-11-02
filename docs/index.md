@@ -26,7 +26,7 @@
 - [Devices and system-service mappings](device-reference.md).
 - [Wii system configuration](system-config.md): checked settings and controller registration.
 - [Network services](network.md) and [network mappings](network-reference.md).
-- [DSP audio](dsp.md) and [DSP mappings](dsp-reference.md).
+- [DSP audio](dsp.md), [instruction execution](dsp-instructions.md) and [DSP mappings](dsp-reference.md).
 - [Wii Remote speaker decoding](remote-speaker.md): registers, packet decoding and the separate host processing setting.
 - [Host audio](host-audio.md): queueing, resampling, Remote routing and separate output diagnostics.
 - [Extension cipher](extension-cipher.md): first-party keys and phase-dependent Nunchuk register transfers.

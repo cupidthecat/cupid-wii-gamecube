@@ -103,6 +103,13 @@ set(cupid_sources
   src/audio/host_mixer.cpp
   src/audio/disc_stream.cpp
   src/dsp/engine.cpp
+  src/dsp/instruction/state.cpp
+  src/dsp/instruction/decode.cpp
+  src/dsp/instruction/execute.cpp
+  src/dsp/instruction/arithmetic.cpp
+  src/dsp/instruction/extension.cpp
+  src/dsp/instruction/accelerator.cpp
+  src/dsp/instruction/hardware.cpp
   src/dsp/audio.cpp
   src/dsp/handheld.cpp
   src/dsp/handheld_task.cpp
@@ -128,7 +135,7 @@ include(cmake/DeveloperChecks.cmake)
 
 if(CUPID_BUILD_TESTS)
   enable_testing()
-  foreach(suite IN ITEMS cpu data_cache native_integer cpu_integer_run floating_binary instruction_cache_hint core disc disc_stream device event_budget remote remote_speaker host_mixer extension_cipher sdp sdp_transport runtime runtime_group runtime_gather runtime_boot_cache elf fonts dsp handheld ios network sysconf gfx fifo_environment vertex texture fragment fixed_coordinate rasterizer raster_coverage efb_copy xfb_copy efb_access guest_video input_replay input_replay_follow input_replay_follow_guest audio_stats pointer)
+  foreach(suite IN ITEMS cpu data_cache native_integer cpu_integer_run floating_binary instruction_cache_hint core disc disc_stream device event_budget remote remote_speaker host_mixer extension_cipher sdp sdp_transport runtime runtime_group runtime_gather runtime_boot_cache elf fonts dsp dsp_instruction handheld ios network sysconf gfx fifo_environment vertex texture fragment fixed_coordinate rasterizer raster_coverage efb_copy xfb_copy efb_access guest_video input_replay input_replay_follow input_replay_follow_guest audio_stats pointer)
     add_executable(cupid_${suite}_tests tests/${suite}_tests.cpp)
     target_include_directories(cupid_${suite}_tests PRIVATE tests)
     target_link_libraries(cupid_${suite}_tests PRIVATE cupid_core)
@@ -341,6 +348,75 @@ if(CUPID_BUILD_TESTS)
       URL https://github.com/fmtlib/fmt/archive/refs/tags/9.1.0.tar.gz
       URL_HASH SHA256=5dea48d1fcddc3ec571ce2058e13910a0d4a6bab4cc09a809d8b1dd1c88ae6f2)
     FetchContent_MakeAvailable(fmt)
+    set(cupid_dsp_instruction_references)
+    foreach(source IN ITEMS DSPCore DSPMemoryMap DSPStacks DSPTables DSPAnalyzer
+        Interpreter/DSPInterpreter Interpreter/DSPIntArithmetic Interpreter/DSPIntBranch
+        Interpreter/DSPIntExtOps Interpreter/DSPIntLoadStore Interpreter/DSPIntMisc
+        Interpreter/DSPIntMultiplier Interpreter/DSPIntTables)
+      list(APPEND cupid_dsp_instruction_references
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/DSP/${source}.cpp")
+    endforeach()
+    # The source's unsigned 16-bit multiply first promotes to signed int.
+    # Its ADPCM sum also has a signed 32-bit overflow boundary. Define wrapping
+    # in the comparison build; the product uses wide or explicit-wrap arithmetic.
+    set_property(SOURCE ${cupid_dsp_instruction_references}
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/DSP/DSPAccelerator.cpp"
+      APPEND PROPERTY COMPILE_OPTIONS
+      "$<$<CXX_COMPILER_ID:GNU,Clang>:-fwrapv>")
+    add_executable(cupid_dsp_instruction_reference_checks
+      tests/dsp_instruction_reference_checks.cpp ${cupid_dsp_instruction_references})
+    add_executable(cupid_dsp_accelerator_reference_checks
+      tests/dsp_accelerator_reference_checks.cpp
+      "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/DSP/DSPAccelerator.cpp")
+    set(cupid_dsp_comparisons dsp_instruction dsp_accelerator)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      find_package(ZLIB REQUIRED)
+      add_executable(cupid_dsp_hardware_reference_checks tests/dsp_hardware_reference_checks.cpp
+        ${cupid_dsp_instruction_references}
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/DSP/DSPHWInterface.cpp"
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/DSP/DSPAccelerator.cpp"
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Common/Hash.cpp")
+      set_property(SOURCE "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Common/Hash.cpp"
+        APPEND PROPERTY COMPILE_OPTIONS
+        "$<$<CXX_COMPILER_ID:GNU,Clang>:-Wno-error=implicit-fallthrough;-Wno-error=strict-aliasing>")
+      target_link_libraries(cupid_dsp_hardware_reference_checks PRIVATE ZLIB::ZLIB)
+      list(APPEND cupid_dsp_comparisons dsp_hardware)
+    else()
+      add_test(NAME dsp_hardware_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
+        "SKIP: optional DSP hardware comparison requires Linux page protection")
+      set_tests_properties(dsp_hardware_reference_checks PROPERTIES
+        SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;differential")
+    endif()
+    foreach(comparison IN LISTS cupid_dsp_comparisons)
+      set(target cupid_${comparison}_reference_checks)
+      set_target_properties(${target} PROPERTIES CXX_STANDARD 23)
+      target_include_directories(${target} SYSTEM PRIVATE
+        "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core")
+      target_link_libraries(${target} PRIVATE cupid_core fmt::fmt)
+      if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+        target_compile_definitions(${target} PRIVATE _M_X86_64)
+      endif()
+      if(WIN32)
+        target_compile_definitions(${target} PRIVATE UNICODE _UNICODE)
+      endif()
+      if(MSVC)
+        target_compile_options(${target} PRIVATE /Gy /Gw)
+        target_link_options(${target} PRIVATE /OPT:REF)
+      else()
+        target_compile_options(${target} PRIVATE -ffunction-sections -fdata-sections
+          -Wno-error=unused-parameter)
+        target_link_options(${target} PRIVATE -Wl,--gc-sections)
+      endif()
+      add_test(NAME ${comparison}_reference_checks COMMAND ${target})
+      set_tests_properties(${comparison}_reference_checks PROPERTIES
+        TIMEOUT 600 LABELS "private;differential")
+    endforeach()
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      # The source's unsupported DMA-length path exits with success. Require
+      # the bounded fixture's completion banner, not merely a zero exit code.
+      set_tests_properties(dsp_hardware_reference_checks PROPERTIES
+        PASS_REGULAR_EXPRESSION "34208 actual IFX mailbox/IRQ/DMA/accelerator cases passed")
+    endif()
     target_include_directories(cupid_cpu_fused_reference_checks SYSTEM PRIVATE
       "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core")
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
@@ -758,7 +834,7 @@ if(CUPID_BUILD_TESTS)
       "SKIP: optional vertex comparisons require CUPID_BEHAVIOR_REFERENCE_ROOT and C++23")
     set_tests_properties(vertex_reference_checks PROPERTIES
       SKIP_REGULAR_EXPRESSION "SKIP:" LABELS "private;differential")
-    foreach(comparison IN ITEMS rasterizer texture fragment sdp efb_copy xfb_copy host_audio pointer disc_stream)
+    foreach(comparison IN ITEMS dsp_instruction dsp_accelerator dsp_hardware rasterizer texture fragment sdp efb_copy xfb_copy host_audio pointer disc_stream)
       add_test(NAME ${comparison}_reference_checks COMMAND "${CMAKE_COMMAND}" -E echo
         "SKIP: optional ${comparison} comparisons require CUPID_BEHAVIOR_REFERENCE_ROOT and C++23")
       set_tests_properties(${comparison}_reference_checks PROPERTIES

@@ -2,6 +2,7 @@
 #include "cupid/dsp/engine.hpp"
 #include "cupid/dsp/audio.hpp"
 #include "cupid/dsp/handheld_task.hpp"
+#include "cupid/dsp/instruction_engine.hpp"
 #include <bit>
 #include <iomanip>
 #include <limits>
@@ -84,6 +85,43 @@ Engine::Engine(Memory &memory, Console console)
 }
 
 Engine::~Engine() = default;
+
+void Engine::install_instruction_roms(std::span<const u8> program,
+                                      std::span<const u8> coefficients) {
+  if (cycles_ != 0)
+    throw std::logic_error("Select DSP instruction execution before advancing the guest");
+  auto selected = std::make_unique<InstructionEngine>(memory_, console_, program, coefficients);
+  selected->interrupt = [this] { request_interrupt(); };
+  selected->aram_read = [this](u32 address, std::span<u8> bytes) {
+    if (!aram_read)
+      throw std::runtime_error("DSP instruction execution requires connected ARAM reads");
+    aram_read(address, bytes);
+  };
+  selected->aram_write = [this](u32 address, std::span<const u8> bytes) {
+    if (!aram_write)
+      throw std::runtime_error("DSP instruction execution requires connected ARAM writes");
+    aram_write(address, bytes);
+  };
+  selected->guest_timebase = [this] { return guest_timebase ? guest_timebase() : cycles_ / 12; };
+  instruction_engine_ = std::move(selected);
+  audio_.reset();
+  handheld_.reset();
+  suspended_audio_.reset();
+  suspended_handheld_.reset();
+  mails_.clear();
+  boot_ = {};
+}
+
+void Engine::advance_instruction(u64 cpu_cycles) {
+  if (cpu_cycles > std::numeric_limits<u64>::max() - cycles_)
+    throw std::overflow_error("DSP cycle counter overflow");
+  cycles_ += cpu_cycles;
+  instruction_engine_->advance(cpu_cycles);
+}
+
+u64 Engine::instruction_event_free_cycles() const noexcept {
+  return instruction_engine_->event_free_cycles();
+}
 
 void Engine::request_interrupt() {
   if (interrupt)
@@ -237,6 +275,8 @@ void Engine::handle_mail(u32 value) {
 }
 
 u16 Engine::read16(u32 offset) {
+  if (instruction_engine_)
+    return instruction_engine_->read16(offset);
   switch (offset) {
   case 0:
     return static_cast<u16>(cpu_mail_ >> 16);
@@ -256,6 +296,10 @@ u16 Engine::read16(u32 offset) {
 }
 
 void Engine::write16(u32 offset, u16 value) {
+  if (instruction_engine_) {
+    instruction_engine_->write16(offset, value);
+    return;
+  }
   switch (offset) {
   case 0:
     cpu_mail_ = (cpu_mail_ & 0xffff) | (u32(value) << 16);
@@ -295,8 +339,12 @@ void Engine::advance_update(u64 cpu_cycles) {
     handheld_->update();
 }
 
+const InstructionState *Engine::instruction_state() const noexcept {
+  return instruction_engine_ ? &instruction_engine_->core().state() : nullptr;
+}
+
 u32 Engine::program_hash() const {
-  return hash_;
+  return instruction_engine_ ? instruction_engine_->program_hash() : hash_;
 }
 
 const BootDescriptor &Engine::boot_descriptor() const {

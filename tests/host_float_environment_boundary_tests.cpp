@@ -72,7 +72,7 @@ struct ThrowingCopy {
 
 struct MoveOnly {
   int value;
-  explicit MoveOnly(int v) : value(v){};
+  explicit MoveOnly(int v) : value(v) {};
   MoveOnly(const MoveOnly &) = delete;
   MoveOnly(MoveOnly &&) = default;
 };

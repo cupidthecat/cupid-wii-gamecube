@@ -20,6 +20,11 @@ host. It does not establish full-speed execution.
 
 `--graphics software` selects CPU rendering. `--graphics opengl` selects OpenGL 4.3 rendering, with CPU execution for graphics states it cannot yet handle. Automatic mode attempts ordered fragment rasterization on capable devices and retains compute when optional initialization declines. A hidden context runs the graphics commands; `--headless` disables the separate game-output window. Both graphics and SDL output require a build with SDL support. A headless-only build supports software graphics. See [hardware rendering](hardware-rendering.md) for coverage and validation.
 
+`--dsp-rom PATH --dsp-coeff PATH` selects instruction-based DSP execution using
+an 8,192-byte program ROM and a 4,096-byte coefficient ROM. Both are required;
+without them the task-level backend remains active. No ROM files are bundled.
+See [instruction DSP](dsp-instructions.md) for timing, scope and validation.
+
 `--audio sdl` resamples and mixes guest PCM into a 48 kHz stereo stream; `--audio none` leaves host audio disabled. `--remote-speakers on` includes decoded Remote packets and requires SDL audio; the default is `off`. Headless runs can enable audio. See [host audio](host-audio.md) for buffering and verified scope.
 
 `--display-aspect standard` uses the VI active-area ratio for a standard television signal. `widescreen` expands that ratio by four thirds; `pixels` uses the raw framebuffer dimensions. The default is `standard`. The window centers the image with black bars when needed, and mouse pointing follows that displayed area. Frame dumps retain the original guest framebuffer dimensions.
@@ -105,3 +110,7 @@ An exit at a run limit does not establish that a game boots, reaches its title s
 `--data-cache` enables optional emulated data-cache visibility and writeback.
 It preserves dirty data separately from DMA-visible RAM and disables grouped
 RAM execution. See [data-cache behavior](data-cache.md) for scope and limits.
+
+DSP diagnostics identify `dsp_backend` as `task` or `instruction`. Instruction
+mode reports `dsp_instructions`, `dsp_pc` and `dsp_unmapped_accesses`; these fields
+are zero for task mode. They are observations, not a coverage or accuracy score.

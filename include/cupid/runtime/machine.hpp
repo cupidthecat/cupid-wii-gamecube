@@ -62,6 +62,7 @@ public:
                                std::function<void(const std::string &)> diagnostic = {});
   void install_bios(const Bios &bios);
   void install_fonts(const IplFonts &fonts);
+  void install_dsp_roms(std::span<const u8> program, std::span<const u8> coefficients);
   void load_executable(std::span<const u8> file, bool elf = false);
   void load_disc(const std::filesystem::path &path);
   void step();

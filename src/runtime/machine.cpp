@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cupid/runtime/machine.hpp"
 #include "cupid/build_info.hpp"
+#include "cupid/dsp/instruction.hpp"
 #include "cupid/runtime/elf.hpp"
 #include <algorithm>
 #include <array>
@@ -105,6 +106,10 @@ Machine::Machine(Console console)
   devices_.dsp_write = [this](u32 a, u16 v) { dsp_.write16(a, v); };
   dsp_.interrupt = [this] { devices_.dsp_interrupt(); };
   dsp_.aram_read = [this](u32 address, std::span<u8> bytes) { devices_.read_aram(address, bytes); };
+  dsp_.aram_write = [this](u32 address, std::span<const u8> bytes) {
+    devices_.write_aram(address, bytes);
+  };
+  dsp_.guest_timebase = [this] { return cpu_.state().timebase; };
   devices_.ipc_read = [this](u32 a) { return ios_.read(a); };
   devices_.ipc_write = [this](u32 a, u32 v) { ios_.write(a, v); };
   ios_.set_shutdown_handler([this] { shutdown_requested_ = true; });
@@ -215,6 +220,10 @@ void Machine::install_bios(const Bios &bios) {
 
 void Machine::install_fonts(const IplFonts &fonts) {
   devices_.set_ipl_fonts(fonts.shift_jis.bytes, fonts.western.bytes);
+}
+
+void Machine::install_dsp_roms(std::span<const u8> program, std::span<const u8> coefficients) {
+  dsp_.install_instruction_roms(program, coefficients);
 }
 
 void Machine::set_input_replay(const std::filesystem::path &path) {
@@ -463,6 +472,7 @@ void Machine::write_state(std::ostream &out, const std::string &outcome) const {
   const auto disc_audio = output_ ? output_->disc_audio_stats() : platform::DiscAudioStats{};
   const auto hardware = graphics_.hardware_stats();
   const auto native = cpu_.native_statistics();
+  const auto *dsp_state = dsp_.instruction_state();
   out << "{\"version\":\"" << build::version << "\",\"commit\":\"" << build::commit
       << "\",\"console\":\"" << (console_ == Console::Wii ? "wii" : "gamecube")
       << "\",\"outcome\":\"" << outcome << "\",\"stage\":\"" << boot_.stage
@@ -492,6 +502,10 @@ void Machine::write_state(std::ostream &out, const std::string &outcome) const {
       << ",\"input_replay_rejections\":"
       << (input_replay_follower_ ? input_replay_follower_->rejected_updates() : 0)
       << ",\"presented_frames\":" << (output_ ? output_->presented_frames() : 0)
+      << ",\"dsp_backend\":\"" << (dsp_state ? "instruction" : "task") << "\""
+      << ",\"dsp_instructions\":" << (dsp_state ? dsp_state->instructions : 0)
+      << ",\"dsp_pc\":" << (dsp_state ? dsp_state->pc : 0)
+      << ",\"dsp_unmapped_accesses\":" << (dsp_state ? dsp_state->unmapped_accesses : 0)
       << ",\"audio_samples\":" << (output_ ? output_->audio_samples() : 0)
       << ",\"audio_nonzero_samples\":" << (output_ ? output_->audio_nonzero_samples() : 0)
       << ",\"audio_peak\":" << (output_ ? output_->audio_peak() : 0)

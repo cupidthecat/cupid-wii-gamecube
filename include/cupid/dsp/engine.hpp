@@ -13,6 +13,8 @@ namespace cupid::dsp {
 
 class AudioProgram;
 class HandheldTask;
+class InstructionEngine;
+struct InstructionState;
 
 class MailQueue {
 public:
@@ -64,11 +66,19 @@ public:
 
   std::function<void()> interrupt;
   std::function<void(u32, std::span<u8>)> aram_read;
+  std::function<void(u32, std::span<const u8>)> aram_write;
+  std::function<u64()> guest_timebase;
+
+  void install_instruction_roms(std::span<const u8> program, std::span<const u8> coefficients);
 
   u16 read16(u32 offset);
   void write16(u32 offset, u16 value);
 
   void advance(u64 cpu_cycles) {
+    if (instruction_engine_) {
+      advance_instruction(cpu_cycles);
+      return;
+    }
     if (cpu_cycles > std::numeric_limits<u64>::max() - cycles_)
       throw std::overflow_error("DSP cycle counter overflow");
     cycles_ += cpu_cycles;
@@ -81,11 +91,14 @@ public:
 
   // Excludes the update boundary and any cycle-counter overflow.
   u64 event_free_cycles() const noexcept {
+    if (instruction_engine_)
+      return instruction_event_free_cycles();
     const u64 remaining = update_remaining_ ? update_remaining_ - 1 : 0;
     const u64 available = std::numeric_limits<u64>::max() - cycles_;
     return remaining < available ? remaining : available;
   }
 
+  const InstructionState *instruction_state() const noexcept;
   u32 program_hash() const;
   const BootDescriptor &boot_descriptor() const;
 
@@ -93,6 +106,7 @@ private:
   enum class Program { Rom, Initialization, Card, Audio, Handheld };
   Memory &memory_;
   Console console_;
+  std::unique_ptr<InstructionEngine> instruction_engine_;
   std::unique_ptr<AudioProgram> audio_;
   std::unique_ptr<HandheldTask> handheld_;
   std::unique_ptr<HandheldTask> suspended_handheld_;
@@ -109,6 +123,8 @@ private:
   u64 update_remaining_;
   u64 update_interval_ = 0;
 
+  void advance_instruction(u64 cpu_cycles);
+  u64 instruction_event_free_cycles() const noexcept;
   void select_program(u32 hash);
   void swap_program(u32 hash);
   void handle_mail(u32 value);

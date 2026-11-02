@@ -94,6 +94,7 @@ public:
   void set_ipl(std::span<const u8> decoded_rom);
   void set_ipl_fonts(std::span<const u8> shift_jis, std::span<const u8> western);
   void read_aram(u32 address, std::span<u8> output) const;
+  void write_aram(u32 address, std::span<const u8> input);
 
   void set_rtc_seconds(u32 seconds_since_2000) {
     rtc_epoch_ = seconds_since_2000;

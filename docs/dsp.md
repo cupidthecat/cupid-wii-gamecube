@@ -1,5 +1,9 @@
 # DSP tasks and audio
 
+This page describes the default task-level backend. Supplying `--dsp-rom` and
+`--dsp-coeff` selects the separate [instruction backend](dsp-instructions.md),
+including its own execution timing, register hardware and validation limits.
+
 The DSP engine handles the boot ROM mailbox protocol, initialization, CARD, the DAC audio task family and the standalone handheld authentication task. The runtime connects its mailbox and control registers through the device bus. The device layer keeps DMA status, interrupt masks and interrupt acknowledgments.
 
 CPU mailbox writes become a complete message when the low half is written. The busy bit clears after the engine handles that message. DSP mailbox reads return the pending message's high half without consuming it; reading its low half consumes the message and clears the ready bit. A halted DSP keeps its previous readable message and leaves pending messages queued.

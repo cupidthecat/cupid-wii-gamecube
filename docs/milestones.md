@@ -23,8 +23,9 @@ The runtime is not a complete core implementation. Known gaps include:
 - Whole-system timing and game qualification of the optional writeback data
   cache. Its component and instruction checks are separate from instruction-cache
   qualification.
-- A general DSP instruction interpreter and broader audio-task coverage. Unknown
-  task hashes and task data-memory transfers still stop explicitly.
+- Gameplay and whole-system timing qualification of the optional instruction DSP,
+  DSP JIT execution and broader default audio-task coverage. Unknown task hashes
+  and task data-memory transfers still stop explicitly in the default task backend.
 - Remaining defined MMIO, device and IOS operations currently rejected by their
   handlers. A successful startup does not exercise all those paths.
 - Complete timing and interrupt qualification across CPU, DMA, graphics, audio

@@ -1,5 +1,24 @@
 # Tests
 
+## Instruction DSP checks
+
+The instruction backend adds public synthetic-firmware and PowerPC-MMIO tests,
+plus three optional source comparisons. The November 2 GCC Release/LTO run
+passed all 94 enabled tests out of 104 registered cases; ten hardware/output or
+private-integration cases explicitly skipped in that headless build.
+
+All four DSP instruction/component suites also pass GCC ASan/UBSan with
+halt-on-error enabled. Leak detection remains disabled under this environment's
+tracing restriction. Source instruction and accelerator comparisons use the
+explicit wrap qualification documented in [instruction DSP](dsp-instructions.md).
+These are not leak checks or physical-console measurements.
+
+Negative controls replacing unsigned multiplication with a signed operand and
+retaining consumed mailbox readiness both fail the public suite. Clang 19 core
+and allocation analysis reports no findings in the eight changed DSP product
+translation units. C++ formatting passes with clang-format 18, including internal
+source headers now covered by the format target.
+
 ## CPU system-register qualification
 
 Thermal and performance-register regressions pass in the public CPU suite and

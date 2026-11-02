@@ -2,6 +2,7 @@ find_program(CUPID_CLANG_FORMAT NAMES clang-format-18 clang-format)
 find_program(CUPID_CLANG_TIDY NAMES clang-tidy-18 clang-tidy)
 file(GLOB_RECURSE cupid_check_sources CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/*.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.inc"

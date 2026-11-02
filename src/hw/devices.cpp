@@ -1180,6 +1180,12 @@ void Devices::set_ipl_fonts(std::span<const u8> shift_jis, std::span<const u8> w
   ipl_fonts_[1].assign(western.begin(), western.end());
 }
 
+void Devices::write_aram(u32 address, std::span<const u8> input) {
+  if (address > aram_.size() || input.size() > aram_.size() - address)
+    throw std::out_of_range("ARAM write exceeds available storage");
+  std::copy(input.begin(), input.end(), aram_.begin() + address);
+}
+
 void Devices::read_aram(u32 address, std::span<u8> output) const {
   if (address > aram_.size() || output.size() > aram_.size() - address)
     throw std::out_of_range("ARAM read exceeds available storage");

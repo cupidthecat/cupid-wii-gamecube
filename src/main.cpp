@@ -20,7 +20,7 @@ struct UsageError : std::runtime_error {
 
 struct Options {
   std::filesystem::path game, bios, user = "userdata", trace, state, log, output, input, frame_dump;
-  std::filesystem::path ipl_fonts;
+  std::filesystem::path ipl_fonts, dsp_rom, dsp_coeff;
   std::filesystem::path input_replay, input_replay_follow;
   std::string console = "auto", cpu = "interpreter", graphics = "software", audio = "none";
   std::string display_aspect = "standard", remote_speakers = "off";
@@ -96,6 +96,10 @@ Options parse(int argc, char **argv) {
       o.cpu = value();
     else if (arg == "--bios")
       o.bios = value();
+    else if (arg == "--dsp-rom")
+      o.dsp_rom = value();
+    else if (arg == "--dsp-coeff")
+      o.dsp_coeff = value();
     else if (arg == "--ipl-fonts")
       o.ipl_fonts = value();
     else if (arg == "--user-dir")
@@ -147,6 +151,8 @@ Options parse(int argc, char **argv) {
   }
   if (o.console != "auto" && o.console != "gamecube" && o.console != "wii")
     throw UsageError("Console must be auto, gamecube or wii");
+  if (o.dsp_rom.empty() != o.dsp_coeff.empty())
+    throw UsageError("DSP instruction execution requires both --dsp-rom and --dsp-coeff");
   if (o.cpu != "interpreter" && o.cpu != "native")
     throw UsageError("CPU backend must be interpreter or native");
   if (o.graphics != "software" && o.graphics != "opengl")
@@ -180,6 +186,14 @@ Options parse(int argc, char **argv) {
   return o;
 }
 
+void configure_dsp(runtime::Machine &machine, const Options &options) {
+  if (options.dsp_rom.empty())
+    return;
+  const auto program = runtime::read_file(options.dsp_rom, 8192);
+  const auto coefficients = runtime::read_file(options.dsp_coeff, 4096);
+  machine.install_dsp_roms(program, coefficients);
+}
+
 const char *help = R"(cupid-wii-gamecube - GameCube and Wii CLI runtime
 
 Usage: cupid-wii-gamecube --game PATH [options]
@@ -189,6 +203,8 @@ Usage: cupid-wii-gamecube --game PATH [options]
   --console auto|gamecube|wii  Select the guest console (auto from disc)
   --cpu interpreter|native   Interpreter or experimental native integers (default interpreter)
   --data-cache               Enable emulated data-cache visibility and writeback
+  --dsp-rom PATH              Enable instruction DSP using an 8192-byte program ROM
+  --dsp-coeff PATH            Required 4096-byte coefficient ROM for instruction DSP
   --headless                  Disable the game-output window
   --bios PATH                 Validate and load GameCube IPL for EXI reads
   --validate-bios             Check --bios without running software
@@ -290,6 +306,7 @@ int main(int argc, char **argv) {
         return 77;
       }
       runtime::Machine machine(Console::GameCube);
+      configure_dsp(machine, options);
       if (options.cpu == "native")
         machine.cpu().set_execution_backend(cpu::ExecutionBackend::NativeInteger);
       machine.cpu().set_data_cache_enabled(options.data_cache);
@@ -442,6 +459,9 @@ int main(int argc, char **argv) {
     platform::Output output({options.headless, options.audio == "sdl", options.frame_dump,
                              options.input, display_aspect, options.remote_speakers == "on"});
     runtime::Machine machine(console);
+    configure_dsp(machine, options);
+    if (!options.dsp_rom.empty())
+      message("DSP instruction execution enabled with supplied ROM data");
     machine.cpu().set_data_cache_enabled(options.data_cache);
     if (options.data_cache)
       message("Data-cache visibility enabled; grouped RAM execution is disabled");

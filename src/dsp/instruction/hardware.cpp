@@ -108,7 +108,7 @@ void InstructionEngine::write_control(u16 value) {
   if (value & 1) {
     core_.reset();
     core_.code_changed();
-    value &= u16(~1u);
+    value &= u16(0xfffe);
   }
   if ((previous & 0x800) && !(value & 0x800)) {
     core_.state().pc = 0;
@@ -126,7 +126,7 @@ void InstructionEngine::write_control(u16 value) {
 u16 InstructionEngine::read_control() {
   auto &control = core_.state().control;
   if ((control & 0x400) && timebase() >= init_clear_time_)
-    control &= u16(~0x400u);
+    control &= u16(0xfbff);
   return control;
 }
 
@@ -155,7 +155,7 @@ void InstructionEngine::write_hardware(u16 address, u16 value) {
     registers_[0xc9] |= 4;
     if (registers_[0xef] == 0)
       transfer();
-    registers_[0xc9] &= u16(~4u);
+    registers_[0xc9] &= u16(0xfffb);
     registers_[reg] = 0;
     return;
   }

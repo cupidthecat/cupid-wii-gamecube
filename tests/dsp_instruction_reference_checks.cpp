@@ -124,7 +124,7 @@ int main() {
         if (reg == 18 || reg == 22)
           value &= 255;
         if (reg == 19)
-          value &= u16(~0x100u);
+          value &= u16(0xfeff);
         ref.WriteRegister(reg, value);
         state.registers[reg] = value;
       }

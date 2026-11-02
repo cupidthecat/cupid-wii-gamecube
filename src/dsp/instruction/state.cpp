@@ -155,7 +155,7 @@ void InstructionCore::write_register(unsigned index, u16 value) {
   else if (index == 18 || index == 22)
     value &= 255;
   else if (index == 19)
-    value &= u16(~0x100u);
+    value &= u16(0xfeff);
   state_.registers[index] = value;
 }
 

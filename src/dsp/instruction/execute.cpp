@@ -37,7 +37,7 @@ u16 InstructionCore::address_update(unsigned reg, s16 amount, bool subtract) con
 void InstructionCore::external_interrupt() {
   if (state_.registers[19] & 0x800) {
     state_.exceptions |= 0x80;
-    state_.control &= u16(~2u);
+    state_.control &= u16(0xfffd);
   }
 }
 
@@ -49,7 +49,7 @@ bool InstructionCore::check_exceptions() {
       push(1, r[19]);
       state_.pc = u16(exception * 2);
       state_.exceptions &= u8(~(1u << exception));
-      r[19] &= u16(~(exception == 7 ? 0x800u : 0x200u));
+      r[19] &= u16(exception == 7 ? 0xf7ff : 0xfdff);
       return true;
     }
   return false;
@@ -144,7 +144,7 @@ void InstructionCore::execute(detail::Operation operation, u16 word) {
     load_register((word >> 5) & 31, read_register(word & 31));
     return;
   case O::sbclr:
-    r[19] &= u16(~(1u << (6 + (word & 7))));
+    r[19] &= u16(0xffffu ^ (1u << (6 + (word & 7))));
     return;
   case O::sbset:
     r[19] |= u16(1u << (6 + (word & 7)));

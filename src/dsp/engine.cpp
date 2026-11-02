@@ -1,0 +1,484 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+#include "cupid/dsp/engine.hpp"
+#include "cupid/dsp/audio.hpp"
+#include "cupid/dsp/buffer_audio.hpp"
+#include "cupid/dsp/command_audio.hpp"
+#include "cupid/dsp/handheld_task.hpp"
+#include "cupid/dsp/instruction_engine.hpp"
+#include <algorithm>
+#include <bit>
+#include <iomanip>
+#include <limits>
+#include <sstream>
+
+namespace cupid::dsp {
+namespace {
+
+std::string unsupported_message(u32 hash, const BootDescriptor &descriptor) {
+  std::ostringstream message;
+  message << "Unsupported DSP program hash=0x" << std::hex << std::setw(8) << std::setfill('0')
+          << hash << " source=0x" << std::setw(8) << descriptor.source << " length=0x"
+          << descriptor.length << " IMEM=0x" << descriptor.instruction_address << " DMEM-length=0x"
+          << descriptor.data_length << " entry=0x" << descriptor.entry;
+  return message.str();
+}
+
+} // namespace
+
+void MailQueue::push(u32 value, bool request_interrupt, u32 delay_cycles) {
+  if (request_interrupt) {
+    if (queue_.empty()) {
+      if (delay_cycles && delayed_interrupt)
+        delayed_interrupt(delay_cycles);
+      else if (interrupt)
+        interrupt();
+    } else {
+      queue_.front().interrupt_on_consumption = true;
+    }
+  }
+  queue_.push_back({value, false});
+}
+
+u16 MailQueue::read_high() {
+  if (!halted_ && !queue_.empty())
+    last_ = queue_.front().value;
+  return static_cast<u16>(last_ >> 16);
+}
+
+u16 MailQueue::read_low() {
+  if (!halted_ && !queue_.empty()) {
+    last_ = queue_.front().value;
+    const bool notify = queue_.front().interrupt_on_consumption;
+    queue_.pop_front();
+    if (notify && interrupt)
+      interrupt();
+  }
+  last_ &= 0x7fffffff;
+  return static_cast<u16>(last_);
+}
+
+void MailQueue::halt(bool value) {
+  halted_ = value;
+}
+
+void MailQueue::clear() {
+  queue_.clear();
+}
+
+bool MailQueue::pending() const {
+  return !queue_.empty();
+}
+
+u32 firmware_hash(std::span<const u8> bytes) {
+  u32 value = 0;
+  for (const u8 byte : bytes)
+    value = std::rotl(value ^ byte, 3);
+  return value;
+}
+
+UnsupportedMicrocode::UnsupportedMicrocode(u32 value, const BootDescriptor &info)
+    : std::runtime_error(unsupported_message(value, info)), hash(value), descriptor(info) {
+}
+
+Engine::Engine(Memory &memory, Console console)
+    : memory_(memory), console_(console),
+      update_remaining_(console == Console::Wii ? 729000 : 486000),
+      update_interval_(update_remaining_) {
+  mails_.interrupt = [this] { request_interrupt(); };
+  mails_.delayed_interrupt = [this](u32 delay) { schedule_interrupt(delay); };
+  select_program(0);
+  mails_.halt(true);
+}
+
+Engine::~Engine() = default;
+
+void Engine::install_audio_coefficients(std::span<const u8> coefficients) {
+  if (cycles_ || program_ != Program::Rom || instruction_engine_)
+    throw std::logic_error("Install audio coefficients before starting the guest");
+  if (coefficients.size() != audio_coefficients_.size() * 2)
+    throw std::invalid_argument("DSP audio coefficient table must contain 4096 bytes");
+  for (std::size_t i = 0; i < audio_coefficients_.size(); ++i)
+    audio_coefficients_[i] =
+        std::bit_cast<s16>(u16((u16(coefficients[2 * i]) << 8) | coefficients[2 * i + 1]));
+  have_audio_coefficients_ = true;
+}
+
+void Engine::install_instruction_roms(std::span<const u8> program,
+                                      std::span<const u8> coefficients) {
+  if (cycles_ != 0)
+    throw std::logic_error("Select DSP instruction execution before advancing the guest");
+  auto selected = std::make_unique<InstructionEngine>(memory_, console_, program, coefficients);
+  selected->interrupt = [this] { request_interrupt(); };
+  selected->aram_read = [this](u32 address, std::span<u8> bytes) {
+    if (!aram_read)
+      throw std::runtime_error("DSP instruction execution requires connected ARAM reads");
+    aram_read(address, bytes);
+  };
+  selected->aram_write = [this](u32 address, std::span<const u8> bytes) {
+    if (!aram_write)
+      throw std::runtime_error("DSP instruction execution requires connected ARAM writes");
+    aram_write(address, bytes);
+  };
+  selected->guest_timebase = [this] { return guest_timebase ? guest_timebase() : cycles_ / 12; };
+  instruction_engine_ = std::move(selected);
+  audio_.reset();
+  command_audio_.reset();
+  buffer_audio_.reset();
+  suspended_command_audio_.reset();
+  suspended_buffer_audio_.reset();
+  interrupt_deadlines_.clear();
+  handheld_.reset();
+  suspended_audio_.reset();
+  suspended_handheld_.reset();
+  mails_.clear();
+  boot_ = {};
+}
+
+void Engine::advance_instruction(u64 cpu_cycles) {
+  if (cpu_cycles > std::numeric_limits<u64>::max() - cycles_)
+    throw std::overflow_error("DSP cycle counter overflow");
+  cycles_ += cpu_cycles;
+  instruction_engine_->advance(cpu_cycles);
+}
+
+u64 Engine::instruction_event_free_cycles() const noexcept {
+  return instruction_engine_->event_free_cycles();
+}
+
+void Engine::request_interrupt() {
+  if (interrupt)
+    interrupt();
+}
+
+void Engine::schedule_interrupt(u32 delay_cycles) {
+  if (delay_cycles > std::numeric_limits<u64>::max() - cycles_)
+    throw std::overflow_error("DSP interrupt deadline overflow");
+  const u64 deadline = cycles_ + delay_cycles;
+  interrupt_deadlines_.insert(
+      std::upper_bound(interrupt_deadlines_.begin(), interrupt_deadlines_.end(), deadline),
+      deadline);
+}
+
+void Engine::deliver_interrupts() {
+  // A task switch or mailbox read does not cancel an already scheduled interrupt.
+  while (!interrupt_deadlines_.empty() && interrupt_deadlines_.front() <= cycles_) {
+    interrupt_deadlines_.pop_front();
+    request_interrupt();
+  }
+}
+
+void Engine::select_program(u32 hash) {
+  Program next;
+  switch (hash) {
+  case 0:
+    next = Program::Rom;
+    break;
+  case 1:
+    next = Program::Initialization;
+    break;
+  case 0xdd7e72d5:
+    next = Program::Handheld;
+    break;
+  case 0x65d6cc6f:
+    next = Program::Card;
+    break;
+  default:
+    if (BufferAudioProgram::supports(hash))
+      next = Program::BufferAudio;
+    else if (CommandAudioProgram::supports(hash))
+      next = Program::CommandAudio;
+    else if (AudioProgram::supports(hash))
+      next = Program::Audio;
+    else
+      throw UnsupportedMicrocode(hash, boot_);
+    break;
+  }
+  mails_.clear();
+  program_ = next;
+  hash_ = hash;
+  parameter_ = 0;
+  boot_ = {};
+  audio_.reset();
+  command_audio_.reset();
+  buffer_audio_.reset();
+  handheld_.reset();
+  if (next == Program::Handheld) {
+    handheld_ = std::make_unique<HandheldTask>(
+        memory_, [this](u32 value) { mails_.push(value); }, [this] { return mails_.pending(); },
+        [this] { request_interrupt(); });
+    handheld_->initialize();
+    return;
+  }
+  if (next == Program::BufferAudio) {
+    buffer_audio_ = std::make_unique<BufferAudioProgram>(
+        memory_, console_, hash, [this](u32 value, bool irq) { mails_.push(value, irq); },
+        [this] { return mails_.pending(); }, [this] { request_interrupt(); },
+        [this](u32 address, std::span<u8> bytes) {
+          if (!aram_read)
+            throw std::runtime_error("DSP audio requires connected ARAM storage");
+          aram_read(address, bytes);
+        });
+    buffer_audio_->initialize();
+    return;
+  }
+  if (next == Program::CommandAudio) {
+    command_audio_ = std::make_unique<CommandAudioProgram>(
+        memory_, console_, hash,
+        [this](u32 value, bool irq, u32 delay) { mails_.push(value, irq, delay); },
+        [this](u32 address, std::span<u8> bytes) {
+          if (!aram_read)
+            throw std::runtime_error("DSP audio requires connected ARAM storage");
+          aram_read(address, bytes);
+        },
+        have_audio_coefficients_ ? std::span<const s16>(audio_coefficients_)
+                                 : std::span<const s16>{});
+    command_audio_->initialize();
+    return;
+  }
+  if (next == Program::Audio) {
+    audio_ = std::make_unique<AudioProgram>(
+        memory_, console_, hash, [this](u32 value, bool irq) { mails_.push(value, irq); },
+        [this](u32 address, std::span<u8> bytes) {
+          if (!aram_read)
+            throw std::runtime_error("DSP audio requires connected ARAM storage");
+          aram_read(address, bytes);
+        },
+        [this] { request_interrupt(); });
+    audio_->initialize();
+    return;
+  }
+  mails_.push(next == Program::Rom              ? 0x8071feed
+              : next == Program::Initialization ? 0x80544348
+                                                : 0xdcd10000);
+}
+
+void Engine::swap_program(u32 hash) {
+  if (suspended_buffer_audio_ && suspended_buffer_audio_->hash() == hash) {
+    mails_.clear();
+    audio_.reset();
+    handheld_.reset();
+    command_audio_.reset();
+    buffer_audio_ = std::move(suspended_buffer_audio_);
+    hash_ = hash;
+    program_ = Program::BufferAudio;
+    parameter_ = 0;
+    boot_ = {};
+    return;
+  }
+  if (suspended_command_audio_ && suspended_command_audio_->hash() == hash) {
+    mails_.clear();
+    audio_.reset();
+    handheld_.reset();
+    buffer_audio_.reset();
+    command_audio_ = std::move(suspended_command_audio_);
+    hash_ = hash;
+    program_ = Program::CommandAudio;
+    parameter_ = 0;
+    boot_ = {};
+    return;
+  }
+  if (suspended_handheld_ && hash == 0xdd7e72d5) {
+    mails_.clear();
+    audio_.reset();
+    command_audio_.reset();
+    buffer_audio_.reset();
+    handheld_ = std::move(suspended_handheld_);
+    hash_ = hash;
+    program_ = Program::Handheld;
+    parameter_ = 0;
+    boot_ = {};
+    return;
+  }
+  if (suspended_audio_ && suspended_audio_->hash() == hash) {
+    mails_.clear();
+    handheld_.reset();
+    command_audio_.reset();
+    buffer_audio_.reset();
+    audio_ = std::move(suspended_audio_);
+    hash_ = hash;
+    program_ = Program::Audio;
+    parameter_ = 0;
+    boot_ = {};
+    return;
+  }
+  if (hash != 0 && hash != 1 && hash != 0x65d6cc6f && hash != 0xdd7e72d5 &&
+      !AudioProgram::supports(hash) && !CommandAudioProgram::supports(hash) &&
+      !BufferAudioProgram::supports(hash))
+    throw UnsupportedMicrocode(hash, boot_);
+  if (!suspended_audio_ && !suspended_handheld_ && !suspended_command_audio_ &&
+      !suspended_buffer_audio_) {
+    if (buffer_audio_)
+      suspended_buffer_audio_ = std::move(buffer_audio_);
+    else if (command_audio_)
+      suspended_command_audio_ = std::move(command_audio_);
+    else if (audio_)
+      suspended_audio_ = std::move(audio_);
+    else if (handheld_)
+      suspended_handheld_ = std::move(handheld_);
+  }
+  select_program(hash);
+}
+
+void Engine::handle_mail(u32 value) {
+  if (buffer_audio_) {
+    if (const auto action = buffer_audio_->handle_mail(value)) {
+      boot_ = action->boot;
+      if (action->preserve)
+        swap_program(action->hash);
+      else
+        select_program(action->hash);
+    }
+    return;
+  }
+  if (command_audio_) {
+    if (const auto action = command_audio_->handle_mail(value)) {
+      boot_ = action->boot;
+      if (action->preserve)
+        swap_program(action->hash);
+      else
+        select_program(action->hash);
+    }
+    return;
+  }
+  if (handheld_) {
+    if (const auto action = handheld_->handle_mail(value)) {
+      boot_ = action->boot;
+      if (action->preserve)
+        swap_program(action->hash);
+      else
+        select_program(action->hash);
+    }
+    return;
+  }
+  if (program_ == Program::Audio) {
+    if (const auto action = audio_->handle_mail(value)) {
+      boot_ = action->boot;
+      if (action->preserve)
+        swap_program(action->hash);
+      else
+        select_program(action->hash);
+    }
+    return;
+  }
+  if (program_ == Program::Initialization)
+    return;
+  if (program_ == Program::Card) {
+    mails_.push(0xdcd10003);
+    select_program(0);
+    return;
+  }
+  if (!parameter_) {
+    if ((value & 0xffff0000) == 0x80f30000)
+      parameter_ = value;
+    else
+      mails_.push(0xfeee0000 | (value & 0xffff));
+    return;
+  }
+  const u32 command = parameter_;
+  parameter_ = 0;
+  switch (command) {
+  case 0x80f3a001:
+    boot_.source = value;
+    break;
+  case 0x80f3a002:
+    boot_.length = static_cast<u16>(value);
+    break;
+  case 0x80f3b002:
+    boot_.data_length = static_cast<u16>(value);
+    break;
+  case 0x80f3c002:
+    boot_.instruction_address = static_cast<u16>(value);
+    break;
+  case 0x80f3d001: {
+    boot_.entry = static_cast<u16>(value);
+    const auto code = memory_.range(Memory::boot_physical(boot_.source), boot_.length);
+    select_program(firmware_hash(code));
+    break;
+  }
+  default:
+    break;
+  }
+}
+
+u16 Engine::read16(u32 offset) {
+  if (instruction_engine_)
+    return instruction_engine_->read16(offset);
+  switch (offset) {
+  case 0:
+    return static_cast<u16>(cpu_mail_ >> 16);
+  case 2:
+    return static_cast<u16>(cpu_mail_);
+  case 4:
+    return mails_.read_high();
+  case 6:
+    return mails_.read_low();
+  case 0x0a:
+    if ((control_ & 0x400) && cycles_ / 12 >= init_clear_time_)
+      control_ &= static_cast<u16>(~0x400);
+    return control_;
+  default:
+    throw std::runtime_error("Invalid DSP mailbox/control register read");
+  }
+}
+
+void Engine::write16(u32 offset, u16 value) {
+  if (instruction_engine_) {
+    instruction_engine_->write16(offset, value);
+    return;
+  }
+  switch (offset) {
+  case 0:
+    cpu_mail_ = (cpu_mail_ & 0xffff) | (u32(value) << 16);
+    return;
+  case 2:
+    cpu_mail_ = (cpu_mail_ & 0xffff0000) | value;
+    handle_mail(cpu_mail_);
+    cpu_mail_ &= 0x7fffffff;
+    return;
+  case 0x0a: {
+    u16 next = value & 0xc07;
+    mails_.halt((next & 4) != 0);
+    if (next & 1) {
+      select_program(0);
+      next &= static_cast<u16>(~1);
+    }
+    if ((control_ & 0x800) && !(next & 0x800)) {
+      select_program(1);
+      next |= 0x400;
+      init_clear_time_ = cycles_ / 12 + 130;
+    }
+    control_ = next;
+    return;
+  }
+  default:
+    throw std::runtime_error("Invalid or read-only DSP mailbox/control register write");
+  }
+}
+
+void Engine::advance_update(u64 cpu_cycles) {
+  update_remaining_ = update_interval_ - (cpu_cycles - update_remaining_) % update_interval_;
+  if (program_ == Program::Card && mails_.pending())
+    request_interrupt();
+  if (audio_)
+    audio_->update();
+  if (command_audio_)
+    command_audio_->update();
+  if (buffer_audio_)
+    buffer_audio_->update();
+  if (handheld_)
+    handheld_->update();
+}
+
+const InstructionState *Engine::instruction_state() const noexcept {
+  return instruction_engine_ ? &instruction_engine_->core().state() : nullptr;
+}
+
+u32 Engine::program_hash() const {
+  return instruction_engine_ ? instruction_engine_->program_hash() : hash_;
+}
+
+const BootDescriptor &Engine::boot_descriptor() const {
+  return boot_;
+}
+
+} // namespace cupid::dsp

@@ -8,6 +8,5 @@ This program is distributed in the hope that it will be useful, but WITHOUT ANY
 WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
 PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
-The complete license text is in vendor/dolphin/COPYING. Dolphin and its bundled
-dependencies retain their original copyright and license notices. See
-vendor/dolphin/LICENSES and docs/licensing.md.
+The complete license text is in LICENSES/GPL-2.0-or-later.txt. Dependency notices
+are listed in docs/licensing.md. Dependencies retain their own licenses.

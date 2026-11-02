@@ -1,0 +1,43 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 28, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "release",
+      "displayName": "Release (Ninja)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "CUPID_BUILD_TESTS": "ON" }
+    },
+    {
+      "name": "headless",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/headless",
+      "cacheVariables": { "CUPID_HEADLESS_ONLY": "ON" }
+    },
+    {
+      "name": "sanitizers",
+      "inherits": "headless",
+      "binaryDir": "${sourceDir}/build/sanitizers",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "CUPID_ENABLE_SANITIZERS": "ON" }
+    },
+    {
+      "name": "windows-msvc",
+      "inherits": "release",
+      "displayName": "MSVC Release (developer terminal)",
+      "binaryDir": "${sourceDir}/build/windows-msvc"
+    }
+  ],
+  "buildPresets": [
+    { "name": "release", "configurePreset": "release" },
+    { "name": "headless", "configurePreset": "headless" },
+    { "name": "sanitizers", "configurePreset": "sanitizers" },
+    { "name": "windows-msvc", "configurePreset": "windows-msvc" }
+  ],
+  "testPresets": [
+    { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } },
+    { "name": "headless", "configurePreset": "headless", "output": { "outputOnFailure": true } },
+    { "name": "sanitizers", "configurePreset": "sanitizers", "output": { "outputOnFailure": true } },
+    { "name": "windows-msvc", "configurePreset": "windows-msvc", "output": { "outputOnFailure": true } }
+  ]
+}

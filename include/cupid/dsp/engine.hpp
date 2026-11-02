@@ -14,6 +14,7 @@ namespace cupid::dsp {
 
 class AudioProgram;
 class CommandAudioProgram;
+class BufferAudioProgram;
 class HandheldTask;
 class InstructionEngine;
 struct InstructionState;
@@ -115,11 +116,13 @@ public:
   const BootDescriptor &boot_descriptor() const;
 
 private:
-  enum class Program { Rom, Initialization, Card, Audio, CommandAudio, Handheld };
+  enum class Program { Rom, Initialization, Card, Audio, CommandAudio, BufferAudio, Handheld };
   Memory &memory_;
   Console console_;
   std::unique_ptr<InstructionEngine> instruction_engine_;
   std::unique_ptr<AudioProgram> audio_;
+  std::unique_ptr<BufferAudioProgram> buffer_audio_;
+  std::unique_ptr<BufferAudioProgram> suspended_buffer_audio_;
   std::unique_ptr<CommandAudioProgram> command_audio_;
   std::unique_ptr<CommandAudioProgram> suspended_command_audio_;
   std::unique_ptr<HandheldTask> handheld_;

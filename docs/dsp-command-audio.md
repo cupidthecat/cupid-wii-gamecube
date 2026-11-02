@@ -113,3 +113,7 @@ one billion guest instructions on the prior `90131b1` binary and the candidate,
 using identical initial user files. All final state fields except build revision,
 raw frames and persisted file bytes match within each pair. These existing game
 paths do not establish use of the new command-audio profiles.
+
+The source factory also names demo hashes `2ea36ce6` and `5ef56da3`, but its
+Wii voice-block read/write switch supplies no layout for either. They remain
+unsupported here rather than using uninitialized voice data or guessing a layout.

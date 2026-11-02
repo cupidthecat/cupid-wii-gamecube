@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cupid/dsp/engine.hpp"
 #include "cupid/dsp/audio.hpp"
+#include "cupid/dsp/buffer_audio.hpp"
 #include "cupid/dsp/command_audio.hpp"
 #include "cupid/dsp/handheld_task.hpp"
 #include "cupid/dsp/instruction_engine.hpp"
@@ -122,7 +123,9 @@ void Engine::install_instruction_roms(std::span<const u8> program,
   instruction_engine_ = std::move(selected);
   audio_.reset();
   command_audio_.reset();
+  buffer_audio_.reset();
   suspended_command_audio_.reset();
+  suspended_buffer_audio_.reset();
   interrupt_deadlines_.clear();
   handheld_.reset();
   suspended_audio_.reset();
@@ -180,7 +183,9 @@ void Engine::select_program(u32 hash) {
     next = Program::Card;
     break;
   default:
-    if (CommandAudioProgram::supports(hash))
+    if (BufferAudioProgram::supports(hash))
+      next = Program::BufferAudio;
+    else if (CommandAudioProgram::supports(hash))
       next = Program::CommandAudio;
     else if (AudioProgram::supports(hash))
       next = Program::Audio;
@@ -195,12 +200,25 @@ void Engine::select_program(u32 hash) {
   boot_ = {};
   audio_.reset();
   command_audio_.reset();
+  buffer_audio_.reset();
   handheld_.reset();
   if (next == Program::Handheld) {
     handheld_ = std::make_unique<HandheldTask>(
         memory_, [this](u32 value) { mails_.push(value); }, [this] { return mails_.pending(); },
         [this] { request_interrupt(); });
     handheld_->initialize();
+    return;
+  }
+  if (next == Program::BufferAudio) {
+    buffer_audio_ = std::make_unique<BufferAudioProgram>(
+        memory_, console_, hash, [this](u32 value, bool irq) { mails_.push(value, irq); },
+        [this] { return mails_.pending(); }, [this] { request_interrupt(); },
+        [this](u32 address, std::span<u8> bytes) {
+          if (!aram_read)
+            throw std::runtime_error("DSP audio requires connected ARAM storage");
+          aram_read(address, bytes);
+        });
+    buffer_audio_->initialize();
     return;
   }
   if (next == Program::CommandAudio) {
@@ -235,10 +253,23 @@ void Engine::select_program(u32 hash) {
 }
 
 void Engine::swap_program(u32 hash) {
+  if (suspended_buffer_audio_ && suspended_buffer_audio_->hash() == hash) {
+    mails_.clear();
+    audio_.reset();
+    handheld_.reset();
+    command_audio_.reset();
+    buffer_audio_ = std::move(suspended_buffer_audio_);
+    hash_ = hash;
+    program_ = Program::BufferAudio;
+    parameter_ = 0;
+    boot_ = {};
+    return;
+  }
   if (suspended_command_audio_ && suspended_command_audio_->hash() == hash) {
     mails_.clear();
     audio_.reset();
     handheld_.reset();
+    buffer_audio_.reset();
     command_audio_ = std::move(suspended_command_audio_);
     hash_ = hash;
     program_ = Program::CommandAudio;
@@ -250,6 +281,7 @@ void Engine::swap_program(u32 hash) {
     mails_.clear();
     audio_.reset();
     command_audio_.reset();
+    buffer_audio_.reset();
     handheld_ = std::move(suspended_handheld_);
     hash_ = hash;
     program_ = Program::Handheld;
@@ -261,6 +293,7 @@ void Engine::swap_program(u32 hash) {
     mails_.clear();
     handheld_.reset();
     command_audio_.reset();
+    buffer_audio_.reset();
     audio_ = std::move(suspended_audio_);
     hash_ = hash;
     program_ = Program::Audio;
@@ -269,10 +302,14 @@ void Engine::swap_program(u32 hash) {
     return;
   }
   if (hash != 0 && hash != 1 && hash != 0x65d6cc6f && hash != 0xdd7e72d5 &&
-      !AudioProgram::supports(hash) && !CommandAudioProgram::supports(hash))
+      !AudioProgram::supports(hash) && !CommandAudioProgram::supports(hash) &&
+      !BufferAudioProgram::supports(hash))
     throw UnsupportedMicrocode(hash, boot_);
-  if (!suspended_audio_ && !suspended_handheld_ && !suspended_command_audio_) {
-    if (command_audio_)
+  if (!suspended_audio_ && !suspended_handheld_ && !suspended_command_audio_ &&
+      !suspended_buffer_audio_) {
+    if (buffer_audio_)
+      suspended_buffer_audio_ = std::move(buffer_audio_);
+    else if (command_audio_)
       suspended_command_audio_ = std::move(command_audio_);
     else if (audio_)
       suspended_audio_ = std::move(audio_);
@@ -283,6 +320,16 @@ void Engine::swap_program(u32 hash) {
 }
 
 void Engine::handle_mail(u32 value) {
+  if (buffer_audio_) {
+    if (const auto action = buffer_audio_->handle_mail(value)) {
+      boot_ = action->boot;
+      if (action->preserve)
+        swap_program(action->hash);
+      else
+        select_program(action->hash);
+    }
+    return;
+  }
   if (command_audio_) {
     if (const auto action = command_audio_->handle_mail(value)) {
       boot_ = action->boot;
@@ -416,6 +463,8 @@ void Engine::advance_update(u64 cpu_cycles) {
     audio_->update();
   if (command_audio_)
     command_audio_->update();
+  if (buffer_audio_)
+    buffer_audio_->update();
   if (handheld_)
     handheld_->update();
 }

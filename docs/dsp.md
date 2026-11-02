@@ -4,7 +4,7 @@ This page describes the default task-level backend. Supplying `--dsp-rom` and
 `--dsp-coeff` selects the separate [instruction backend](dsp-instructions.md),
 including its own execution timing, register hardware and validation limits.
 
-The DSP engine handles the boot ROM mailbox protocol, initialization, CARD, the DAC and command-list audio task families, and the standalone handheld authentication task. The runtime connects its mailbox and control registers through the device bus. The device layer keeps DMA status, interrupt masks and interrupt acknowledgments.
+The DSP engine handles the boot ROM mailbox protocol, initialization, CARD, the DAC, command-list and buffer-oriented audio task families, and the standalone handheld authentication task. The runtime connects its mailbox and control registers through the device bus. The device layer keeps DMA status, interrupt masks and interrupt acknowledgments.
 
 CPU mailbox writes become a complete message when the low half is written. The busy bit clears after the engine handles that message. DSP mailbox reads return the pending message's high half without consuming it; reading its low half consumes the message and clears the ready bit. A halted DSP keeps its previous readable message and leaves pending messages queued.
 
@@ -33,6 +33,8 @@ The standalone task selected by hash `0xdd7e72d5` implements that authentication
 Task switches retain the first suspended audio or standalone task. Returning to audio preserves its renderer state and deferred resume notification. Returning to the standalone task preserves its completed mailbox state, without restarting authentication or inventing a resume notification. Authored guest tests exercise DSP register writes and result reads, interrupt boundaries and both directions of task return on both consoles.
 
 The [command-list audio family](dsp-command-audio.md) adds five-millisecond GameCube and three-millisecond Wii processing, guest voice blocks, polyphase coefficient loading, Remote mixing and delayed completion interrupts.
+
+The [buffer-oriented audio families](dsp-buffer-audio.md) add legacy and accelerator-backed PCM mixing, parameter-block state, alternate buffers, profile-specific formats and mailbox protocols.
 
 Unknown task hashes fail with the computed hash and upload descriptor in the task backend. The separate [instruction backend](dsp-instructions.md) executes supplied DSP programs, with its own documented limits. JoyBus program transfer, a physical handheld connection and DSP save-state serialization are not implemented by these task protocols. Task switches that request DSP data-memory transfers also fail explicitly. Positive main-memory PCM requests that outlast a nonzero remaining sample count are rejected because the behavioral reference's terminal-padding branch leaves part of the sample buffer undefined. These limitations can stop software that requests them; they are not replaced by silence or a completion acknowledgment.
 

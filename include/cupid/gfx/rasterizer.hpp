@@ -29,6 +29,8 @@ struct RasterWork {
 class Rasterizer {
 public:
   Rasterizer(std::span<const u32> bp, std::span<const u32> xf);
+  // Inputs carry the same x coordinate and current signed viewport width,
+  // including software fallback from a declined hardware rectangle.
   std::function<void(unsigned x, unsigned y, u32 depth, const FragmentInputs &)> fragment;
   // Returning false retains the validated CPU rasterization for this rectangle.
   std::function<bool(const RasterWork &)> hardware;

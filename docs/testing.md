@@ -1,5 +1,29 @@
 # Tests
 
+## November 2 software fragment and exhausted-audio checks
+
+The GCC 14.2 Release/LTO headless build passes all 86 enabled tests, including
+the configured source comparisons. Ten registered cases explicitly skip: nine
+hardware/window/input/audio cases and the private disc-integration fixture.
+Ordinary bounded game runs are recorded separately in [performance](performance.md).
+These checks do not qualify a physical GPU, endpoint audio or full-speed gameplay.
+
+The changed DSP, graphics, fragment and rasterizer suites also pass GCC
+AddressSanitizer and UndefinedBehaviorSanitizer. LeakSanitizer cannot run in this
+execution environment: its first run terminated with its ptrace incompatibility
+diagnostic. The successful rerun used `ASAN_OPTIONS=detect_leaks=0`; it is not a
+leak-check result. Clang 19 core and allocation analysis passes the three changed
+product translation units. Changed C++ files pass clang-format 18, and generated
+audio coefficients retain their checked digest.
+
+The new regressions reject three deliberately broken private builds: omitted
+draw validation, omitted direct-shader validation and a wrong fragment x coordinate.
+The exhausted-voice regressions also reject the preceding public DSP implementation.
+Normal draw validation still rejects invalid shader state before early depth
+rejection; direct callers validate again after BP changes.
+
+## Earlier qualification
+
 The 224-file CPU fallthrough and portable fog snapshot passes all 65 Linux GCC
 Release/LTO tests with zero skips. Formatting and static analysis pass all 42
 product translation units. The complete Windows MSVC Release/LTO retry passes

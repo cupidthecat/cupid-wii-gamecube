@@ -458,10 +458,18 @@ void Mixer::afc(Voice &voice, std::span<s16> raw) {
 }
 
 void Mixer::main_pcm(Voice &voice, std::span<s16> raw) {
-  const u32 base = voice.pair(0x8c);
-  const u32 address = checked_address(base, u32(voice[0x34]) * 2);
   const u32 remaining = voice.pair(0x3a);
   const unsigned count = static_cast<unsigned>(raw.size());
+  if (count && !remaining) {
+    // An already exhausted stream supplies a complete zero block and marks the
+    // voice done. It does not inspect its unused source address or advance it;
+    // the caller still resamples and filters the retained sample history.
+    std::fill(raw.begin(), raw.end(), s16(0));
+    voice[1] = 1;
+    return;
+  }
+  const u32 base = voice.pair(0x8c);
+  const u32 address = checked_address(base, u32(voice[0x34]) * 2);
   if (count > remaining)
     throw std::runtime_error("DSP main-memory PCM terminal padding behavior is not implemented");
   auto download = [&](u32 source, unsigned amount, unsigned at) {

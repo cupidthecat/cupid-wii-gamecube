@@ -1,5 +1,35 @@
 # Performance measurements
 
+## November 2 software fragment dispatch
+
+Software drawing now consumes the rasterizer's fragment inputs directly and
+validates unchanged shader settings once per draw. Direct shader calls retain
+per-call validation. The earlier and current products both include the same
+exhausted-PCM fix, isolating these renderer changes. They use GCC 14.2 Release/LTO,
+strict floating-point flags, native CPU execution, software graphics, headless
+output and disabled host audio.
+
+Three interleaved one-billion-attempt pairs per game use separate copies of the
+same stored-data seed. Every one of the 60 reported state fields matches, as do
+raw final frames and every persistent file. Sunshine ends at 72 VI fields and
+5,551,000 fragments; Galaxy ends at 76 fields and 104,532,960 fragments.
+
+| Game | Earlier seconds, pairs 1/2/3 | Current seconds, pairs 1/2/3 | Earlier/current median |
+| --- | --- | --- | --- |
+| Sunshine | 3.825100 / 4.079077 / 4.075977 | 3.875622 / 3.926324 / 4.127175 | 4.075977 / 3.926324 |
+| Galaxy | 33.313504 / 34.378787 / 34.128341 | 33.925132 / 33.323792 / 32.861006 | 34.128341 / 33.323792 |
+
+The current product is faster in one Sunshine pair and two Galaxy pairs. These
+small shared-host differences do not establish a sustained gameplay FPS gain.
+The checks establish matching bounded startup behavior while removing redundant
+fragment work. Original inputs, source hashes, executables and all measurements
+remain in `local-artifacts/resume-20261102/`.
+
+Two CPU dispatch experiments were discarded. Eager recent-line metadata reuse
+and bulk prefix copying made the first repeated workload slower. A narrower
+cached-branch-mask variant did not show a reliable improvement. Neither changes
+the shipped CPU path.
+
 The interpreter and software renderer still need performance suitable for play. Startup throughput, device-call speed and gameplay frame rate are separate measurements.
 
 An initial Linux GCC profile sampled 100 million Sunshine startup instructions with profiling instrumentation and headless output. No video fields, graphics commands or audio samples occurred in that span. `Devices::advance` accounted for 40.34 percent of 8.70 sampled CPU seconds. This identified per-instruction device clock arithmetic as an optimization candidate; the profile does not describe active rendering or gameplay.

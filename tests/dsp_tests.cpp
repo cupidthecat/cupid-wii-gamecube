@@ -542,6 +542,108 @@ void audio_end_tests() {
   CHECK_THROWS(send(truncated.engine, 0));
 }
 
+void audio_empty_main_pcm_tests(Console console) {
+  for (u16 ratio : {u16(0x0800), u16(0x1000), u16(0x4000), u16(0xffff)})
+    for (u16 fraction : {u16(0), u16(0x0fff)})
+      for (unsigned filtering = 0; filtering < 3; ++filtering) {
+        AudioFixture exhausted(console), silent_pcm(console);
+        for (auto *fixture : {&exhausted, &silent_pcm}) {
+          fixture->configure();
+          fixture->voice(false, fixture == &exhausted ? 33 : 16);
+          fixture->word(2, ratio);
+          fixture->word(4, 0); // Continue an existing voice with retained history.
+          fixture->word(0x30, fraction);
+          fixture->word(0x34, 0xfffe);
+          fixture->word(0x36, 0x3456);
+          fixture->word(0x38, 0x1234);
+          fixture->word(0x39, 0x5678);
+          const u32 source = filtering == 0 ? 0x8000u : filtering == 1 ? 0x0c000000u : 0xfffffff0u;
+          fixture->word(0x8c, static_cast<u16>(source >> 16));
+          fixture->word(0x8d, static_cast<u16>(source));
+          constexpr std::array<s16, 4> history{12000, -8000, 4000, -2000};
+          for (unsigned i = 0; i < history.size(); ++i)
+            fixture->word(0x3c + i, static_cast<u16>(history[i]));
+          if (filtering == 1) {
+            fixture->word(0xa8, 64);
+            fixture->word(0x68, 3000);
+            fixture->word(0x69, static_cast<u16>(-4000));
+          } else if (filtering == 2) {
+            fixture->word(0x84, 32);
+            fixture->word(0xa4, 0x4000);
+            fixture->word(0xa5, 0x1000);
+            fixture->word(0xa6, 0x0800);
+            fixture->word(0xa7, 0x0400);
+            for (unsigned i = 0; i < 4; ++i)
+              fixture->word(0x54 + i, static_cast<u16>(history[i]));
+          }
+        }
+        // The ordinary exhausted PCM path independently generates a zero raw
+        // block through the same live resampler, filters and channel mixer.
+        exhausted.start();
+        silent_pcm.start();
+        exhausted.synchronize();
+        silent_pcm.synchronize();
+        CHECK(exhausted.interrupts == silent_pcm.interrupts);
+        const auto expected = silent_pcm.memory.range(0x3000, 0x4000);
+        const auto actual = exhausted.memory.range(0x3000, 0x4000);
+        for (unsigned i = 0; i < actual.size(); ++i)
+          if (i != 0x1100 && i != 0x1101) // Only the source-type field differs.
+            CHECK(actual[i] == expected[i]);
+        CHECK(exhausted.word(1) == 1 && exhausted.word(4) == 0);
+        CHECK(exhausted.word(0x34) == 0xfffe && exhausted.word(0x36) == 0x3456);
+        CHECK(exhausted.word(0x3a) == 0 && exhausted.word(0x3b) == 0);
+        CHECK(exhausted.word(0x38) == 0x1234 && exhausted.word(0x39) == 0x5678);
+        if (filtering)
+          CHECK(std::any_of(actual.begin() + 0x2000, actual.begin() + 0x20a0,
+                            [](u8 value) { return value != 0; }));
+        const auto voice_bytes = exhausted.memory.range(0x4000, 0x180);
+        const std::vector<u8> completed(voice_bytes.begin(), voice_bytes.end());
+        send(exhausted.engine, 0xcdd10003);
+        exhausted.start();
+        exhausted.synchronize();
+        CHECK(std::equal(completed.begin(), completed.end(),
+                         exhausted.memory.range(0x4000, 0x180).begin()));
+        for (unsigned i = 0; i < 80; ++i) {
+          CHECK(exhausted.memory.read16(0x5000 + i * 2) == 0);
+          CHECK(exhausted.memory.read16(0x6000 + i * 2) == 0);
+        }
+      }
+  // A zero-sized raw request keeps its ordinary metadata path and does not
+  // prematurely finish the voice. Partial terminal blocks remain unsupported.
+  AudioFixture zero(console);
+  zero.configure();
+  zero.voice(false, 33);
+  zero.word(2, 0);
+  zero.word(4, 0);
+  zero.word(0x34, 7);
+  zero.word(0x8a, 19);
+  zero.word(0x8d, 0x8000);
+  zero.start();
+  zero.synchronize();
+  CHECK(zero.word(1) == 0 && zero.word(0x34) == 7 && zero.word(0x36) == 12);
+  CHECK(zero.word(0x3a) == 0 && zero.word(0x3b) == 0);
+  for (u16 remaining : {u16(1), u16(16), u16(79)}) {
+    AudioFixture partial(console);
+    partial.configure();
+    partial.voice(false, 33);
+    partial.word(0x3b, remaining);
+    partial.word(0x8d, 0x8000);
+    const auto bytes = partial.memory.range(0x4000, 0x180);
+    const std::vector<u8> before(bytes.begin(), bytes.end());
+    partial.start();
+    bool rejected = false;
+    try {
+      partial.synchronize();
+    } catch (const std::runtime_error &error) {
+      CHECK(std::string(error.what()) ==
+            "DSP main-memory PCM terminal padding behavior is not implemented");
+      rejected = true;
+    }
+    CHECK(rejected);
+    CHECK(std::equal(before.begin(), before.end(), partial.memory.range(0x4000, 0x180).begin()));
+  }
+}
+
 void audio_position_tests() {
   AudioFixture fixture(Console::Wii);
   fixture.configure();
@@ -810,6 +912,8 @@ int main() {
     audio_resume_tests();
     audio_filter_reverb_tests();
     audio_end_tests();
+    audio_empty_main_pcm_tests(Console::GameCube);
+    audio_empty_main_pcm_tests(Console::Wii);
     audio_position_tests();
     audio_requested_history_tests(Console::GameCube, false);
     audio_requested_history_tests(Console::Wii, false);

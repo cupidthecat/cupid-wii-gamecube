@@ -418,10 +418,9 @@ void CommandProcessor::fragment(unsigned x, unsigned y, u32 z, const FragmentInp
   };
   if (early && !depth_test())
     return;
-  auto located_inputs = inputs;
-  located_inputs.x = x;
-  located_inputs.viewport_width = std::bit_cast<float>(xf_state_[0x101a]);
-  auto color = shader_.shade(located_inputs, &z);
+  // The rasterizer already supplies this pixel's x coordinate and viewport
+  // width. Preserve its inputs directly instead of copying every interpolant.
+  auto color = shader_.shade_validated(inputs, &z);
   if (!color || (!early && !depth_test()))
     return;
   ++fragment_count_;

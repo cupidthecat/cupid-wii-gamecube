@@ -3,6 +3,7 @@
 #include "test_support.hpp"
 #include <array>
 #include <bit>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -81,6 +82,26 @@ struct Drawing {
     return bytes;
   }
 };
+
+void draw_validation_before_depth_rejection() {
+  for (const auto &[address, value] : std::array<std::pair<u8, u32>, 6>{
+           {{0, 9}, {0, 3 << 4}, {0, 5 << 16}, {0, 1 << 9}, {0xf5, 3}, {0xf5, 3 << 2}}}) {
+    Drawing f;
+    const auto bytes = f.triangle();
+    f.graphics.submit(bytes);
+    const auto fragments = f.graphics.fragment_count();
+    const auto color = f.graphics.color(0, 0);
+    const auto depth = f.graphics.depth(0, 0);
+    // No fragment would pass this early depth test. Invalid shader state
+    // must still fail at draw admission, before a prevalidated shade call.
+    bp(f.graphics, 0x40, 1);
+    bp(f.graphics, 0x43, 64);
+    bp(f.graphics, address, value);
+    CHECK_THROWS(f.graphics.submit(bytes));
+    CHECK(f.graphics.fragment_count() == fragments);
+    CHECK(f.graphics.color(0, 0) == color && f.graphics.depth(0, 0) == depth);
+  }
+}
 
 void primitive_pipeline() {
   Drawing f;
@@ -436,6 +457,7 @@ int main() {
     interrupt_reassertion(Console::Wii);
     copies();
     primitive_pipeline();
+    draw_validation_before_depth_rejection();
     depth_and_alpha();
     blending_and_uploads();
   });

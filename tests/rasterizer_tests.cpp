@@ -36,6 +36,8 @@ struct Fixture {
     put(0x101f, 1000);
     rasterizer.fragment = [&](unsigned x, unsigned y, u32 depth, const FragmentInputs &inputs) {
       CHECK(x < 640 && y < 528);
+      CHECK(inputs.x == x);
+      CHECK(std::bit_cast<u32>(inputs.viewport_width) == xf[0x101a]);
       auto &sample = samples[y * 640 + x];
       sample.depth = depth;
       sample.inputs = inputs;
@@ -457,6 +459,30 @@ void captured_strip_depth_tests() {
   CHECK(remembered->x_offset == 0.495f && remembered->y_offset == 0.495f);
 }
 
+void fragment_location_tests() {
+  for (float width : {8.0f, -8.0f, 13.5f, -13.5f})
+    for (bool fallback : {false, true}) {
+      Fixture f;
+      f.put(0x101a, width);
+      unsigned declined = 0;
+      if (fallback)
+        f.rasterizer.hardware = [&](const RasterWork &work) {
+          CHECK(std::bit_cast<u32>(work.viewport_width) == f.xf[0x101a]);
+          ++declined;
+          return false;
+        };
+      f.draw({f.vertex(0, 0), f.vertex(12, 0), f.vertex(0, 12)});
+      CHECK(width < 0 || !f.samples.empty());
+      CHECK(!fallback || declined != 0);
+      // The fixture checks every emitted sample, not just the first pixel.
+      // Changing the viewport between draws must not reuse the old width.
+      f.samples.clear();
+      f.put(0x101a, -width);
+      f.draw({f.vertex(0, 0), f.vertex(12, 0), f.vertex(0, 12)});
+      CHECK(width > 0 || !f.samples.empty());
+    }
+}
+
 void line_and_point_tests() {
   Fixture f;
   f.bp[0x22] = 12 | (12 << 8);
@@ -518,5 +544,6 @@ int main() {
     wide_culled_depth_tests();
     widened_depth_intermediate_tests();
     line_and_point_tests();
+    fragment_location_tests();
   });
 }

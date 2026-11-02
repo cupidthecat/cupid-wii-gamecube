@@ -138,6 +138,10 @@ void FragmentShader::validate() const {
 
 std::optional<Color> FragmentShader::shade(const FragmentInputs &input, u32 *depth) {
   validate();
+  return shade_validated(input, depth);
+}
+
+std::optional<Color> FragmentShader::shade_validated(const FragmentInputs &input, u32 *depth) {
   auto registers = colors_;
   unsigned last_color = 0, last_alpha = 0;
   const unsigned stages = ((bp_[0] >> 10) & 15) + 1, texgens = bp_[0] & 15;

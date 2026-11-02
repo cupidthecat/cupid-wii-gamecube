@@ -46,6 +46,10 @@ public:
   }
 
 private:
+  friend class CommandProcessor;
+  // The command processor validates unchanged BP state once before drawing.
+  // Direct shader callers must keep using shade(), which validates each call.
+  std::optional<Color> shade_validated(const FragmentInputs &input, u32 *depth);
   TextureSampler sampler_;
   std::span<const u32> bp_;
   const TevRegisters &colors_;

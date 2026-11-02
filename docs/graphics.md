@@ -24,6 +24,17 @@ TMEM use the same tile decoder after their own bounds checks.
 
 TEV supports regular and comparison color/alpha operations, register destinations, konst selectors, swizzle tables, indirect coordinates and matrices, alpha tests, depth textures, and fog. The pixel stage applies early or late depth tests, blend factors, subtraction, logic operations, update masks, constant alpha, and RGBA6 dithering.
 
+The software rasterizer passes each fragment's horizontal position and signed
+viewport width with its interpolated inputs. The command processor consumes that
+same input object directly rather than copying all 208 bytes to assign two values
+the rasterizer already supplied. This also applies when hardware declines a
+rectangle and software handles it. Depth tests, shader evaluation, fog and blend
+ordering are unchanged. Shader state is validated once at draw admission; the
+private fragment path reuses that validation while BP state remains unchanged.
+Direct shader calls still validate every invocation. Tests require invalid state
+to fail even when early depth testing would reject all fragments. Rasterizer tests verify the position and exact viewport
+bits on emitted callbacks and after viewport changes.
+
 ## EFB and copies
 
 The EFB stores 24 raw color bits per pixel. RGBA6 reads expand each six-bit component; switching formats reinterprets those same bits. The RGB565/Z16 path deliberately follows the pinned software behavior, which retains RGB8/Z24 precision. This is a compatibility choice, not a real-hardware precision claim.

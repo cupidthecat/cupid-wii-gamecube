@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cupid/gfx/fragment.hpp"
 #include "test_support.hpp"
+#include <utility>
 #include <vector>
 
 namespace {
@@ -24,6 +25,22 @@ struct Fixture {
     input.colors[1] = {1, 2, 3, 4};
   }
 };
+
+void validation_after_state_changes() {
+  for (const auto &[address, value] : std::array<std::pair<unsigned, u32>, 6>{
+           {{0, 9}, {0, 3 << 4}, {0, 5 << 16}, {0, 1 << 9}, {0xf5, 3}, {0xf5, 3 << 2}}}) {
+    Fixture f;
+    CHECK(f.shader.shade(f.input).has_value());
+    const auto state = f.shader.texture_state();
+    u32 depth = 1234;
+    const u32 saved = f.bp[address];
+    f.bp[address] = value;
+    CHECK_THROWS(f.shader.shade(f.input, &depth));
+    CHECK(f.shader.texture_state() == state && depth == 1234);
+    f.bp[address] = saved;
+    CHECK((f.shader.shade(f.input, &depth).value() == gfx::Color{18, 52, 86, 120}));
+  }
+}
 
 void stages() {
   Fixture f;
@@ -199,6 +216,7 @@ void fog() {
 int main() {
   return run_tests([] {
     stages();
+    validation_after_state_changes();
     alpha_and_compare();
     textured();
     texture_latches_and_depth();

@@ -227,10 +227,11 @@ void boot_disc(Memory &memory, cpu::Interpreter &cpu, disc::Image &image,
   state.gpr[4] = state.gpr[3] + 4;
   state.gpr[5] = state.gpr[3] + 8;
   call(entry);
-  const u32 init = memory.read32(functions), main = memory.read32(functions + 4),
-            close = memory.read32(functions + 8);
+  const u32 init = cpu.read_data_word(0x80000000 | functions),
+            main = cpu.read_data_word(0x80000000 | (functions + 4)),
+            close = cpu.read_data_word(0x80000000 | (functions + 8));
   // Apploader reporting callback returns through the guest instruction stream.
-  memory.write32(0x01300000, 0x4e800020);
+  cpu.write_boot_word(0x81300000, 0x4e800020);
   info.stage = "apploader-init";
   state.gpr[3] = 0x81300000;
   call(init);
@@ -245,8 +246,8 @@ void boot_disc(Memory &memory, cpu::Interpreter &cpu, disc::Image &image,
       break;
     if (++requests > 4096)
       throw std::runtime_error("Apploader produced too many disc requests");
-    u32 destination = memory.read32(0x01300004), amount = memory.read32(0x01300008);
-    u64 offset = u64(memory.read32(0x0130000c)) << (wii ? 2 : 0);
+    u32 destination = cpu.read_data_word(0x81300004), amount = cpu.read_data_word(0x81300008);
+    u64 offset = u64(cpu.read_data_word(0x8130000c)) << (wii ? 2 : 0);
     if (!amount || amount > Memory::mem1_size + Memory::mem2_size)
       throw std::runtime_error("Invalid apploader transfer length");
     const u32 physical = Memory::boot_physical(destination);

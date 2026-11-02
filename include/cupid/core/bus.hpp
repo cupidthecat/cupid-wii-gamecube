@@ -76,7 +76,8 @@ public:
     throw BusFault(0, true, "This bus does not implement memory-access interrupts", true);
   }
 
-  // Cache identity can alias physical addresses without changing backing reads.
+  // Instruction and data caches share this identity normalization. Aliases
+  // change lookup identity without broadening backing-copy access.
   virtual u32 instruction_cache_key(u32 physical) const {
     return physical;
   }
@@ -87,6 +88,33 @@ public:
     (void)physical;
     (void)key;
     return false;
+  }
+
+  // Only providers with ordinary RAM opt into data-cache admission. Returned
+  // addresses use the RAM allocation's identity, not a new physical mapping.
+  virtual bool data_cache_address(u32 physical, unsigned bytes, u32 &normalized) const {
+    (void)physical;
+    (void)bytes;
+    (void)normalized;
+    return false;
+  }
+
+  virtual bool read_data_cache_bytes(u32 physical, std::span<u8> bytes) {
+    if (bytes.empty() || bytes.size() > 32)
+      throw std::invalid_argument("Data-cache copies require 1 through 32 bytes");
+    std::array<u8, 32> temporary{};
+    for (unsigned i = 0; i < bytes.size(); ++i)
+      temporary[i] = read8(physical + i);
+    std::copy_n(temporary.begin(), bytes.size(), bytes.begin());
+    return true;
+  }
+
+  virtual bool write_data_cache_bytes(u32 physical, std::span<const u8> bytes) {
+    if (bytes.empty() || bytes.size() > 32)
+      throw std::invalid_argument("Data-cache copies require 1 through 32 bytes");
+    for (unsigned i = 0; i < bytes.size(); ++i)
+      write8(physical + i, bytes[i]);
+    return true;
   }
 
   // CPU data transactions can have different bounds from host and fetch access.

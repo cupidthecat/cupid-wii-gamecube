@@ -45,6 +45,7 @@
 #include "VideoCommon/PixelEngine.h"
 #include "cupid/core/memory.hpp"
 #include "cupid/cpu/cache.hpp"
+#include "cupid/cpu/data_cache.hpp"
 #include "cupid/cpu/interpreter.hpp"
 
 // The actual memory manager, MMU, and instruction cache are linked unchanged.
@@ -947,8 +948,221 @@ void fetch_backing_checks() {
   }
 }
 
+void data_cache_checks() {
+  auto &system = Core::System::GetInstance();
+  unsigned operations = 0;
+  u32 random = 0x31ca8b75;
+  const auto next = [&] {
+    random ^= random << 13;
+    random ^= random >> 17;
+    random ^= random << 5;
+    return random;
+  };
+  for (bool wii : {false, true}) {
+    system.SetIsWii(wii);
+    Memory::MemoryManager memory(system);
+    memory.Init();
+    auto reference = std::make_unique<PowerPC::Cache>();
+    reference->Init(memory);
+    cupid::Memory bus(wii ? cupid::Console::Wii : cupid::Console::GameCube);
+    auto product = std::make_unique<cupid::cpu::DataCache>();
+    std::array<u8, 32> input{}, expected{}, actual{};
+    const auto compare_backing = [&] {
+      for (u32 bank : {0u, 0x10000000u}) {
+        if (bank && !wii)
+          continue;
+        const auto original = memory.GetSpanForAddress(bank | 0x100000).first(0x11000);
+        const auto candidate = bus.range(bank | 0x100000, 0x11000);
+        require(std::equal(original.begin(), original.end(), candidate.begin()), operations,
+                "data-cache dirty writeback and external backing");
+      }
+    };
+    for (unsigned step = 0; step < 50000; ++step) {
+      ++operations;
+      const bool warming = step < 128 * 16;
+      const unsigned operation = warming ? 1 : next() % 12;
+      const unsigned set = warming ? (step / 16) : next() & 127;
+      const unsigned tag = warming ? (step % 16) : next() & 15;
+      const u32 bank = wii && (next() & 1) ? 0x10000000 : 0;
+      const u32 physical = bank | 0x100000 | (tag << 12) | (set << 5) | (next() & 31);
+      const u32 address = physical | ((next() & 3) << 30);
+      const unsigned length = 1 + next() % 32;
+      const bool locked = (next() & 3) == 0;
+      for (u8 &byte : input)
+        byte = u8(next());
+      switch (operation) {
+      case 0:
+      case 1:
+      case 2:
+        reference->Write(memory, address, input.data(), length, locked);
+        product->write(bus, address, std::span<const u8>(input).first(length), locked);
+        break;
+      case 3:
+        reference->Store(memory, address);
+        product->store(bus, address);
+        break;
+      case 4:
+        reference->Invalidate(memory, address);
+        product->invalidate(bus, address);
+        break;
+      case 5:
+        reference->Flush(memory, address);
+        product->flush(bus, address);
+        break;
+      case 6:
+        reference->FlushAll(memory);
+        product->flush_all(bus);
+        break;
+      case 7:
+        reference->Reset();
+        product->reset();
+        break;
+      case 8:
+        memory.CopyToEmu(physical, input.data(), length);
+        bus.copy_in(physical, std::span<const u8>(input).first(length));
+        break;
+      default:
+        expected.fill(0xac);
+        actual.fill(0xac);
+        reference->Read(memory, address, expected.data(), length, locked);
+        product->read(bus, address, std::span<u8>(actual).first(length), locked);
+        require(expected == actual, operations, "data-cache read bytes and untouched tail");
+        break;
+      }
+      if ((step & 63) == 0)
+        compare_backing();
+    }
+    reference->FlushAll(memory);
+    product->flush_all(bus);
+    compare_backing();
+    // Reset retains line bytes. Failed unlocked copies install the requested
+    // tag over those bytes; a subsequent locked hit has a defined result.
+    for (unsigned set = 0; set < 128; ++set) {
+      reference->Reset();
+      product->reset();
+      const u32 address = 0x100000 | (set << 5);
+      for (u8 &byte : input)
+        byte = u8(next());
+      reference->Write(memory, address, input.data(), 32, false);
+      product->write(bus, address, input, false);
+      reference->Reset();
+      product->reset();
+      for (bool locked : {false, true}) {
+        reference->Read(memory, 0x01800000 | (set << 5), expected.data(), 32, locked);
+        product->read(bus, 0x01800000 | (set << 5), actual, locked);
+        ++operations;
+        require(expected == actual, operations, "data-cache retained rejected fill");
+      }
+    }
+    memory.Shutdown();
+  }
+  require(operations == 100512, operations, "data-cache comparison coverage");
+  std::cout << operations << " actual data-cache operations and backing comparisons passed\n";
+}
+
+void data_cache_mmu_checks() {
+  auto &system = Core::System::GetInstance();
+  unsigned comparisons = 0;
+  u32 random = 0x741c5ab3;
+  const auto next = [&] {
+    random ^= random << 13;
+    random ^= random >> 17;
+    random ^= random << 5;
+    return random;
+  };
+  for (bool wii : {false, true}) {
+    system.SetIsWii(wii);
+    Memory::MemoryManager memory(system);
+    memory.Init();
+    PowerPC::PowerPCManager manager(system);
+    PowerPC::MMU mmu(system, memory, manager);
+    auto &reference = manager.GetPPCState();
+    reference.dCache.Init(memory);
+    reference.m_enable_dcache = true;
+    cupid::Memory bus(wii ? cupid::Console::Wii : cupid::Console::GameCube);
+    cupid::cpu::Interpreter product(bus, wii ? cupid::Console::Wii : cupid::Console::GameCube);
+    product.set_data_cache_enabled(true);
+    unsigned product_pi = 0;
+    bus.memory_error = [&] { ++product_pi; };
+    auto &state = product.state();
+    const auto compare_backing = [&] {
+      for (u32 bank : {0u, 0x10000000u}) {
+        if (bank && !wii)
+          continue;
+        const auto expected = memory.GetSpanForAddress(bank | 0x100000).first(0x11000);
+        const auto actual = bus.range(bank | 0x100000, 0x11000);
+        require(std::equal(expected.begin(), expected.end(), actual.begin()), comparisons,
+                "data-cache MMU backing visibility");
+      }
+    };
+    for (unsigned operation = 0; operation < 12000; ++operation) {
+      ++comparisons;
+      reference_pi_requests = product_pi = 0;
+      const unsigned kind = next() % 9, width = 1u << (next() % 3), mode = next() % 4;
+      const u32 bank = wii && (next() & 1) ? 0x10000000 : 0;
+      const u32 offset = next() & 0xffff;
+      const u32 physical = bank | 0x100000 | offset;
+      const u32 address =
+          mode >= 2 ? 0x40000000 | offset : physical | (mode == 1 && !bank ? 0x04000000 : 0);
+      reference.spr[SPR_HID0] = state.spr[cupid::cpu::spr::hid0] =
+          0x4000 | ((next() & 3) == 0 ? 0x1000 : 0);
+      reference.msr.Hex = state.msr = mode >= 2 ? cupid::cpu::msr::dr : 0;
+      reference.spr[SPR_DBAT0U] = state.spr[536] = 0x40000002;
+      reference.spr[SPR_DBAT0L] = state.spr[537] = bank | 0x100002 | (mode == 3 ? 0x40 : 0);
+      mmu.DBATUpdated();
+      state.gpr[3] = address;
+      state.gpr[4] = next();
+      state.pc = 0x1000;
+      u32 opcode = 0;
+      u32 expected_value = state.gpr[5];
+      const auto indexed = [&](unsigned code, unsigned reg) {
+        return (31u << 26) | (reg << 21) | (3u << 11) | (code << 1);
+      };
+      if (kind < 3) {
+        expected_value = width == 1   ? mmu.Read<u8>(address)
+                         : width == 2 ? mmu.Read<u16>(address)
+                                      : mmu.Read<u32>(address);
+        opcode = indexed(width == 1 ? 87 : width == 2 ? 279 : 23, 5);
+      } else if (kind < 6) {
+        if (width == 1)
+          mmu.Write<u8>(state.gpr[4], address);
+        else if (width == 2)
+          mmu.Write<u16>(state.gpr[4], address);
+        else
+          mmu.Write<u32>(state.gpr[4], address);
+        opcode = indexed(width == 1 ? 215 : width == 2 ? 407 : 151, 4);
+      } else if (kind == 6) {
+        mmu.StoreDCacheLine(address);
+        opcode = indexed(54, 0);
+      } else if (kind == 7) {
+        mmu.FlushDCacheLine(address);
+        opcode = indexed(86, 0);
+      } else {
+        mmu.InvalidateDCacheLine(address);
+        opcode = indexed(470, 0);
+      }
+      bus.write32(0x1000, opcode);
+      product.step();
+      require(state.pc == 0x1004 && reference.Exceptions == 0, comparisons,
+              "data-cache MMU instruction completion");
+      require(state.gpr[5] == expected_value, comparisons, "data-cache MMU load result");
+      require(product_pi == reference_pi_requests, comparisons, "data-cache MMU PI requests");
+      if ((operation & 31) == 0)
+        compare_backing();
+    }
+    reference.dCache.FlushAll(memory);
+    product.set_data_cache_enabled(false);
+    compare_backing();
+    memory.Shutdown();
+  }
+  require(comparisons == 24000, comparisons, "data-cache MMU coverage");
+  std::cout << comparisons << " actual MMU/data-cache and guest instruction comparisons passed\n";
+}
+
 int main() {
   try {
+    data_cache_checks();
+    data_cache_mmu_checks();
     memory_checks();
     fetch_backing_checks();
     cache_checks();

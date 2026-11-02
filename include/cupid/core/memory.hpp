@@ -31,6 +31,9 @@ public:
   void memory_access_error() override;
   void reset_write_gather_pipe() override;
   u32 instruction_cache_key(u32 physical) const override;
+  bool data_cache_address(u32 physical, unsigned bytes, u32 &normalized) const override;
+  bool read_data_cache_bytes(u32 physical, std::span<u8> bytes) override;
+  bool write_data_cache_bytes(u32 physical, std::span<const u8> bytes) override;
   bool stable_instruction_cache_key(u32 physical, u32 &key) const override;
   bool read_instruction_words(u32 physical, std::span<u32> words) override;
   bool read_instruction_bytes(u32 physical, std::span<u8> bytes) override;

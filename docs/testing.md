@@ -1971,3 +1971,20 @@ A hosted software-driver run reached its previous ten-minute timeout during
 XFB-clear qualification after the preceding profiles passed. The following
 revision passed the complete suite. This is headroom for cold compilation and
 shared-runner variation; no pixel checks, cases or other timeouts were removed.
+
+## Optional data-cache qualification
+
+The final local Release/LTO build passes 90 enabled tests (100 registered,
+ten explicit capability-dependent skips). The unchanged cache/MMU comparison
+units pass 100,512 cache operations and 24,000 MMU/guest-operation comparisons.
+CPU, data-cache, synthetic cached-bootstrap and the actual memory/cache
+comparison pass ASan/UBSan; leak detection remains disabled under this host's
+tracing restriction. The final bootstrap patch also passes the three public
+sanitizer suites after its last change.
+
+Negative controls reject a missing dirty bit, direct-backing descriptor reads
+and a callback patch that leaves stale cached bytes. Formatting passes with
+clang-format 18. Targeted Clang analysis retains the earlier CPU dead-store
+warning and reports no new finding in the changed memory, cache or bootstrap
+paths. See [data-cache behavior](data-cache.md) for the unresolved cache-enabled
+commercial-run limit; these component tests do not qualify that mode for games.

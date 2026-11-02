@@ -3,6 +3,7 @@
 
 #include "cupid/core/bus.hpp"
 #include "cupid/cpu/cache.hpp"
+#include "cupid/cpu/data_cache.hpp"
 #include "cupid/cpu/native_integer.hpp"
 #include <array>
 #include <cstring>
@@ -75,13 +76,23 @@ public:
   IntegerRun try_integer_run(u32 maximum_instructions, u32 maximum_cycles);
 
   bool integer_run_possible() const noexcept {
-    if ((state_.pc & 3) || (state_.spr[spr::hid0] & 0xa000) != 0x8000)
+    if (data_cache_enabled_ || (state_.pc & 3) || (state_.spr[spr::hid0] & 0xa000) != 0x8000)
       return false;
     const unsigned minimum = backend_ == ExecutionBackend::NativeInteger ? 4 : 2;
     return instruction_cache_.ordinary_run_hint(state_.pc, minimum);
   }
 
   void set_execution_backend(ExecutionBackend backend);
+  void set_data_cache_enabled(bool enabled);
+  // Bootstrap callers read guest-written descriptors through the current MMU
+  // and data cache, without retiring an instruction or advancing guest clocks.
+  u32 read_data_word(u32 effective);
+  // Host bootstrap patches update cached RAM and backing without guest cycles.
+  void write_boot_word(u32 effective, u32 value);
+
+  bool data_cache_enabled() const noexcept {
+    return data_cache_enabled_;
+  }
 
   ExecutionBackend execution_backend() const noexcept {
     return backend_;
@@ -114,6 +125,8 @@ private:
   std::unique_ptr<NativeInteger> native_integer_;
   State state_{};
   InstructionCache instruction_cache_;
+  std::unique_ptr<DataCache> data_cache_;
+  bool data_cache_enabled_ = false;
   std::array<TlbEntry, 128> instruction_tlb_{}, data_tlb_{};
   std::array<u8, 64> instruction_tlb_recent_{}, data_tlb_recent_{};
   bool external_interrupt_ = false, decrementer_pending_ = false, monitor_pending_ = false;
@@ -181,9 +194,10 @@ private:
   u64 load(u32 effective, unsigned bytes);
   void store(u32 effective, u64 value, unsigned bytes);
   u32 translate_access(u32 effective, bool instruction, bool write, bool &uncached,
-                       bool *direct_store = nullptr);
+                       bool *direct_store = nullptr, bool *page_fault = nullptr);
   void store_physical(u32 physical, u32 value, unsigned bytes, bool uncached);
   void clear_cache_line(u32 effective);
+  void maintain_data_cache(u32 effective, unsigned operation);
   void field(unsigned index, u32 value);
   void record(u32 value);
   void compare(unsigned index, u32 a, u32 b, bool signed_values);

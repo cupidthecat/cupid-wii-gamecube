@@ -33,7 +33,7 @@ Instruction backing reads validate the complete four-byte word, 32-byte line or 
 
 An instruction fetch reads four consecutive bytes at its physical address. Cached reads can span two lines, updating each accessed line's replacement state in order. A locked miss uses a bounded backing byte copy for that portion instead of allocating a line. The inspected interpreter and MMU callers do not add an instruction-PC alignment fault, so odd PCs retain these byte-addressed fetch rules. Decoded instructions still apply their own data-alignment checks. This follows the pinned software behavior and does not assert physical-console instruction-alignment semantics.
 
-Fetched-zero execution skips dispatch, advances the PC and adds no guest cycles. A separate actual interpreter comparison covers that delivery with clear pending-exception state. The backing comparisons check fetch values and cache metadata; their guest execution cases use valid retained opcodes. Data-cache visibility remains unfinished.
+Fetched-zero execution skips dispatch, advances the PC and adds no guest cycles. A separate actual interpreter comparison covers that delivery with clear pending-exception state. The backing comparisons check fetch values and cache metadata; their guest execution cases use valid retained opcodes. Optional data-cache visibility is implemented separately; see [data-cache behavior](data-cache.md).
 
 ## Source mapping and checks
 
@@ -53,7 +53,7 @@ A full rebuild exposed a lost byte/halfword narrowing step in the new CPU device
 
 The separate `cpu_dispatch_reference_checks` target executes 20 unchanged translation units and the real interpreter dispatch table. Its 5,632 controls cover 1,344 strict byte backing reads, 512 warm/cold byte-cache reads, 192 retained rejected fills and 3,584 selected aligned/odd guest steps. Native MSVC and strict GCC pass every value/state case; full GCC address/undefined-behavior instrumentation passes too. GNU/Linux additionally records and forwards the actual backing-copy calls, comparing their order with the product. Native keeps the same value/state cases and authored transfer-order assertions without claiming that source-call interception. Public core tests verify all supported byte widths, complete failure preservation, aliases, real RAM ends, excluded regions, reset and absence of device/PI callbacks. A separate runtime trace regression replaces the old prefetched alignment assumption with obtained odd-PC zero words and adds a decoded `lwarx` data-alignment fault. The original trace failure and corrected complete GCC runtime pass are retained.
 
-These are controlled software comparisons and authored integration tests. The memory comparison excludes data-cache visibility, complete MMIO/EFB width behavior, invalid locked-fetch opcode values, full interrupt scheduling and physical-console equivalence. [CPU mappings](cpu-reference.md) records the separate zero-word execution checks, and [tests](testing.md) records the broader toolchain matrix.
+These are controlled software comparisons and authored integration tests. The earlier memory comparison excludes data-cache visibility (now covered by the separate [data-cache checks](data-cache.md)), complete MMIO/EFB width behavior, invalid locked-fetch opcode values, full interrupt scheduling and physical-console equivalence. [CPU mappings](cpu-reference.md) records the separate zero-word execution checks, and [tests](testing.md) records the broader toolchain matrix.
 
 ## Cache-line zero and direct-store segments
 

@@ -30,7 +30,7 @@ struct Options {
   bool help = false, version = false, self_test = false, headless = false, inspect = false,
        validate_bios = false, validate_fonts = false;
   bool read_disc = false, read_game = false, trace_after_boot = false;
-  bool list_files = false;
+  bool list_files = false, data_cache = false;
 };
 
 u64 integer(std::string_view text) {
@@ -90,6 +90,8 @@ Options parse(int argc, char **argv) {
       o.trace_after_boot = true;
     else if (arg == "--game")
       o.game = value();
+    else if (arg == "--data-cache")
+      o.data_cache = true;
     else if (arg == "--cpu")
       o.cpu = value();
     else if (arg == "--bios")
@@ -186,6 +188,7 @@ Usage: cupid-wii-gamecube --game PATH [options]
   --game PATH                 RVZ, ISO/GCM disc, DOL or ELF executable
   --console auto|gamecube|wii  Select the guest console (auto from disc)
   --cpu interpreter|native   Interpreter or experimental native integers (default interpreter)
+  --data-cache               Enable emulated data-cache visibility and writeback
   --headless                  Disable the game-output window
   --bios PATH                 Validate and load GameCube IPL for EXI reads
   --validate-bios             Check --bios without running software
@@ -289,9 +292,12 @@ int main(int argc, char **argv) {
       runtime::Machine machine(Console::GameCube);
       if (options.cpu == "native")
         machine.cpu().set_execution_backend(cpu::ExecutionBackend::NativeInteger);
+      machine.cpu().set_data_cache_enabled(options.data_cache);
       machine.load_executable(runtime::self_test_dol());
       for (unsigned i = 0; i < 7; ++i)
         machine.step();
+      if (options.data_cache)
+        machine.cpu().set_data_cache_enabled(false);
       if (machine.memory().read32(0x5000) != 16 || machine.cpu().state().gpr[7] != 16 ||
           machine.cpu().state().instructions != 7 ||
           (options.cpu == "native" && machine.cpu().native_statistics().executed == 0)) {
@@ -436,6 +442,9 @@ int main(int argc, char **argv) {
     platform::Output output({options.headless, options.audio == "sdl", options.frame_dump,
                              options.input, display_aspect, options.remote_speakers == "on"});
     runtime::Machine machine(console);
+    machine.cpu().set_data_cache_enabled(options.data_cache);
+    if (options.data_cache)
+      message("Data-cache visibility enabled; grouped RAM execution is disabled");
     if (options.cpu == "native") {
       machine.cpu().set_execution_backend(cpu::ExecutionBackend::NativeInteger);
       message("Native integer execution enabled; remaining operations use the interpreter");

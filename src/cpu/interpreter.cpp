@@ -314,6 +314,41 @@ void Interpreter::set_execution_backend(ExecutionBackend backend) {
   backend_ = backend;
 }
 
+u32 Interpreter::read_data_word(u32 effective) {
+  try {
+    return static_cast<u32>(load(effective, 4));
+  } catch (const GuestFault &) {
+    throw BusFault(effective, false, "Bootstrap data read raised a guest storage exception", true);
+  }
+}
+
+void Interpreter::write_boot_word(u32 effective, u32 value) {
+  if (effective & 3)
+    throw BusFault(effective, true, "Bootstrap word patch requires an aligned address", true);
+  try {
+    bool uncached = false;
+    const u32 physical = translate_access(effective, false, true, uncached);
+    u32 normalized = 0;
+    if (!bus_.data_cache_address(physical, 4, normalized))
+      throw BusFault(effective, true, "Bootstrap word patch requires RAM", true);
+    store_physical(physical, value, 4, uncached);
+    // Host writes remain visible to instruction fetch and DMA even when the
+    // ordinary guest store above remains in a dirty data-cache line.
+    if (data_cache_enabled_ && !uncached)
+      bus_.write_cpu_data(physical, value, 4);
+  } catch (const GuestFault &) {
+    throw BusFault(effective, true, "Bootstrap word patch raised a guest storage exception", true);
+  }
+}
+
+void Interpreter::set_data_cache_enabled(bool enabled) {
+  if (enabled && !data_cache_)
+    data_cache_ = std::make_unique<DataCache>();
+  if (!enabled && data_cache_enabled_)
+    data_cache_->flush_all(bus_);
+  data_cache_enabled_ = enabled;
+}
+
 NativeIntegerStatistics Interpreter::native_statistics() const noexcept {
   return native_integer_ ? native_integer_->statistics() : NativeIntegerStatistics{};
 }
@@ -330,6 +365,8 @@ void Interpreter::reset() {
   instruction_tlb_recent_ = {};
   data_tlb_recent_ = {};
   instruction_cache_.reset();
+  if (data_cache_)
+    data_cache_->reset();
   external_interrupt_ = decrementer_pending_ = monitor_pending_ = reservation_ = false;
   last_step_fetched_ = false;
   tick_remainder_ = decrementer_remainder_ = 0;
@@ -453,7 +490,7 @@ Interpreter::BatMap &Interpreter::refresh_bat_map(bool instruction, unsigned cou
 }
 
 u32 Interpreter::translate_access(u32 effective, bool instruction, bool write, bool &uncached,
-                                  bool *direct_store) {
+                                  bool *direct_store, bool *page_fault) {
   uncached = false;
   if (!(state_.msr & (instruction ? msr::ir : msr::dr)))
     return effective;
@@ -524,6 +561,10 @@ u32 Interpreter::translate_access(u32 effective, bool instruction, bool write, b
       return (flags & 0xfffff000) | (effective & 4095);
     }
   }
+  if (page_fault) {
+    *page_fault = true;
+    return 0;
+  }
   storage_fault(effective, instruction, write);
 }
 
@@ -556,7 +597,18 @@ u64 Interpreter::load(u32 effective, unsigned bytes) {
     return value;
   }
   try {
-    const u32 physical = translate(effective);
+    bool uncached = false;
+    const u32 physical = translate_access(effective, false, false, uncached);
+    u32 normalized = 0;
+    if (data_cache_enabled_ && !uncached && bus_.data_cache_address(physical, bytes, normalized)) {
+      std::array<u8, 8> result{};
+      data_cache_->read(bus_, normalized, std::span<u8>(result).first(bytes),
+                        (state_.spr[spr::hid0] & 0x1000) != 0);
+      u64 value = 0;
+      for (unsigned i = 0; i < bytes; ++i)
+        value = (value << 8) | result[i];
+      return value;
+    }
     return bus_.read_cpu_data(physical, bytes);
   } catch (const BusFault &fault) {
     if (fault.unsupported_reason)
@@ -626,12 +678,43 @@ void Interpreter::store_physical(u32 physical, u32 value, unsigned bytes, bool u
     const unsigned blocks = ((physical & 7) + bytes + 7) / 8;
     for (unsigned block = 0; block < blocks; ++block) {
       const u32 address = (physical & ~7u) + block * 8;
-      bus_.write_cpu_data(address, word, 4);
-      bus_.write_cpu_data(address + 4, word, 4);
+      // Expanded word writes reenter the ordinary physical path, including
+      // data-cache visibility, rather than retaining the original WI flag.
+      store_physical(address, word, 4, false);
+      store_physical(address + 4, word, 4, false);
     }
     return;
   }
+  u32 normalized = 0;
+  if (data_cache_enabled_ && !uncached && bus_.data_cache_address(physical, bytes, normalized)) {
+    std::array<u8, 4> encoded{};
+    for (unsigned i = 0; i < bytes; ++i)
+      encoded[i] = u8(value >> ((bytes - 1 - i) * 8));
+    data_cache_->write(bus_, normalized, std::span<const u8>(encoded).first(bytes),
+                       (state_.spr[spr::hid0] & 0x1000) != 0);
+    return;
+  }
   bus_.write_cpu_data(physical, value, bytes);
+}
+
+void Interpreter::maintain_data_cache(u32 effective, unsigned operation) {
+  effective &= ~31u;
+  bool uncached = false, direct_store = false, page_fault = false;
+  const u32 physical =
+      translate_access(effective, false, true, uncached, &direct_store, &page_fault);
+  if (direct_store)
+    return;
+  if (page_fault) {
+    if (operation != 470)
+      storage_fault(effective, false, true);
+    return;
+  }
+  if (operation == 54)
+    data_cache_->store(bus_, physical);
+  else if (operation == 86)
+    data_cache_->flush(bus_, physical);
+  else
+    data_cache_->invalidate(bus_, physical);
 }
 
 void Interpreter::clear_cache_line(u32 effective) {
@@ -644,10 +727,14 @@ void Interpreter::clear_cache_line(u32 effective) {
     const u32 physical = translate_access(effective, false, true, uncached, &direct_store);
     if (direct_store)
       return;
-    if (bus_.try_clear_cpu_ram_line(physical))
+    if (!data_cache_enabled_ && bus_.try_clear_cpu_ram_line(physical))
       return;
-    for (; offset < 32; offset += 4)
-      bus_.write_cpu_data(physical + offset, 0, 4);
+    for (; offset < 32; offset += 4) {
+      if (data_cache_enabled_)
+        store_physical(physical + offset, 0, 4, false);
+      else
+        bus_.write_cpu_data(physical + offset, 0, 4);
+    }
   } catch (const BusFault &fault) {
     if (fault.unsupported_reason)
       unsupported(fault.what());
@@ -1793,9 +1880,10 @@ void Interpreter::execute_extended(u32 opcode) {
   case 54:
   case 86:
   case 470:
-    // The current interpreter uses coherent backing memory and has no host instruction cache.
     if (xo == 470)
       privileged();
+    if (data_cache_enabled_)
+      maintain_data_cache(ea, xo);
     return;
   case 1014: {
     if (!(state_.spr[spr::hid0] & 0x4000))

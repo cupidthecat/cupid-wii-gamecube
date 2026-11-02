@@ -73,6 +73,7 @@ set(cupid_sources
   src/cpu/floating.cpp
   src/cpu/estimates.cpp
   src/cpu/fused.cpp
+  src/cpu/data_cache.cpp
   src/cpu/cache.cpp
   src/cpu/native_integer.cpp
   src/disc/image.cpp
@@ -127,7 +128,7 @@ include(cmake/DeveloperChecks.cmake)
 
 if(CUPID_BUILD_TESTS)
   enable_testing()
-  foreach(suite IN ITEMS cpu native_integer cpu_integer_run floating_binary instruction_cache_hint core disc disc_stream device event_budget remote remote_speaker host_mixer extension_cipher sdp sdp_transport runtime runtime_group runtime_gather elf fonts dsp handheld ios network sysconf gfx fifo_environment vertex texture fragment fixed_coordinate rasterizer raster_coverage efb_copy xfb_copy efb_access guest_video input_replay input_replay_follow input_replay_follow_guest audio_stats pointer)
+  foreach(suite IN ITEMS cpu data_cache native_integer cpu_integer_run floating_binary instruction_cache_hint core disc disc_stream device event_budget remote remote_speaker host_mixer extension_cipher sdp sdp_transport runtime runtime_group runtime_gather runtime_boot_cache elf fonts dsp handheld ios network sysconf gfx fifo_environment vertex texture fragment fixed_coordinate rasterizer raster_coverage efb_copy xfb_copy efb_access guest_video input_replay input_replay_follow input_replay_follow_guest audio_stats pointer)
     add_executable(cupid_${suite}_tests tests/${suite}_tests.cpp)
     target_include_directories(cupid_${suite}_tests PRIVATE tests)
     target_link_libraries(cupid_${suite}_tests PRIVATE cupid_core)
@@ -221,6 +222,8 @@ if(CUPID_BUILD_TESTS)
     add_test(NAME cli_${argument} COMMAND cupid-wii-gamecube --${argument})
     set_tests_properties(cli_${argument} PROPERTIES TIMEOUT 30 LABELS "public;cli")
   endforeach()
+  add_test(NAME cli_self_test_data_cache COMMAND cupid-wii-gamecube --self-test --data-cache)
+  set_tests_properties(cli_self_test_data_cache PROPERTIES TIMEOUT 30 LABELS "public;cli;cpu")
   add_test(NAME cli_self_test_native COMMAND cupid-wii-gamecube --self-test --cpu native)
   set_tests_properties(cli_self_test_native PROPERTIES TIMEOUT 30 LABELS "public;cli;cpu"
     SKIP_RETURN_CODE 77)

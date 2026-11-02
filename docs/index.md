@@ -46,3 +46,5 @@
 - [Tests](testing.md): public fixtures, sanitizers, private comparisons, and packages.
 - [Performance measurements](performance.md): measured startup scope and device scheduling.
 - [Licensing](licensing.md): project license, genuine third-party dependencies, and private assets.
+
+- [Data-cache visibility and writeback](data-cache.md)

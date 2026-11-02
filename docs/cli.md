@@ -101,3 +101,7 @@ cupid-wii-gamecube --game "/path/to/game.rvz" --extract-file "/opening.bnr" \
 | 77 | Native synthetic self-test skipped on a host without x86-64 support. |
 
 An exit at a run limit does not establish that a game boots, reaches its title screen, or is playable. Guest exception loops can continue until a bound; inspect the trace and state to identify them.
+
+`--data-cache` enables optional emulated data-cache visibility and writeback.
+It preserves dirty data separately from DMA-visible RAM and disables grouped
+RAM execution. See [data-cache behavior](data-cache.md) for scope and limits.

@@ -510,3 +510,22 @@ The run takes 1,913.16 seconds on a shared host and supplies no isolated FPS
 measurement. Its source precedes the RAM-packet and protected-operation changes,
 which have separate validation. Source, binaries, inputs and terminal evidence
 remain under `.cache/sunshine-renderer8dc-16000-20261025-v1/`.
+
+## Linux airstrip input observation
+
+A frozen write-gather build corresponding to production source `1b8186a`
+(compiled label `write-gather-candidate`) reaches Sunshine's airstrip in ordinary
+coherent-memory mode. An offscreen Mesa compute renderer presents the intro,
+Peach's dialogue and subsequent controller-driven walking and jumping. Captures
+at fields 6,765 and 6,777 show movement away from the starting conversation and
+a jump beside the aircraft.
+
+The private observer uses the normal runtime and replay-input interfaces, with
+bounded pauses to inspect frames. It does not edit guest RAM or PC. File
+selection required moving beneath the slot before jumping; the earlier
+stationary button-only attempts were not evidence of a controller defect.
+
+This is a limited interactive observation on a software OpenGL device, with
+host audio disabled. It does not establish a completed level, saved level
+progress, full-speed operation or physical-GPU behavior. It also does not
+qualify the later optional data-cache mode.

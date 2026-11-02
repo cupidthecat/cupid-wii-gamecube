@@ -114,6 +114,42 @@ void Memory::copy_out(u32 physical, std::span<u8> data) const {
   std::copy(source.begin(), source.end(), data.begin());
 }
 
+bool Memory::data_cache_address(u32 physical, unsigned bytes, u32 &normalized) const {
+  if ((physical & 0xf8000000) == 0) {
+    normalized = physical & (mem1_allocated_size - 1);
+    return bytes <= mem1_allocated_size - normalized;
+  }
+  if ((physical >> 28) == 1 && (physical & 0x0fffffff) < mem2_.size()) {
+    normalized = physical;
+    return bytes <= mem2_.size() - (physical & 0x0fffffff);
+  }
+  return false;
+}
+
+bool Memory::read_data_cache_bytes(u32 physical, std::span<u8> bytes) {
+  if (bytes.empty() || bytes.size() > 32)
+    throw std::invalid_argument("Data-cache copies require 1 through 32 bytes");
+  try {
+    const auto source = range(physical & 0x3fffffff, bytes.size());
+    std::memmove(bytes.data(), source.data(), bytes.size());
+    return true;
+  } catch (const BusFault &) {
+    return false;
+  }
+}
+
+bool Memory::write_data_cache_bytes(u32 physical, std::span<const u8> bytes) {
+  if (bytes.empty() || bytes.size() > 32)
+    throw std::invalid_argument("Data-cache copies require 1 through 32 bytes");
+  try {
+    const auto destination = range(physical & 0x3fffffff, bytes.size());
+    std::memmove(destination.data(), bytes.data(), bytes.size());
+    return true;
+  } catch (const BusFault &) {
+    return false;
+  }
+}
+
 u32 Memory::instruction_cache_key(u32 physical) const {
   if (physical & 0x20000000)
     return 0x20000000 | (physical & (mem1_allocated_size - 1));

@@ -20,8 +20,9 @@ Continue from the first real divergence after each fix. Preserve unrelated work 
 
 The runtime is not a complete core implementation. Known gaps include:
 
-- Data-cache visibility, dirty writeback, eviction and locking. Instruction-cache
-  checks do not qualify these separate data-cache behaviors.
+- Whole-system timing and game qualification of the optional writeback data
+  cache. Its component and instruction checks are separate from instruction-cache
+  qualification.
 - A general DSP instruction interpreter and broader audio-task coverage. Unknown
   task hashes and task data-memory transfers still stop explicitly.
 - Remaining defined MMIO, device and IOS operations currently rejected by their

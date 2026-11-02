@@ -854,8 +854,8 @@ void Devices::rebuild_deadline() {
   };
   countdown(di_remaining_);
   countdown(aram_remaining_);
-  for (u64 remaining : reset_releases_)
-    countdown(remaining);
+  for (u64 release_cycles : reset_releases_)
+    countdown(release_cycles);
   for (u64 interrupt_remaining : audio_start_interrupts_)
     countdown(interrupt_remaining);
   next_deadline_ = std::min(next_deadline_, disc_stream_.next_event());

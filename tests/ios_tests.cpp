@@ -328,8 +328,10 @@ void system_management() {
   fixture.memory.write32(request + 24, output_buffer);
   fixture.memory.write32(request + 28, 4);
   CHECK(fixture.complete() == -2);
+  fixture.memory.write32(hook_request, 0xdeadbeef);
   fixture.ipc.press_reset_button();
   receive_event(0x20000);
+  CHECK(fixture.memory.read32(hook_request + 8) == 6);
   install();
   fixture.ipc.press_power_button();
   receive_event(0x800);
@@ -1677,6 +1679,45 @@ void private_metadata(const std::filesystem::path &ticket_path,
       std::equal(tmd.begin(), tmd.end(), fixture.memory.range(output_buffer, tmd.size()).begin()));
 }
 
+void crypto_kernel_devices() {
+  Fixture fixture;
+  const u32 aes = u32(fixture.open("/dev/aes"));
+  const u32 sha = u32(fixture.open("/dev/sha"));
+  CHECK(aes != sha);
+  for (unsigned i = 0; i < 16; ++i) {
+    fixture.memory.write8(data_buffer + i, u8(i * 17));
+    fixture.memory.write8(data_buffer + 0x40 + i, u8(i));
+  }
+  CHECK(fixture.ioctlv(aes, 2, {{data_buffer, 16}, {data_buffer + 0x40, 16}},
+                       {{output_buffer, 32}, {data_buffer + 0x60, 16}}) == 0);
+  CHECK(fixture.memory.read64(output_buffer) == 0x69c4e0d86a7b0430ull);
+  CHECK(fixture.memory.read64(output_buffer + 8) == 0xd8cdb78070b4c55aull);
+  CHECK(fixture.memory.read64(output_buffer + 16) == 0);
+  CHECK(fixture.memory.read64(data_buffer + 0x60) == fixture.memory.read64(output_buffer));
+  CHECK(fixture.ioctlv(sha, 0, {{0xffffffff, 123}}, {{0x18001, 0}, {0x18100, 20}}) == 0);
+  CHECK(fixture.memory.read32(0x18001) == 0x01234567);
+  fixture.text(data_buffer, "abc");
+  CHECK(fixture.ioctlv(sha, 2, {{data_buffer, 3}}, {{0x18001, 28}, {0x18100, 20}}) == 0);
+  CHECK(fixture.memory.read64(0x18100) == 0xa9993e364706816aull);
+  CHECK(fixture.memory.read64(0x18108) == 0xba3e25717850c26cull);
+  CHECK(fixture.memory.read32(0x18110) == 0x9cd0d89d);
+  // Payload writes can cover the IPC header; its reply command remains 7.
+  fixture.text(data_buffer, "overlap payload");
+  CHECK(fixture.ioctlv(aes, 0, {{data_buffer, 16}}, {{request, 1}}) == 0);
+  CHECK(fixture.memory.read32(request) == 8);
+  CHECK(fixture.memory.read32(request + 8) == 7);
+  CHECK(fixture.memory.read32(request + 12) == fixture.memory.read32(data_buffer + 12));
+  for (u32 fd : {aes, sha}) {
+    for (u32 command : {3u, 4u, 5u, 6u}) {
+      fixture.prepare(command, fd);
+      CHECK(fixture.complete() == -4);
+    }
+    CHECK(fixture.ioctlv(fd, 15, {}, {}) == -4);
+    fixture.prepare(2, fd);
+    CHECK(fixture.complete() == 0);
+  }
+}
+
 void filesystem_reply_deadlines() {
   const auto temporary = std::filesystem::canonical(std::filesystem::temp_directory_path());
   const auto root =
@@ -2045,6 +2086,7 @@ int main(int argc, char **argv) {
     filesystem_metadata();
     filesystem_controls();
     filesystem_reply_deadlines();
+    crypto_kernel_devices();
     if (argc == 3 || argc == 4)
       private_metadata(argv[1], argv[2], argc == 4 ? std::stoull(argv[3], nullptr, 0) : 0);
   });

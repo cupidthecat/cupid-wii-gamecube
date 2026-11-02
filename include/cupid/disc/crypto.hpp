@@ -7,6 +7,7 @@
 namespace cupid::disc::detail {
 using Digest = std::array<u8, 20>;
 Digest sha1(std::span<const u8> bytes);
+void sha1_compress(std::span<const u8, 64> bytes, std::array<u32, 5> &state);
 
 class Aes128 {
 public:

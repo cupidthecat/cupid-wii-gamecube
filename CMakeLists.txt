@@ -83,6 +83,8 @@ set(cupid_sources
   src/hw/remote.cpp
   src/hw/extension_cipher.cpp
   src/hw/sdp.cpp
+  src/ios/crypto/aes.cpp
+  src/ios/crypto/sha.cpp
   src/ios/ipc.cpp
   src/ios/memory_values.cpp
   src/ios/network.cpp
@@ -143,7 +145,7 @@ include(cmake/DeveloperChecks.cmake)
 
 if(CUPID_BUILD_TESTS)
   enable_testing()
-  foreach(suite IN ITEMS cpu data_cache native_integer cpu_integer_run floating_binary instruction_cache_hint core disc disc_stream device event_budget remote remote_speaker host_mixer extension_cipher sdp sdp_transport runtime runtime_group runtime_gather runtime_boot_cache elf fonts dsp dsp_instruction buffer_audio command_audio wii_command_audio handheld ios network sysconf gfx fifo_environment vertex texture fragment fixed_coordinate rasterizer raster_coverage efb_copy xfb_copy efb_access guest_video input_replay input_replay_follow input_replay_follow_guest audio_stats pointer)
+  foreach(suite IN ITEMS cpu data_cache native_integer cpu_integer_run floating_binary instruction_cache_hint core disc disc_stream device event_budget remote remote_speaker host_mixer extension_cipher sdp sdp_transport runtime runtime_group runtime_gather runtime_boot_cache elf fonts dsp dsp_instruction buffer_audio command_audio wii_command_audio handheld ios ios_crypto network sysconf gfx fifo_environment vertex texture fragment fixed_coordinate rasterizer raster_coverage efb_copy xfb_copy efb_access guest_video input_replay input_replay_follow input_replay_follow_guest audio_stats pointer)
     add_executable(cupid_${suite}_tests tests/${suite}_tests.cpp)
     target_include_directories(cupid_${suite}_tests PRIVATE tests)
     target_link_libraries(cupid_${suite}_tests PRIVATE cupid_core)

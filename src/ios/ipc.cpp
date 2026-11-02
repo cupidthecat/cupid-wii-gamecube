@@ -4,6 +4,7 @@
 #include "cupid/hw/devices.hpp"
 #include "cupid/hw/remote.hpp"
 #include "cupid/hw/sdp.hpp"
+#include "cupid/ios/crypto.hpp"
 #include "cupid/ios/network.hpp"
 #include "cupid/ios/sysconf.hpp"
 
@@ -164,7 +165,19 @@ struct Ipc::Impl {
       return left.due > right.due || (left.due == right.due && left.sequence > right.sequence);
     }
   };
-  enum class Device { File, Filesystem, Disc, ES, StmEvent, StmImmediate, KD, KDTime, Bluetooth };
+  enum class Device {
+    File,
+    Filesystem,
+    Disc,
+    ES,
+    StmEvent,
+    StmImmediate,
+    KD,
+    KDTime,
+    Bluetooth,
+    Aes,
+    Sha
+  };
 
   struct Handle {
     Device device;
@@ -674,6 +687,11 @@ struct Ipc::Impl {
     const unsigned fd = unsigned(free - handles.begin());
     const auto path = string(memory.read32(address + 12), 256);
     const u32 mode = memory.read32(address + 16) & 3;
+    if (path == "/dev/aes" || path == "/dev/sha") {
+      handles[fd] = Handle{
+          path == "/dev/aes" ? Device::Aes : Device::Sha, {}, mode, 0, false, ppc_uid, ppc_gid};
+      return {s32(fd)};
+    }
     if (path == "/dev/di") {
       handles[fd] = Handle{Device::Disc, {}, mode, 0, false, ppc_uid, ppc_gid};
       return {s32(fd)};
@@ -1030,9 +1048,7 @@ struct Ipc::Impl {
     return {fs_invalid, fs_overhead};
   }
 
-  struct Vector {
-    u32 address, size;
-  };
+  using Vector = CryptoVector;
 
   struct Vectors {
     std::vector<Vector> input, output;
@@ -1042,7 +1058,7 @@ struct Ipc::Impl {
     }
   };
 
-  std::optional<Vectors> vectors(u32 address) {
+  std::optional<Vectors> vectors(u32 address, bool check_ranges = true) {
     try {
       const u32 in = memory.read32(address + 16), out = memory.read32(address + 20);
       const u32 base = memory.read32(address + 24);
@@ -1054,7 +1070,8 @@ struct Ipc::Impl {
         const Vector vector{memory.read32(base + i * 8), memory.read32(base + i * 8 + 4)};
         if (vector.size != 0 && vector.address == 0)
           return std::nullopt;
-        memory.range(vector.address, vector.size);
+        if (check_ranges)
+          memory.range(vector.address, vector.size);
         (i < in ? result.input : result.output).push_back(vector);
       }
       return result;
@@ -1513,8 +1530,9 @@ struct Ipc::Impl {
     return {1};
   }
 
-  void enqueue_reply(u32 address, Reply reply, bool ordered = true) {
-    const u32 command = memory.read32(address);
+  void enqueue_reply(u32 address, Reply reply, u32 command, bool ordered = true) {
+    // Reply headers retain the dispatched command even when device output
+    // overlaps the request or an asynchronous caller changes guest memory.
     memory.write32(address + 4, u32(reply.result));
     memory.write32(address + 8, command);
     memory.write32(address, 8);
@@ -1529,7 +1547,7 @@ struct Ipc::Impl {
     if (!stm_hook || !handles[stm_hook->fd] || handles[stm_hook->fd]->device != Device::StmEvent)
       return;
     memory.write32(stm_hook->output, event);
-    enqueue_reply(stm_hook->request, Reply{0});
+    enqueue_reply(stm_hook->request, Reply{0}, 6);
     stm_hook.reset();
   }
 
@@ -1551,7 +1569,7 @@ struct Ipc::Impl {
       if (!stm_hook)
         return Reply{not_found};
       memory.write32(stm_hook->output, 0);
-      enqueue_reply(stm_hook->request, Reply{0});
+      enqueue_reply(stm_hook->request, Reply{0}, 6);
       stm_hook.reset();
       return Reply{0};
     }
@@ -1598,11 +1616,11 @@ struct Ipc::Impl {
     const auto endpoint = *hci_endpoint;
     hci_endpoint.reset();
     if (packet.size() > endpoint.size) {
-      enqueue_reply(endpoint.request, Reply{invalid});
+      enqueue_reply(endpoint.request, Reply{invalid}, 7);
       return;
     }
     memory.copy_in(endpoint.buffer, packet);
-    enqueue_reply(endpoint.request, Reply{s32(packet.size())});
+    enqueue_reply(endpoint.request, Reply{s32(packet.size())}, 7);
   }
 
   static std::array<u8, 6> peer_address(unsigned index) {
@@ -1667,11 +1685,11 @@ struct Ipc::Impl {
     const auto endpoint = *acl_endpoint;
     acl_endpoint.reset();
     if (packet.size() > endpoint.size) {
-      enqueue_reply(endpoint.request, Reply{invalid});
+      enqueue_reply(endpoint.request, Reply{invalid}, 7);
       return;
     }
     memory.copy_in(endpoint.buffer, packet);
-    enqueue_reply(endpoint.request, Reply{s32(packet.size())});
+    enqueue_reply(endpoint.request, Reply{s32(packet.size())}, 7);
   }
 
   void send_acl(unsigned index, u16 cid, std::span<const u8> payload) {
@@ -2229,32 +2247,41 @@ struct Ipc::Impl {
       }
       handles[fd].reset();
       result = {status, delay};
+    } else if (handles[fd]->device == Device::Aes || handles[fd]->device == Device::Sha) {
+      if (command != 7) {
+        result = {invalid};
+      } else if (const auto buffers = vectors(address, false)) {
+        const u32 operation = memory.read32(address + 12);
+        result = {handles[fd]->device == Device::Aes
+                      ? aes_ioctlv(memory, operation, buffers->input, buffers->output)
+                      : sha_ioctlv(memory, operation, buffers->input, buffers->output)};
+      }
     } else if (handles[fd]->device == Device::Bluetooth) {
       if (command != 7)
-        return enqueue_reply(address, Reply{invalid});
+        return enqueue_reply(address, Reply{invalid}, command);
       const auto bluetooth_result = bluetooth_ioctlv(address);
       if (!bluetooth_result)
         return;
       result = *bluetooth_result;
     } else if (handles[fd]->device == Device::KD || handles[fd]->device == Device::KDTime) {
       if (command != 6)
-        return enqueue_reply(address, Reply{invalid});
+        return enqueue_reply(address, Reply{invalid}, command);
       result = kd_ioctl(handles[fd]->device, address);
     } else if (handles[fd]->device == Device::StmEvent ||
                handles[fd]->device == Device::StmImmediate) {
       if (command != 6)
-        return enqueue_reply(address, Reply{invalid});
+        return enqueue_reply(address, Reply{invalid}, command);
       const auto stm_result = stm_ioctl(fd, address);
       if (!stm_result)
         return;
       result = *stm_result;
     } else if (handles[fd]->device == Device::ES) {
       if (command != 7)
-        return enqueue_reply(address, Reply{invalid});
+        return enqueue_reply(address, Reply{invalid}, command);
       result = es_ioctlv(address);
     } else if (handles[fd]->device == Device::Disc) {
       if (command == 7)
-        return enqueue_reply(address, disc_ioctlv(address));
+        return enqueue_reply(address, disc_ioctlv(address), command);
       if (command != 6)
         unsupported(address, "disc service command " + std::to_string(command));
       disc_requests.push_back(address);
@@ -2267,7 +2294,7 @@ struct Ipc::Impl {
       result = fs_ioctl(fd, address);
     else
       result = fs_ioctlv(fd, address);
-    enqueue_reply(address, result);
+    enqueue_reply(address, result, command);
   }
 
   void pump() {
@@ -2668,7 +2695,7 @@ void Ipc::advance_events(u64 end) {
     } else {
       if (!event.data.empty())
         state.memory.copy_in(event.buffer, event.data);
-      state.enqueue_reply(event.address, Reply{event.result}, false);
+      state.enqueue_reply(event.address, Reply{event.result}, 6, false);
       state.disc_busy = false;
       if (!state.disc_requests.empty())
         state.start_disc();

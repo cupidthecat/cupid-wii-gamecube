@@ -21,7 +21,7 @@ single-instruction backend; the default remains the interpreter.
 
 The disc reader supplies random raw reads and plaintext game-partition reads. Its filesystem reader resolves FST paths without changing the disc. Machine executes the disc's actual guest apploader and fulfills its transfer requests, then continues from the returned entry point. The DOL and ELF loaders validate their sections before modifying memory. The current bootstrap does not execute the complete IPL boot sequence.
 
-Wii boot selects the disc's requested IOS memory profile and establishes the title context from its ticket and TMD. IPC services operate on explicit user storage and actual disc bytes. Implemented services have protocol-specific error handling; unfinished requests fail with a named diagnostic.
+Wii boot selects the disc's requested IOS memory profile and establishes the title context from its ticket and TMD. IPC services operate on explicit user storage and actual disc bytes. [AES and SHA services](ios-crypto.md) operate on guest vectors and opaque contexts. Implemented services have protocol-specific error handling; unfinished requests fail with a named diagnostic.
 
 ## Graphics and audio
 

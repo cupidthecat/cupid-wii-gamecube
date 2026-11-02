@@ -63,6 +63,10 @@ void sha_block(std::span<const u8, 64> bytes, ShaState &state) {
 }
 } // namespace
 
+void sha1_compress(std::span<const u8, 64> bytes, std::array<u32, 5> &state) {
+  sha_block(bytes, state);
+}
+
 Digest sha1(std::span<const u8> bytes) {
   const u64 bit_count = static_cast<u64>(bytes.size()) * 8;
   ShaState state{0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0};
@@ -166,7 +170,35 @@ void decrypt_with_instructions(std::span<const u8> input, std::span<u8> output,
     rounds[i] = _mm_aesimc_si128(
         _mm_loadu_si128(reinterpret_cast<const __m128i *>(keys.data() + (10 - i) * 16)));
   __m128i chain = _mm_loadu_si128(reinterpret_cast<const __m128i *>(iv.data()));
-  for (std::size_t offset = 0; offset < input.size(); offset += 16) {
+  std::size_t offset = 0;
+  constexpr std::size_t parallel_blocks = 8;
+  // CBC decryption can overlap independent AES rounds. Store the completed
+  // batch backwards so exact in-place calls still read the original chaining
+  // ciphertext, without keeping a second batch of SIMD registers live.
+  while (input.size() - offset >= parallel_blocks * 16) {
+    __m128i state[parallel_blocks];
+    for (std::size_t i = 0; i < parallel_blocks; ++i)
+      state[i] = _mm_xor_si128(
+          _mm_loadu_si128(reinterpret_cast<const __m128i *>(input.data() + offset + i * 16)),
+          rounds[0]);
+    for (std::size_t round = 1; round < 10; ++round)
+      for (auto &block : state)
+        block = _mm_aesdec_si128(block, rounds[round]);
+    const __m128i next_chain = _mm_loadu_si128(
+        reinterpret_cast<const __m128i *>(input.data() + offset + (parallel_blocks - 1) * 16));
+    for (std::size_t i = parallel_blocks; i > 0; --i) {
+      const std::size_t block = i - 1;
+      const __m128i previous = block == 0 ? chain
+                                          : _mm_loadu_si128(reinterpret_cast<const __m128i *>(
+                                                input.data() + offset + (block - 1) * 16));
+      const __m128i decoded =
+          _mm_xor_si128(_mm_aesdeclast_si128(state[block], rounds[10]), previous);
+      _mm_storeu_si128(reinterpret_cast<__m128i *>(output.data() + offset + block * 16), decoded);
+    }
+    chain = next_chain;
+    offset += parallel_blocks * 16;
+  }
+  for (; offset < input.size(); offset += 16) {
     const __m128i ciphertext =
         _mm_loadu_si128(reinterpret_cast<const __m128i *>(input.data() + offset));
     __m128i state = _mm_xor_si128(ciphertext, rounds[0]);

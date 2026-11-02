@@ -24,6 +24,7 @@
 - [Disc audio](disc-audio.md): drive commands, streamed ADPCM, timing and separate host mixing.
 - [ELF loader](elf-loader.md) and [ELF mappings](elf-reference.md).
 - [Devices and system-service mappings](device-reference.md).
+- [IOS cryptographic devices](ios-crypto.md): AES-CBC, SHA-1 contexts and overlapping IPC buffers.
 - [IOS filesystem controls](ios-filesystem.md): format, backend handle lifetime and reply timing.
 - [Wii system configuration](system-config.md): checked settings and controller registration.
 - [Network services](network.md) and [network mappings](network-reference.md).

@@ -117,7 +117,15 @@ jobs:
       - name: Install compilers
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ clang
       - name: Configure instrumented headless runtime
-        run: cmake -S . -B build/sanitizers -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCUPID_HEADLESS_ONLY=ON -DCUPID_ENABLE_SANITIZERS=ON -DCUPID_WARNINGS_AS_ERRORS=ON -DCMAKE_C_COMPILER=${{ matrix.compiler == 'gcc' && 'gcc' || 'clang' }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler == 'gcc' && 'g++' || 'clang++' }}
+        # Keep Debug assertions and every test while avoiding unoptimized
+        # interpreter overhead in the complete sanitizer instruction matrices.
+        run: >-
+          cmake -S . -B build/sanitizers -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          "-DCMAKE_C_FLAGS_DEBUG=-O1 -g" "-DCMAKE_CXX_FLAGS_DEBUG=-O1 -g"
+          -DCUPID_HEADLESS_ONLY=ON -DCUPID_ENABLE_SANITIZERS=ON
+          -DCUPID_WARNINGS_AS_ERRORS=ON
+          -DCMAKE_C_COMPILER=${{ matrix.compiler == 'gcc' && 'gcc' || 'clang' }}
+          -DCMAKE_CXX_COMPILER=${{ matrix.compiler == 'gcc' && 'g++' || 'clang++' }}
       - name: Build
         run: cmake --build build/sanitizers --parallel 2
       - name: Run address and undefined-behavior checks

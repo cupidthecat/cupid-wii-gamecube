@@ -25,6 +25,22 @@ and allocation analysis reports no findings in the eight changed DSP product
 translation units. C++ formatting passes with clang-format 18, including internal
 source headers now covered by the format target.
 
+## Sanitizer build settings
+
+Hosted sanitizer jobs keep the Debug configuration, assertions, debug symbols,
+frame pointers, address/undefined-behavior instrumentation, leak detection and
+all test cases. They use `-O1` rather than an unoptimized interpreter build.
+No timeout or required fixture was removed.
+
+Before changing the workflow, GCC 14.2 and Clang 19 passed the same 103-name
+headless CTest inventory as the preceding hosted GCC run: 73 enabled tests and
+30 explicit hardware/output/reference/private-asset skips. The local runs took
+644.58 and 296.55 seconds with two concurrent CTest workers. These are not
+like-for-like hosted timing measurements: the hosted job runs tests serially.
+Local leak detection remains disabled because of the tracing restriction;
+hosted jobs continue to require it. The compiler commands retain `-O1 -g` and
+do not define `NDEBUG`.
+
 ## CPU system-register qualification
 
 Thermal and performance-register regressions pass in the public CPU suite and

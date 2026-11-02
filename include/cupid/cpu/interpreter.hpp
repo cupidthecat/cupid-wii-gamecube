@@ -24,6 +24,7 @@ inline constexpr unsigned tbl = 268, tbu = 269, pvr = 287;
 inline constexpr unsigned hid0 = 1008, hid1 = 1009, hid2 = 920, hid4 = 1011;
 inline constexpr unsigned mmcr0 = 952, mmcr1 = 956, pmc1 = 953, pmc2 = 954;
 inline constexpr unsigned pmc3 = 957, pmc4 = 958;
+inline constexpr unsigned wpar = 921;
 inline constexpr unsigned thrm1 = 1020, thrm2 = 1021, thrm3 = 1022;
 } // namespace spr
 

@@ -68,6 +68,10 @@ public:
     throw BusFault(memory_address, !load, "This bus does not implement locked-cache DMA", true);
   }
 
+  virtual void reset_write_gather_pipe() {
+    throw BusFault(0x0c008000, true, "This bus does not implement write-gather reset", true);
+  }
+
   virtual void memory_access_error() {
     throw BusFault(0, true, "This bus does not implement memory-access interrupts", true);
   }

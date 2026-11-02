@@ -426,3 +426,26 @@ fault-dependent base writeback. `Jit_LoadStore.cpp` supplies the corresponding
 `lXXx`, `stX`, and `stXx` callers and invalid-update admission constraints.
 The product retains its own guarded backing context and ordinary fallback
 for excluded encodings.
+
+## Write-gather register
+
+WPAR (SPR 921) follows `Interpreter_SystemRegisters.cpp` (`mfspr`, `mtspr`)
+with `GPFifo.cpp` (`IsBNE`, `ResetGatherPipe`) at revision
+`2c805fee8f232d090c454381bb1b8422242345e1`. Reading clears the stored BNE bit
+without flushing or discarding bytes. This is the source's compatibility
+behavior, not a claim about physical bus timing.
+
+Writing the supported graphics-port address `0c008000` discards only the
+incomplete CPU write-gather block. Previously submitted commands, an incomplete
+command already in the parser, FIFO pointers and watermarks remain intact.
+Repeating the same register value still resets the partial block. Other target
+addresses and buses without this capability fail explicitly. Privilege checks
+run before either register or graphics state changes.
+
+The source-dispatch check uses the unchanged gather-buffer constructor,
+initialization, byte writer, count accessors, BNE query and reset alongside the
+actual instruction handlers. Its thermal, monitor and gather coverage totals
+57,408 sequences and 283,890 dispatched instructions across both consoles.
+The integrated `runtime_gather` test checks all partial lengths, queued BP
+payloads, RAM bursts and FIFO state with interpreter and native selection.
+The pre-change core fails that regression with a corrupted command stream.

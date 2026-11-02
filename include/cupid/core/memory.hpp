@@ -17,6 +17,7 @@ public:
   std::function<u32(u32, unsigned)> mmio_read;
   std::function<void(u32, u32, unsigned)> mmio_write;
   std::function<void(u8)> fifo_write;
+  std::function<void()> fifo_gather_reset;
   std::function<void()> memory_error;
   u8 read8(u32 address) override;
   u16 read16(u32 address) override;
@@ -28,6 +29,7 @@ public:
   void write64(u32 address, u64 value) override;
   void locked_cache_dma(u32 memory_address, u32 cache_address, u32 bytes, bool load) override;
   void memory_access_error() override;
+  void reset_write_gather_pipe() override;
   u32 instruction_cache_key(u32 physical) const override;
   bool stable_instruction_cache_key(u32 physical, u32 &key) const override;
   bool read_instruction_words(u32 physical, std::span<u32> words) override;

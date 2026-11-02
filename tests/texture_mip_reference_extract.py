@@ -3,24 +3,9 @@
 
 import hashlib
 import pathlib
-import re
 import sys
 
-
-def declaration(text, pattern):
-    tokens = r'//[^\n]*|/\*[\s\S]*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\''
-    clean = re.sub(tokens, lambda match: " " * len(match.group()), text)
-    match = re.search(pattern + r"[^;{}]*\{", clean)
-    if not match:
-        raise ValueError(f"Required texture layout method is absent: {pattern}")
-    first = clean.index("{", match.start())
-    depth, last = 1, first + 1
-    while depth:
-        if last >= len(clean):
-            raise ValueError("Unclosed texture layout method")
-        depth += (clean[last] == "{") - (clean[last] == "}")
-        last += 1
-    return text[match.start():last] + "\n"
+from reference_source_extract import declaration
 
 
 def extract(root, output):

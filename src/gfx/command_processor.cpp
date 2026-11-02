@@ -104,8 +104,12 @@ void CommandProcessor::fifo(unsigned offset, u32 value) {
   registers_[offset / 2 + 1] = static_cast<u16>(value >> 16);
 }
 
-void CommandProcessor::reset_fifo() {
+void CommandProcessor::reset_gather_pipe() noexcept {
   pipe_size_ = 0;
+}
+
+void CommandProcessor::reset_fifo() {
+  reset_gather_pipe();
   pending_.clear();
   registers_[1] = 0x10;
   registers_[3] = registers_[5] = 0;

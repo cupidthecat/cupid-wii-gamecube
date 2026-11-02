@@ -53,6 +53,12 @@ void Memory::clear() {
     std::fill(bytes->begin(), bytes->end(), u8(0));
 }
 
+void Memory::reset_write_gather_pipe() {
+  if (!fifo_gather_reset)
+    Bus::reset_write_gather_pipe();
+  fifo_gather_reset();
+}
+
 void Memory::memory_access_error() {
   if (!memory_error)
     Bus::memory_access_error();

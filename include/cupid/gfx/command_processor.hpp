@@ -33,6 +33,8 @@ public:
     return event_remaining_ ? event_remaining_ - 1 : std::numeric_limits<u64>::max();
   }
 
+  // Discard only the incomplete CPU write-gather block, not decoded FIFO work.
+  void reset_gather_pipe() noexcept;
   void reset_fifo();
   u32 read(u32 address, unsigned width);
   u32 read_efb(u32 address) const;

@@ -1945,3 +1945,14 @@ is excluded. The executable's compiled revision label is the parent revision;
 the actual source and build closure are frozen under
 `.cache/xfb-root-prefix-20261026-v1/attempt-2/`. Host audio is disabled, and these
 short shared-host checks do not establish gameplay speed or audio output.
+
+## Write-gather reset qualification
+
+The Linux Release/LTO suite passes 87 enabled tests (97 registered; ten
+capability-dependent tests skip). CPU and runtime-gather tests also pass
+ASan/UBSan with leak detection disabled because this host cannot run the leak
+checker under tracing. This does not establish leak freedom. The new runtime
+regression rejects the preserved pre-change core. Source-dispatch comparisons
+cover the actual gather-buffer functions and privileged instruction callers;
+see [CPU execution](cpu-reference.md#write-gather-register). These checks do
+not establish commercial-game completion or full-speed rendering.

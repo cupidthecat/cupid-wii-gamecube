@@ -2511,6 +2511,57 @@ void decrementer_tests() {
   }
 }
 
+void write_gather_register_tests() {
+  class GatherBus final : public Bus {
+  public:
+    std::array<u8, 16> bytes{};
+    unsigned resets = 0;
+    bool connected = true;
+
+    u8 read8(u32 address) override {
+      return bytes.at(address);
+    }
+
+    void write8(u32 address, u8 value) override {
+      bytes.at(address) = value;
+    }
+
+    void reset_write_gather_pipe() override {
+      if (!connected)
+        Bus::reset_write_gather_pipe();
+      ++resets;
+    }
+  } bus;
+
+  Interpreter cpu(bus);
+  auto &state = cpu.state();
+  const auto run = [&](u32 opcode) {
+    state.pc = 0;
+    bus.write32(0, opcode);
+    return cpu.step();
+  };
+  state.spr[spr::dec] = 0xffffffff;
+  state.gpr[3] = 0x0c008000;
+  CHECK(run(special(467, 3, spr::wpar)) == 2);
+  CHECK(bus.resets == 1 && state.spr[spr::wpar] == 0x0c008000);
+  state.spr[spr::wpar] |= 1;
+  run(special(339, 4, spr::wpar));
+  CHECK(state.gpr[4] == 0x0c008000 && state.spr[spr::wpar] == 0x0c008000);
+  CHECK(bus.resets == 1);
+  for (u32 value : {0u, 0x0c008001u, 0x0c009000u, 0xcc008000u}) {
+    state.gpr[3] = value;
+    CHECK_THROWS(run(special(467, 3, spr::wpar)));
+    CHECK(bus.resets == 1 && state.spr[spr::wpar] == 0x0c008000 && state.pc == 0);
+  }
+  state.gpr[3] = 0x0c008000;
+  bus.connected = false;
+  CHECK_THROWS(run(special(467, 3, spr::wpar)));
+  CHECK(bus.resets == 1 && state.spr[spr::wpar] == 0x0c008000 && state.pc == 0);
+  state.msr = msr::pr;
+  run(special(467, 3, spr::wpar));
+  CHECK(state.pc == 0x700 && bus.resets == 1);
+}
+
 void thermal_register_tests() {
   for (auto backend : {ExecutionBackend::Interpreter, ExecutionBackend::NativeInteger}) {
     if (backend == ExecutionBackend::NativeInteger && !NativeInteger::supported())
@@ -3909,6 +3960,7 @@ int main() {
     performance_monitor_tests();
     performance_selector_tests();
     thermal_register_tests();
+    write_gather_register_tests();
     mmu_tests();
     bat_mapping_boundary_tests();
     bat_register_change_tests();

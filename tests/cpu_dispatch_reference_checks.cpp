@@ -70,6 +70,7 @@ namespace {
   throw std::logic_error(call.function_name());
 }
 
+PowerPC::PowerPCManager *active_manager = nullptr;
 std::vector<u8> arena_storage;
 std::vector<std::string> reference_messages;
 unsigned reference_pi_requests = 0;
@@ -97,12 +98,13 @@ bool IsRunning(Core::System &) {
 }
 
 struct System::Impl {
-  explicit Impl(System &system) : jit(system), pi(system) {
+  explicit Impl(System &system) : jit(system), pi(system), gather(system) {
   }
 
   JitInterface jit;
   ProcessorInterface::ProcessorInterfaceManager pi;
   PowerPC::PowerPCState state{};
+  GPFifo::GPFifoManager gather;
 };
 
 System::System() : m_impl(std::make_unique<Impl>(*this)), m_mmu_enabled(true) {
@@ -111,7 +113,7 @@ System::System() : m_impl(std::make_unique<Impl>(*this)), m_mmu_enabled(true) {
 System::~System() = default;
 
 PowerPC::PowerPCState &System::GetPPCState() const {
-  return m_impl->state;
+  return active_manager ? active_manager->GetPPCState() : m_impl->state;
 }
 
 CPU::CPUManager &System::GetCPU() const {
@@ -123,7 +125,7 @@ ProcessorInterface::ProcessorInterfaceManager &System::GetProcessorInterface() c
 }
 
 GPFifo::GPFifoManager &System::GetGPFifo() const {
-  unused();
+  return m_impl->gather;
 }
 
 Memory::MemoryManager &System::GetMemory() const {
@@ -635,7 +637,6 @@ void require(bool condition, unsigned case_number, const char *field) {
 }
 
 namespace {
-PowerPC::PowerPCManager *active_manager = nullptr;
 unsigned hook_checks = 0;
 
 } // namespace
@@ -715,13 +716,7 @@ void Execute(const Core::CPUThreadGuard &, u32, u32) {
 } // namespace HLE
 
 namespace GPFifo {
-bool GPFifoManager::IsBNE() const {
-  unused();
-}
-
-void GPFifoManager::ResetGatherPipe() {
-  unused();
-}
+#include "gather_pipe_reference_functions.inc"
 
 void GPFifoManager::CheckGatherPipe() {
   unused();

@@ -3,9 +3,9 @@
 // surrounding comparison. No replacement thermal or counter logic is supplied.
 void system_register_reference_cases(Core::System &system) {
   unsigned cases = 0, steps = 0;
-  constexpr std::array<unsigned, 13> observed{SPR_MMCR0, SPR_MMCR1, SPR_PMC1,  SPR_PMC2,  SPR_PMC3,
+  constexpr std::array<unsigned, 14> observed{SPR_MMCR0, SPR_MMCR1, SPR_PMC1,  SPR_PMC2,  SPR_PMC3,
                                               SPR_PMC4,  SPR_THRM1, SPR_THRM2, SPR_THRM3, SPR_SRR0,
-                                              SPR_SRR1,  SPR_LR,    SPR_CTR};
+                                              SPR_SRR1,  SPR_LR,    SPR_CTR,   SPR_WPAR};
   const auto special = [](unsigned operation, unsigned reg, unsigned index) {
     return (31u << 26) | (reg << 21) | ((index & 31) << 16) | ((index >> 5) << 11) |
            (operation << 1);
@@ -133,9 +133,43 @@ void system_register_reference_cases(Core::System &system) {
             step((63u << 26) | (3u << 21) | (4u << 16) | (5u << 11) | (21u << 1));
             finish();
           }
+    unsigned pending_bytes = 0, resets = 0;
+    product_memory.fifo_gather_reset = [&] {
+      pending_bytes = 0;
+      ++resets;
+    };
+    for (unsigned partial = 0; partial < GPFifo::GATHER_PIPE_SIZE; ++partial) {
+      state.spr[SPR_MMCR0] = state.spr[SPR_MMCR1] = 0;
+      state.spr[SPR_WPAR] = GPFifo::GATHER_PIPE_PHYSICAL_ADDRESS | 1;
+      state.gpr[3] = GPFifo::GATHER_PIPE_PHYSICAL_ADDRESS;
+      prepare();
+      auto &gather = system.GetGPFifo();
+      gather.Init();
+      pending_bytes = partial;
+      resets = 0;
+      for (unsigned n = 0; n < partial; ++n)
+        gather.FastWrite8(static_cast<u8>(n));
+      step(special(339, 6, SPR_WPAR));
+      require(pending_bytes == partial && resets == 0 &&
+                  state.gather_pipe_ptr - state.gather_pipe_base_ptr == partial,
+              cases, "WPAR read preserves gather prefix");
+      step(special(467, 3, SPR_WPAR));
+      require(pending_bytes == 0 && resets == 1 &&
+                  state.gather_pipe_ptr == state.gather_pipe_base_ptr,
+              cases, "WPAR write resets gather prefix");
+      pending_bytes = 31 - partial;
+      for (unsigned n = 0; n < pending_bytes; ++n)
+        gather.FastWrite8(static_cast<u8>(n + 17));
+      step(special(467, 3, SPR_WPAR));
+      require(pending_bytes == 0 && resets == 2 &&
+                  state.gather_pipe_ptr == state.gather_pipe_base_ptr,
+              cases, "unchanged WPAR value still resets gather prefix");
+      finish();
+    }
     memory.Shutdown();
     active_manager = nullptr;
   }
-  std::cout << cases << " actual SPR/monitor sequences and " << steps
+  require(cases == 57408 && steps == 283890, cases, "system-register comparison coverage");
+  std::cout << cases << " actual SPR/monitor/gather sequences and " << steps
             << " dispatched steps passed; scheduler timing and thermal interrupts excluded\n";
 }

@@ -127,7 +127,7 @@ include(cmake/DeveloperChecks.cmake)
 
 if(CUPID_BUILD_TESTS)
   enable_testing()
-  foreach(suite IN ITEMS cpu native_integer cpu_integer_run floating_binary instruction_cache_hint core disc disc_stream device event_budget remote remote_speaker host_mixer extension_cipher sdp sdp_transport runtime runtime_group elf fonts dsp handheld ios network sysconf gfx fifo_environment vertex texture fragment fixed_coordinate rasterizer raster_coverage efb_copy xfb_copy efb_access guest_video input_replay input_replay_follow input_replay_follow_guest audio_stats pointer)
+  foreach(suite IN ITEMS cpu native_integer cpu_integer_run floating_binary instruction_cache_hint core disc disc_stream device event_budget remote remote_speaker host_mixer extension_cipher sdp sdp_transport runtime runtime_group runtime_gather elf fonts dsp handheld ios network sysconf gfx fifo_environment vertex texture fragment fixed_coordinate rasterizer raster_coverage efb_copy xfb_copy efb_access guest_video input_replay input_replay_follow input_replay_follow_guest audio_stats pointer)
     add_executable(cupid_${suite}_tests tests/${suite}_tests.cpp)
     target_include_directories(cupid_${suite}_tests PRIVATE tests)
     target_link_libraries(cupid_${suite}_tests PRIVATE cupid_core)
@@ -487,6 +487,20 @@ if(CUPID_BUILD_TESTS)
       endforeach()
       add_executable(cupid_cpu_dispatch_reference_checks tests/cpu_dispatch_reference_checks.cpp
         ${cupid_dispatch_references})
+      find_package(Python3 REQUIRED COMPONENTS Interpreter)
+      set(cupid_gather_reference
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/gather_pipe_reference_functions.inc")
+      add_custom_command(OUTPUT "${cupid_gather_reference}"
+        COMMAND "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/gather_pipe_reference_extract.py"
+          "${CUPID_BEHAVIOR_REFERENCE_ROOT}" "${cupid_gather_reference}"
+        DEPENDS tests/gather_pipe_reference_extract.py tests/reference_source_extract.py
+          "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/HW/GPFifo.cpp"
+          "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/HW/GPFifo.h"
+        VERBATIM)
+      target_sources(cupid_cpu_dispatch_reference_checks PRIVATE "${cupid_gather_reference}")
+      target_include_directories(cupid_cpu_dispatch_reference_checks PRIVATE
+        "${CMAKE_CURRENT_BINARY_DIR}/generated")
       set_source_files_properties(${cupid_dispatch_references} PROPERTIES
         COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->;$<$<CXX_COMPILER_ID:GNU>:-O1>;$<$<CXX_COMPILER_ID:GNU,Clang>:-Wno-error=unused-parameter>")
       set_property(SOURCE "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/PowerPC/PowerPC.cpp"
@@ -640,7 +654,7 @@ if(CUPID_BUILD_TESTS)
       COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/texture_mip_reference_extract.py"
         "${CUPID_BEHAVIOR_REFERENCE_ROOT}" "${cupid_texture_mip_reference}"
-      DEPENDS tests/texture_mip_reference_extract.py
+      DEPENDS tests/texture_mip_reference_extract.py tests/reference_source_extract.py
         "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/VideoCommon/TextureInfo.cpp"
         "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/VideoCommon/TextureInfo.h"
       VERBATIM)
@@ -654,7 +668,7 @@ if(CUPID_BUILD_TESTS)
       COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/disc_stream_reference_extract.py"
         "${CUPID_BEHAVIOR_REFERENCE_ROOT}" "${cupid_disc_schedule_reference}"
-      DEPENDS tests/disc_stream_reference_extract.py
+      DEPENDS tests/disc_stream_reference_extract.py tests/reference_source_extract.py
         "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/HW/DVD/DVDInterface.cpp"
         "${CUPID_BEHAVIOR_REFERENCE_ROOT}/Source/Core/Core/HW/DVD/DVDInterface.h"
       VERBATIM)

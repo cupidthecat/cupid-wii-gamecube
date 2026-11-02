@@ -1555,6 +1555,10 @@ u32 Interpreter::read_spr(unsigned index) {
     return static_cast<u32>(state_.timebase >> 32);
   if (index == 1010)
     return state_.spr[index] & ~1u;
+  // Outstanding bus transfers are not retained by the compatibility model.
+  // Reading BNE clears its stored bit without discarding a partial CPU block.
+  if (index == spr::wpar)
+    state_.spr[index] &= ~1u;
   if (index == 937 || index == 938 || index == 941 || index == 942) {
     const unsigned counter = index + 16;
     state_.spr[index] = state_.spr[counter];
@@ -1572,6 +1576,15 @@ void Interpreter::write_spr(unsigned index, u32 value) {
   // Unmodeled performance events remain selectable and leave their counters
   // unchanged; the monitor still checks enabled overflow interrupt conditions.
   const u32 old = state_.spr[index];
+  if (index == spr::wpar) {
+    if (value != 0x0c008000)
+      unsupported("Write-gather relocation away from the graphics port is not implemented");
+    try {
+      bus_.reset_write_gather_pipe();
+    } catch (const BusFault &fault) {
+      unsupported(fault.what());
+    }
+  }
   if (index == 284 || index == 285) {
     if (index == 284)
       state_.timebase = (state_.timebase & 0xffffffff00000000ull) | value;
